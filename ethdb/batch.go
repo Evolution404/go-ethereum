@@ -22,6 +22,7 @@ const IdealBatchSize = 100 * 1024
 
 // Batch is a write-only database that commits changes to its host database
 // when Write is called. A batch cannot be used concurrently.
+// 由Batcher.NewBatch创建的只写的数据库
 type Batch interface {
 	KeyValueWriter
 
@@ -39,6 +40,7 @@ type Batch interface {
 }
 
 // Batcher wraps the NewBatch method of a backing data store.
+// 生成一个只写的数据库
 type Batcher interface {
 	// NewBatch creates a write-only database that buffers changes to its host db
 	// until a final write is called.

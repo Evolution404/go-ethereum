@@ -25,6 +25,7 @@ package ethdb
 // An iterator must be released after use, but it is not necessary to read an
 // iterator until exhaustion. An iterator is not safe for concurrent use, but it
 // is safe to use multiple iterators concurrently.
+// 迭代器用来调用Next来挨个访问内部的键值对
 type Iterator interface {
 	// Next moves the iterator to the next key/value pair. It returns whether the
 	// iterator is exhausted.
@@ -50,6 +51,7 @@ type Iterator interface {
 }
 
 // Iteratee wraps the NewIterator methods of a backing data store.
+// 创建Iterator对象
 type Iteratee interface {
 	// NewIterator creates a binary-alphabetical iterator over a subset
 	// of database content with a particular key prefix, starting at a particular
@@ -57,5 +59,6 @@ type Iteratee interface {
 	//
 	// Note: This method assumes that the prefix is NOT part of the start, so there's
 	// no need for the caller to prepend the prefix to the start
+	// start不包含prefix
 	NewIterator(prefix []byte, start []byte) Iterator
 }

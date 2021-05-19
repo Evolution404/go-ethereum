@@ -15,6 +15,9 @@
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
 // Package ethdb defines the interfaces for an Ethereum data store.
+// 定义了数据库需要使用的接口
+// 只需要实现了这些接口就可以定义一种新的数据库
+// 调用memorydb.New或者leveldb.New来创建一个数据库对象
 package ethdb
 
 import "io"
@@ -52,11 +55,15 @@ type Compacter interface {
 	// A nil start is treated as a key before all keys in the data store; a nil limit
 	// is treated as a key after all keys in the data store. If both is nil then it
 	// will compact entire data store.
+	// start代表要压缩开始key,limit代表要压缩结束key
+	// start=nil代表从第一个key开始压缩
+	// limit=nil代表压缩到最后一个key
 	Compact(start []byte, limit []byte) error
 }
 
 // KeyValueStore contains all the methods required to allow handling different
 // key-value data stores backing the high level database.
+// 包括了操作数据库的所有方法,实现了该接口就可以成为数据库对象
 type KeyValueStore interface {
 	KeyValueReader
 	KeyValueWriter

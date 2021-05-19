@@ -17,6 +17,7 @@
 // +build !js
 
 // Package leveldb implements the key-value database layer based on LevelDB.
+// 键值对数据库的levelDB实现
 package leveldb
 
 import (
@@ -40,6 +41,7 @@ import (
 const (
 	// degradationWarnInterval specifies how often warning should be printed if the
 	// leveldb database cannot keep up with requested writes.
+	// 写入延迟超过该时间将发出警告
 	degradationWarnInterval = time.Minute
 
 	// minCache is the minimum amount of memory in megabytes to allocate to leveldb
@@ -75,6 +77,7 @@ type Database struct {
 	nonlevel0CompGauge metrics.Gauge // Gauge for tracking the number of table compaction in non0 level
 	seekCompGauge      metrics.Gauge // Gauge for tracking the number of table compaction caused by read opt
 
+	// 退出的时候锁定
 	quitLock sync.Mutex      // Mutex protecting the quit channel access
 	quitChan chan chan error // Quit channel to stop the metrics collection before closing the database
 
@@ -116,6 +119,7 @@ func NewCustom(file string, namespace string, customize func(options *opt.Option
 	logger.Info("Allocated cache and file handles", logCtx...)
 
 	// Open the db and recover any potential corruptions
+	// 真正打开数据库的地方
 	db, err := leveldb.OpenFile(file, options)
 	if _, corrupted := err.(*errors.ErrCorrupted); corrupted {
 		db, err = leveldb.RecoverFile(file, nil)
@@ -149,14 +153,17 @@ func NewCustom(file string, namespace string, customize func(options *opt.Option
 }
 
 // configureOptions sets some default options, then runs the provided setter.
+// 创建Options对象,customizeFn是对Pptions的一些自定义修改
 func configureOptions(customizeFn func(*opt.Options)) *opt.Options {
 	// Set default options
+	// 生成默认的options
 	options := &opt.Options{
 		Filter:                 filter.NewBloomFilter(10),
 		DisableSeeksCompaction: true,
 	}
 	// Allow caller to make custom modifications to the options
 	if customizeFn != nil {
+		// 然后使用回调函数进行修改
 		customizeFn(options)
 	}
 	return options
@@ -168,14 +175,17 @@ func (db *Database) Close() error {
 	db.quitLock.Lock()
 	defer db.quitLock.Unlock()
 
+	// 收集错误信息
 	if db.quitChan != nil {
 		errc := make(chan error)
 		db.quitChan <- errc
+		// 通过管道读取外部的错误信息
 		if err := <-errc; err != nil {
 			db.log.Error("Metrics collection failed", "err", err)
 		}
 		db.quitChan = nil
 	}
+	// 关闭数据库
 	return db.db.Close()
 }
 
