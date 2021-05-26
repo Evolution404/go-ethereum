@@ -43,6 +43,8 @@ func ReadDatabaseVersion(db ethdb.KeyValueReader) *uint64 {
 }
 
 // WriteDatabaseVersion stores the version number of the database
+// 当前版本是8
+// 定义在 core.BlockChainVersion
 func WriteDatabaseVersion(db ethdb.KeyValueWriter, version uint64) {
 	enc, err := rlp.EncodeToBytes(version)
 	if err != nil {
@@ -54,6 +56,8 @@ func WriteDatabaseVersion(db ethdb.KeyValueWriter, version uint64) {
 }
 
 // ReadChainConfig retrieves the consensus settings based on the given genesis hash.
+// 配置信息保存在 configKey+ genesis hash 里面
+// 所以输入的hash应该是创世块的哈希值
 func ReadChainConfig(db ethdb.KeyValueReader, hash common.Hash) *params.ChainConfig {
 	data, _ := db.Get(configKey(hash))
 	if len(data) == 0 {
@@ -84,6 +88,7 @@ func WriteChainConfig(db ethdb.KeyValueWriter, hash common.Hash, cfg *params.Cha
 // crashList is a list of unclean-shutdown-markers, for rlp-encoding to the
 // database
 type crashList struct {
+	// Discarded记录已经删除了多少项
 	Discarded uint64   // how many ucs have we deleted
 	Recent    []uint64 // unix timestamps of 10 latest unclean shutdowns
 }
@@ -94,9 +99,12 @@ const crashesToKeep = 10
 // the previous data
 // - a list of timestamps
 // - a count of how many old unclean-shutdowns have been discarded
+// 将当前的时间加入到crashList中
+// 返回之前的列表,以及discarded
 func PushUncleanShutdownMarker(db ethdb.KeyValueStore) ([]uint64, uint64, error) {
 	var uncleanShutdowns crashList
 	// Read old data
+	// 读取数据库之前存储的信息
 	if data, err := db.Get(uncleanShutdownKey); err != nil {
 		log.Warn("Error reading unclean shutdown markers", "error", err)
 	} else if err := rlp.DecodeBytes(data, &uncleanShutdowns); err != nil {
@@ -106,6 +114,7 @@ func PushUncleanShutdownMarker(db ethdb.KeyValueStore) ([]uint64, uint64, error)
 	var previous = make([]uint64, len(uncleanShutdowns.Recent))
 	copy(previous, uncleanShutdowns.Recent)
 	// Add a new (but cap it)
+	// 以当前的时间新增加一项
 	uncleanShutdowns.Recent = append(uncleanShutdowns.Recent, uint64(time.Now().Unix()))
 	if count := len(uncleanShutdowns.Recent); count > crashesToKeep+1 {
 		numDel := count - (crashesToKeep + 1)
@@ -122,6 +131,7 @@ func PushUncleanShutdownMarker(db ethdb.KeyValueStore) ([]uint64, uint64, error)
 }
 
 // PopUncleanShutdownMarker removes the last unclean shutdown marker
+// 删除uncleanShutdowns的最后一项
 func PopUncleanShutdownMarker(db ethdb.KeyValueStore) {
 	var uncleanShutdowns crashList
 	// Read old data

@@ -25,12 +25,14 @@ import (
 )
 
 // ReadSnapshotDisabled retrieves if the snapshot maintenance is disabled.
+// 判断是否有snapshotDisabledKey
 func ReadSnapshotDisabled(db ethdb.KeyValueReader) bool {
 	disabled, _ := db.Has(snapshotDisabledKey)
 	return disabled
 }
 
 // WriteSnapshotDisabled stores the snapshot pause flag.
+// 写入snapshotDisabledKey
 func WriteSnapshotDisabled(db ethdb.KeyValueWriter) {
 	if err := db.Put(snapshotDisabledKey, []byte("42")); err != nil {
 		log.Crit("Failed to store snapshot disabled flag", "err", err)
@@ -56,6 +58,7 @@ func ReadSnapshotRoot(db ethdb.KeyValueReader) common.Hash {
 
 // WriteSnapshotRoot stores the root of the block whose state is contained in
 // the persisted snapshot.
+// snapshotRoot保存了根的哈希值
 func WriteSnapshotRoot(db ethdb.KeyValueWriter, root common.Hash) {
 	if err := db.Put(snapshotRootKey, root[:]); err != nil {
 		log.Crit("Failed to store snapshot root", "err", err)
@@ -114,6 +117,7 @@ func DeleteStorageSnapshot(db ethdb.KeyValueWriter, accountHash, storageHash com
 
 // IterateStorageSnapshots returns an iterator for walking the entire storage
 // space of a specific account.
+// 遍历某个账户的所有storage
 func IterateStorageSnapshots(db ethdb.Iteratee, accountHash common.Hash) ethdb.Iterator {
 	return db.NewIterator(storageSnapshotsKey(accountHash), nil)
 }

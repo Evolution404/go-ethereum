@@ -60,6 +60,7 @@ const (
 
 	// freezerBatchLimit is the maximum number of blocks to freeze in one batch
 	// before doing an fsync and deleting it from the key-value store.
+	// 一个batch的上限
 	freezerBatchLimit = 30000
 )
 
@@ -74,6 +75,7 @@ type freezer struct {
 	// WARNING: The `frozen` field is accessed atomically. On 32 bit platforms, only
 	// 64-bit aligned fields can be atomic. The struct is guaranteed to be so aligned,
 	// so take advantage of that (https://golang.org/pkg/sync/atomic/#pkg-note-BUG).
+	// 记录当前已经存储到freezer中的数据条数
 	frozen    uint64 // Number of blocks already frozen
 	threshold uint64 // Number of recent blocks not to freeze (params.FullImmutabilityThreshold apart from tests)
 
@@ -81,15 +83,18 @@ type freezer struct {
 	tables       map[string]*freezerTable // Data tables for storing everything
 	instanceLock fileutil.Releaser        // File-system lock to prevent double opens
 
+	// 用于由外部主动触发冻结操作
 	trigger chan chan struct{} // Manual blocking freeze trigger, test determinism
 
 	quit      chan struct{}
 	wg        sync.WaitGroup
+	// 保证关闭只调用一次
 	closeOnce sync.Once
 }
 
 // newFreezer creates a chain freezer that moves ancient chain data into
 // append-only flat file containers.
+// freezer的默认文件夹是datadir/geth/chaindata/ancient
 func newFreezer(datadir string, namespace string, readonly bool) (*freezer, error) {
 	// Create the initial freezer object
 	var (
@@ -98,7 +103,11 @@ func newFreezer(datadir string, namespace string, readonly bool) (*freezer, erro
 		sizeGauge  = metrics.NewRegisteredGauge(namespace+"ancient/size", nil)
 	)
 	// Ensure the datadir is not a symbolic link if it exists.
+	// 确保数据库文件夹不是一个符号链接
+	// os.Lstat返回文件信息,如果是符号链接返回的是符号链接自己的信息
+	// 只有当文件存在的时候才会进入这个if
 	if info, err := os.Lstat(datadir); !os.IsNotExist(err) {
+		// 文件存在的话判断一下这个文件是不是符号链接
 		if info.Mode()&os.ModeSymlink != 0 {
 			log.Warn("Symbolic link ancient database is not supported", "path", datadir)
 			return nil, errSymlinkDatadir
@@ -106,6 +115,8 @@ func newFreezer(datadir string, namespace string, readonly bool) (*freezer, erro
 	}
 	// Leveldb uses LOCK as the filelock filename. To prevent the
 	// name collision, we use FLOCK as the lock name.
+	// FLOCK文件保存在datadir/geth/chaindata/ancient下面
+	// 调用过Flock后如果没有释放,再对同一个文件调用Flock的话会产生err
 	lock, _, err := fileutil.Flock(filepath.Join(datadir, "FLOCK"))
 	if err != nil {
 		return nil, err
@@ -119,12 +130,15 @@ func newFreezer(datadir string, namespace string, readonly bool) (*freezer, erro
 		trigger:      make(chan chan struct{}),
 		quit:         make(chan struct{}),
 	}
+	// 遍历所有freezer控制的表
 	for name, disableSnappy := range FreezerNoSnappy {
 		table, err := newTable(datadir, name, readMeter, writeMeter, sizeGauge, disableSnappy)
+		// 如果报错就把所有表都关闭
 		if err != nil {
 			for _, table := range freezer.tables {
 				table.Close()
 			}
+			// 释放文件锁,然后返回错误
 			lock.Release()
 			return nil, err
 		}
@@ -153,6 +167,7 @@ func (f *freezer) Close() error {
 				errs = append(errs, err)
 			}
 		}
+		// 释放FLOCK文件
 		if err := f.instanceLock.Release(); err != nil {
 			errs = append(errs, err)
 		}
@@ -165,6 +180,7 @@ func (f *freezer) Close() error {
 
 // HasAncient returns an indicator whether the specified ancient data exists
 // in the freezer.
+// 判断freezer指定表中是否有第number项,number从0开始
 func (f *freezer) HasAncient(kind string, number uint64) (bool, error) {
 	if table := f.tables[kind]; table != nil {
 		return table.has(number), nil
@@ -173,6 +189,7 @@ func (f *freezer) HasAncient(kind string, number uint64) (bool, error) {
 }
 
 // Ancient retrieves an ancient binary blob from the append-only immutable files.
+// 读取指定表的指定项
 func (f *freezer) Ancient(kind string, number uint64) ([]byte, error) {
 	if table := f.tables[kind]; table != nil {
 		return table.Retrieve(number)
@@ -181,11 +198,13 @@ func (f *freezer) Ancient(kind string, number uint64) ([]byte, error) {
 }
 
 // Ancients returns the length of the frozen items.
+// 返回froezen的值
 func (f *freezer) Ancients() (uint64, error) {
 	return atomic.LoadUint64(&f.frozen), nil
 }
 
 // AncientSize returns the ancient size of the specified category.
+// 返回指定表的大小
 func (f *freezer) AncientSize(kind string) (uint64, error) {
 	if table := f.tables[kind]; table != nil {
 		return table.size()
@@ -199,6 +218,7 @@ func (f *freezer) AncientSize(kind string) (uint64, error) {
 // Notably, this function is lock free but kind of thread-safe. All out-of-order
 // injection will be rejected. But if two injections with same number happen at
 // the same time, we can get into the trouble.
+// 一个freezer要向五个表内插入数据
 func (f *freezer) AppendAncient(number uint64, hash, header, body, receipts, td []byte) (err error) {
 	if f.readonly {
 		return errReadOnly
@@ -219,6 +239,7 @@ func (f *freezer) AppendAncient(number uint64, hash, header, body, receipts, td 
 		}
 	}()
 	// Inject all the components into the relevant data tables
+	// 分别向五个表内插入数据
 	if err := f.tables[freezerHashTable].Append(f.frozen, hash[:]); err != nil {
 		log.Error("Failed to append ancient hash", "number", f.frozen, "hash", hash, "err", err)
 		return err
@@ -239,11 +260,14 @@ func (f *freezer) AppendAncient(number uint64, hash, header, body, receipts, td 
 		log.Error("Failed to append ancient difficulty", "number", f.frozen, "hash", hash, "err", err)
 		return err
 	}
+	// freezer的数据条数加一
 	atomic.AddUint64(&f.frozen, 1) // Only modify atomically
 	return nil
 }
 
 // TruncateAncients discards any recent data above the provided threshold number.
+// 保证freezer中的数据最多有items条
+// 超过的数据依次从各个表中删除
 func (f *freezer) TruncateAncients(items uint64) error {
 	if f.readonly {
 		return errReadOnly
@@ -261,6 +285,7 @@ func (f *freezer) TruncateAncients(items uint64) error {
 }
 
 // Sync flushes all data tables to disk.
+// 依次调用每个表的Sync
 func (f *freezer) Sync() error {
 	var errs []error
 	for _, table := range f.tables {
@@ -288,6 +313,7 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 	)
 	for {
 		select {
+		// 收到退出信号,结束这个函数
 		case <-f.quit:
 			log.Info("Freezer shutting down")
 			return
@@ -315,10 +341,12 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 			backoff = true
 			continue
 		}
+		// 得到当前块的个数和freeze的阈值
 		number := ReadHeaderNumber(nfdb, hash)
 		threshold := atomic.LoadUint64(&f.threshold)
 
 		switch {
+		// *number-threshold > f.frozen才需要进行操作
 		case number == nil:
 			log.Error("Current full block number unavailable", "hash", hash)
 			backoff = true
@@ -341,6 +369,7 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 			continue
 		}
 		// Seems we have data ready to be frozen, process in usable batches
+		// limit记录freeze块的上限,也就是一次freeze从f.frozen到limit的块
 		limit := *number - threshold
 		if limit-f.frozen > freezerBatchLimit {
 			limit = f.frozen + freezerBatchLimit
@@ -350,13 +379,16 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 			first    = f.frozen
 			ancients = make([]common.Hash, 0, limit-f.frozen)
 		)
+		// 不断循环写入batchLimit个块
 		for f.frozen <= limit {
 			// Retrieves all the components of the canonical block
+			// 读取frozen位置的块
 			hash := ReadCanonicalHash(nfdb, f.frozen)
 			if hash == (common.Hash{}) {
 				log.Error("Canonical hash missing, can't freeze", "number", f.frozen)
 				break
 			}
+			// 依次读取这个块需要保存的信息
 			header := ReadHeaderRLP(nfdb, hash, f.frozen)
 			if len(header) == 0 {
 				log.Error("Block header missing, can't freeze", "number", f.frozen, "hash", hash)
@@ -379,6 +411,7 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 			}
 			log.Trace("Deep froze ancient block", "number", f.frozen, "hash", hash)
 			// Inject all the components into the relevant data tables
+			// 调用AppendAncient后frozen会加一
 			if err := f.AppendAncient(f.frozen, hash[:], header, body, receipts, td); err != nil {
 				break
 			}
@@ -389,6 +422,7 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 			log.Crit("Failed to flush frozen tables", "err", err)
 		}
 		// Wipe out all data from the active database
+		// 从原始的数据库中删除刚才写入freezer中的数据
 		batch := db.NewBatch()
 		for i := 0; i < len(ancients); i++ {
 			// Always keep the genesis block in active database
@@ -469,7 +503,9 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 }
 
 // repair truncates all data tables to the same length.
+// 修正freezer中所有表的数据项个数一致到条目最少的那个表
 func (f *freezer) repair() error {
+	// 找到所有表中键值对个数的最小值
 	min := uint64(math.MaxUint64)
 	for _, table := range f.tables {
 		items := atomic.LoadUint64(&table.items)

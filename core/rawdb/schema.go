@@ -16,6 +16,23 @@
 
 // Package rawdb contains a collection of low level database accessors.
 package rawdb
+// 该文件定义了计算不同类型数据在数据库中的key的辅助函数
+// func codeKey(hash common.Hash) []byte
+// func configKey(hash common.Hash) []byte
+// func IsCodeKey(key []byte) (bool, []byte)
+// func headerKeyPrefix(number uint64) []byte
+// func headerKey(number uint64, hash common.Hash) []byte
+// func txLookupKey(hash common.Hash) []byte
+// func preimageKey(hash common.Hash) []byte
+// func headerHashKey(number uint64) []byte
+// func headerTDKey(number uint64, hash common.Hash) []byte
+// func blockBodyKey(number uint64, hash common.Hash)
+// func headerNumberKey(hash common.Hash)
+// func bloomBitsKey(bit uint, section uint64, hash common.Hash)
+// func accountSnapshotKey(hash common.Hash)
+// func blockReceiptsKey(number uint64, hash common.Hash)
+// func storageSnapshotsKey(accountHash common.Hash)
+// func storageSnapshotKey(accountHash, storageHash common.Hash)
 
 import (
 	"bytes"
@@ -27,6 +44,8 @@ import (
 
 // The fields below define the low level database schema prefixing.
 var (
+	// xxxKey是一些保存在数据库中的预定义的key
+
 	// databaseVersionKey tracks the current database version.
 	databaseVersionKey = []byte("DatabaseVersion")
 
@@ -64,6 +83,7 @@ var (
 	snapshotSyncStatusKey = []byte("SnapshotSyncStatus")
 
 	// txIndexTailKey tracks the oldest block whose transactions have been indexed.
+	// 记录当前已经索引到了哪个区块的交易
 	txIndexTailKey = []byte("TransactionIndexTail")
 
 	// fastTxLookupLimitKey tracks the transaction lookup limit during fast sync.
@@ -76,20 +96,28 @@ var (
 	uncleanShutdownKey = []byte("unclean-shutdown") // config prefix for the db
 
 	// Data item prefixes (use single byte to avoid mixing data types, avoid `i`, used for indexes).
+	// h100hash->区块头
 	headerPrefix       = []byte("h") // headerPrefix + num (uint64 big endian) + hash -> header
+	// h100hasht->td
 	headerTDSuffix     = []byte("t") // headerPrefix + num (uint64 big endian) + hash + headerTDSuffix -> td
+	// h100n->块哈希
 	headerHashSuffix   = []byte("n") // headerPrefix + num (uint64 big endian) + headerHashSuffix -> hash
+	// Hhash->区块号
 	headerNumberPrefix = []byte("H") // headerNumberPrefix + hash -> num (uint64 big endian)
 
 	blockBodyPrefix     = []byte("b") // blockBodyPrefix + num (uint64 big endian) + hash -> block body
 	blockReceiptsPrefix = []byte("r") // blockReceiptsPrefix + num (uint64 big endian) + hash -> block receipts
 
+	// 保存交易索引, 交易哈希->交易所在区块
 	txLookupPrefix        = []byte("l") // txLookupPrefix + hash -> transaction/receipt lookup metadata
 	bloomBitsPrefix       = []byte("B") // bloomBitsPrefix + bit (uint16 big endian) + section (uint64 big endian) + hash -> bloom bits
 	SnapshotAccountPrefix = []byte("a") // SnapshotAccountPrefix + account hash -> account trie value
 	SnapshotStoragePrefix = []byte("o") // SnapshotStoragePrefix + account hash + storage hash -> storage trie value
+	// 账户的代码
 	CodePrefix            = []byte("c") // CodePrefix + code hash -> account code
 
+	// 原像映射,key是哈希,value是哈希原像
+	// 应该是用来保存私钥
 	preimagePrefix = []byte("secure-key-")      // preimagePrefix + hash -> preimage
 	configPrefix   = []byte("ethereum-config-") // config prefix for the db
 
@@ -100,6 +128,7 @@ var (
 	preimageHitCounter = metrics.NewRegisteredCounter("db/preimage/hits", nil)
 )
 
+// 定义了freezer的表名,总共有五个
 const (
 	// freezerHeaderTable indicates the name of the freezer header table.
 	freezerHeaderTable = "headers"
@@ -119,11 +148,19 @@ const (
 
 // FreezerNoSnappy configures whether compression is disabled for the ancient-tables.
 // Hashes and difficulties don't compress well.
+// 控制一些表是否不压缩,和上面的定义一样总共五个表
+// 哈希和难度不压缩
 var FreezerNoSnappy = map[string]bool{
+	// 最终保存的文件,不压缩的后缀是ridx,压缩的后缀是cidx
+	// headers.cidx
 	freezerHeaderTable:     false,
+	// hashes.ridx
 	freezerHashTable:       true,
+	// bodies.cidx
 	freezerBodiesTable:     false,
+	// receipts.cidx
 	freezerReceiptTable:    false,
+	// diffs.ridx
 	freezerDifficultyTable: true,
 }
 
@@ -148,6 +185,7 @@ func headerKeyPrefix(number uint64) []byte {
 }
 
 // headerKey = headerPrefix + num (uint64 big endian) + hash
+// 计算区块头在数据库中的key
 func headerKey(number uint64, hash common.Hash) []byte {
 	return append(append(headerPrefix, encodeBlockNumber(number)...), hash.Bytes()...)
 }
@@ -192,16 +230,19 @@ func storageSnapshotKey(accountHash, storageHash common.Hash) []byte {
 	return append(append(SnapshotStoragePrefix, accountHash.Bytes()...), storageHash.Bytes()...)
 }
 
-// storageSnapshotsKey = SnapshotStoragePrefix + account hash + storage hash
+// storageSnapshotsKey = SnapshotStoragePrefix + account hash
 func storageSnapshotsKey(accountHash common.Hash) []byte {
 	return append(SnapshotStoragePrefix, accountHash.Bytes()...)
 }
 
 // bloomBitsKey = bloomBitsPrefix + bit (uint16 big endian) + section (uint64 big endian) + hash
 func bloomBitsKey(bit uint, section uint64, hash common.Hash) []byte {
+	// 创建10字节的中间空间,保存接下来的数据
 	key := append(append(bloomBitsPrefix, make([]byte, 10)...), hash.Bytes()...)
 
+	// 2字节
 	binary.BigEndian.PutUint16(key[1:], uint16(bit))
+	// 8字节,加一起正好10字节
 	binary.BigEndian.PutUint64(key[3:], section)
 
 	return key
@@ -219,7 +260,9 @@ func codeKey(hash common.Hash) []byte {
 
 // IsCodeKey reports whether the given byte slice is the key of contract code,
 // if so return the raw code hash as well.
+// 判断输入的key是不是codekey
 func IsCodeKey(key []byte) (bool, []byte) {
+	// 前缀要满足要求,长度也要是前缀的长度加上哈希的长度
 	if bytes.HasPrefix(key, CodePrefix) && len(key) == common.HashLength+len(CodePrefix) {
 		return true, key[len(CodePrefix):]
 	}

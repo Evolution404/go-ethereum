@@ -32,6 +32,9 @@ import (
 // InitDatabaseFromFreezer reinitializes an empty database from a previous batch
 // of frozen ancient blocks. The method iterates over all the frozen blocks and
 // injects into the database the block hash->number mappings.
+// 从freezer中新建一个数据库对象
+// 读取freezer里保存的区块哈希,恢复到数据库的hash->number映射里
+// 恢复headHeaderHash和headFastBlockHash
 func InitDatabaseFromFreezer(db ethdb.Database) {
 	// If we can't access the freezer or it's empty, abort
 	frozen, err := db.Ancients()
@@ -87,6 +90,9 @@ type blockTxHashes struct {
 // number(s) given, and yields the hashes on a channel. If there is a signal
 // received from interrupt channel, the iteration will be aborted and result
 // channel will be closed.
+// 查询从from区块到to区块的交易哈希
+// 返回的管道一次接收一个区块内的所有交易哈希
+// 默认从from到to查询,reverse为true那么从to到from查询
 func iterateTransactions(db ethdb.Database, from uint64, to uint64, reverse bool, interrupt chan struct{}) chan *blockTxHashes {
 	// One thread sequentially reads data from db
 	type numberRlp struct {
@@ -96,6 +102,7 @@ func iterateTransactions(db ethdb.Database, from uint64, to uint64, reverse bool
 	if to == from {
 		return nil
 	}
+	// 根据cpu的核心数目设置线程数
 	threads := to - from
 	if cpus := runtime.NumCPU(); threads > uint64(cpus) {
 		threads = uint64(cpus)
@@ -106,6 +113,8 @@ func iterateTransactions(db ethdb.Database, from uint64, to uint64, reverse bool
 	)
 	// lookup runs in one instance
 	lookup := func() {
+		// 没有reverse查询顺序 from,from+1,...,to-1
+		// 有了reverse查询顺序 to-1,to-2,...,from
 		n, end := from, to
 		if reverse {
 			n, end = to-1, from-1
@@ -115,6 +124,7 @@ func iterateTransactions(db ethdb.Database, from uint64, to uint64, reverse bool
 			data := ReadCanonicalBodyRLP(db, n)
 			// Feed the block to the aggregator, or abort on interrupt
 			select {
+			// 将查询结果写入rlpCh
 			case rlpCh <- &numberRlp{n, data}:
 			case <-interrupt:
 				return
@@ -128,9 +138,12 @@ func iterateTransactions(db ethdb.Database, from uint64, to uint64, reverse bool
 	}
 	// process runs in parallel
 	nThreadsAlive := int32(threads)
+	// 每个子线程接收rlp编码进行解码操作,写入输出管道
+	// 可能是rlp解码工作耗费性能,进行并行操作
 	process := func() {
 		defer func() {
 			// Last processor closes the result channel
+			// 每个线程结束让计数器减一,计数器为0关闭输出管道
 			if atomic.AddInt32(&nThreadsAlive, -1) == 0 {
 				close(hashesCh)
 			}
@@ -157,6 +170,8 @@ func iterateTransactions(db ethdb.Database, from uint64, to uint64, reverse bool
 			}
 		}
 	}
+	// 读写操作并行进行
+	// 读入数据写入管道,然后由并行的解码线程进行接收处理
 	go lookup() // start the sequential db accessor
 	for i := 0; i < int(threads); i++ {
 		go process()
@@ -172,6 +187,7 @@ func iterateTransactions(db ethdb.Database, from uint64, to uint64, reverse bool
 //
 // There is a passed channel, the whole procedure will be interrupted if any
 // signal received.
+// 对交易进行索引,也就是从旧数据中读取交易信息,将 交易哈希->所在区块号 映射保存到数据库
 func indexTransactions(db ethdb.Database, from uint64, to uint64, interrupt chan struct{}, hook func(uint64) bool) {
 	// short circuit for invalid range
 	if from >= to {
@@ -186,17 +202,21 @@ func indexTransactions(db ethdb.Database, from uint64, to uint64, interrupt chan
 		// in to be [to-1]. Therefore, setting lastNum to means that the
 		// prqueue gap-evaluation will work correctly
 		lastNum = to
+		// 使用优先队列保存交易,每个元素是一个区块内的所有哈希
 		queue   = prque.New(nil)
 		// for stats reporting
+		// 分别记录已经写入了几个区块,多少条交易
 		blocks, txs = 0, 0
 	)
 	for chanDelivery := range hashesCh {
 		// Push the delivery into the queue and process contiguous ranges.
 		// Since we iterate in reverse, so lower numbers have lower prio, and
 		// we can use the number directly as prio marker
+		// 使用块号作为优先级
 		queue.Push(chanDelivery, int64(chanDelivery.number))
 		for !queue.Empty() {
 			// If the next available item is gapped, return
+			// 一直等待,等到最后一个区块被读取出来
 			if _, priority := queue.Peek(); priority != int64(lastNum-1) {
 				break
 			}
@@ -205,13 +225,17 @@ func indexTransactions(db ethdb.Database, from uint64, to uint64, interrupt chan
 				break
 			}
 			// Next block available, pop it off and index it
+			// 读取最后一个区块
 			delivery := queue.PopItem().(*blockTxHashes)
+			// 让lastNum向前移动一位
 			lastNum = delivery.number
+			// 写入这一批交易信息到数据库中
 			WriteTxLookupEntries(batch, delivery.number, delivery.hashes)
 			blocks++
 			txs += len(delivery.hashes)
 			// If enough data was accumulated in memory or we're at the last block, dump to disk
 			if batch.ValueSize() > ethdb.IdealBatchSize {
+				// 记录数据库中索引位置
 				WriteTxIndexTail(batch, lastNum) // Also write the tail here
 				if err := batch.Write(); err != nil {
 					log.Crit("Failed writing batch to db", "error", err)
@@ -250,6 +274,9 @@ func indexTransactions(db ethdb.Database, from uint64, to uint64, interrupt chan
 //
 // There is a passed channel, the whole procedure will be interrupted if any
 // signal received.
+// 对范围[from,to)的区块内交易进行索引
+// 索引指向数据库内保存 交易哈希->交易所在区块 映射
+// 索引过程从to-1区块一直到from区块,倒序
 func IndexTransactions(db ethdb.Database, from uint64, to uint64, interrupt chan struct{}) {
 	indexTransactions(db, from, to, interrupt, nil)
 }
@@ -263,6 +290,8 @@ func indexTransactionsForTesting(db ethdb.Database, from uint64, to uint64, inte
 //
 // There is a passed channel, the whole procedure will be interrupted if any
 // signal received.
+// 删除从from到to区块内交易的索引
+// 删除过程从from到to-1,正序
 func unindexTransactions(db ethdb.Database, from uint64, to uint64, interrupt chan struct{}, hook func(uint64) bool) {
 	// short circuit for invalid range
 	if from >= to {
@@ -283,6 +312,7 @@ func unindexTransactions(db ethdb.Database, from uint64, to uint64, interrupt ch
 	// Otherwise spin up the concurrent iterator and unindexer
 	for delivery := range hashesCh {
 		// Push the delivery into the queue and process contiguous ranges.
+		// 这里加上负号使得区块号越小的优先级越大,先从区块号小的删除
 		queue.Push(delivery, -int64(delivery.number))
 		for !queue.Empty() {
 			// If the next available item is gapped, return
@@ -295,6 +325,7 @@ func unindexTransactions(db ethdb.Database, from uint64, to uint64, interrupt ch
 			}
 			delivery := queue.PopItem().(*blockTxHashes)
 			nextNum = delivery.number + 1
+			// 删除一个区块内交易的索引
 			DeleteTxLookupEntries(batch, delivery.hashes)
 			txs += len(delivery.hashes)
 			blocks++
@@ -337,6 +368,8 @@ func unindexTransactions(db ethdb.Database, from uint64, to uint64, interrupt ch
 //
 // There is a passed channel, the whole procedure will be interrupted if any
 // signal received.
+// 删除[from,to)区块内交易的索引
+// 按照从from到to-1的顺序,正序删除
 func UnindexTransactions(db ethdb.Database, from uint64, to uint64, interrupt chan struct{}) {
 	unindexTransactions(db, from, to, interrupt, nil)
 }

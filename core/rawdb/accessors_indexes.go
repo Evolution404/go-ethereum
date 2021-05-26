@@ -30,6 +30,7 @@ import (
 
 // ReadTxLookupEntry retrieves the positional metadata associated with a transaction
 // hash to allow retrieving the transaction or receipt by hash.
+// 查询交易所在的区块
 func ReadTxLookupEntry(db ethdb.Reader, hash common.Hash) *uint64 {
 	data, _ := db.Get(txLookupKey(hash))
 	if len(data) == 0 {
@@ -55,6 +56,7 @@ func ReadTxLookupEntry(db ethdb.Reader, hash common.Hash) *uint64 {
 
 // writeTxLookupEntry stores a positional metadata for a transaction,
 // enabling hash based transaction and receipt lookups.
+// 写入 交易哈希->区块号
 func writeTxLookupEntry(db ethdb.KeyValueWriter, hash common.Hash, numberBytes []byte) {
 	if err := db.Put(txLookupKey(hash), numberBytes); err != nil {
 		log.Crit("Failed to store transaction lookup entry", "err", err)
@@ -63,6 +65,8 @@ func writeTxLookupEntry(db ethdb.KeyValueWriter, hash common.Hash, numberBytes [
 
 // WriteTxLookupEntries is identical to WriteTxLookupEntry, but it works on
 // a list of hashes
+// 输入一个区块号,还有一批交易哈希,这些交易处于同一个区块
+// 写入 交易哈希->区块号
 func WriteTxLookupEntries(db ethdb.KeyValueWriter, number uint64, hashes []common.Hash) {
 	numberBytes := new(big.Int).SetUint64(number).Bytes()
 	for _, hash := range hashes {
@@ -72,6 +76,7 @@ func WriteTxLookupEntries(db ethdb.KeyValueWriter, number uint64, hashes []commo
 
 // WriteTxLookupEntriesByBlock stores a positional metadata for every transaction from
 // a block, enabling hash based transaction and receipt lookups.
+// 写入一个区块的所有交易的 交易哈希->区块号 映射
 func WriteTxLookupEntriesByBlock(db ethdb.KeyValueWriter, block *types.Block) {
 	numberBytes := block.Number().Bytes()
 	for _, tx := range block.Transactions() {
@@ -80,6 +85,7 @@ func WriteTxLookupEntriesByBlock(db ethdb.KeyValueWriter, block *types.Block) {
 }
 
 // DeleteTxLookupEntry removes all transaction data associated with a hash.
+// 删除一个交易的 交易哈希->区块号 映射
 func DeleteTxLookupEntry(db ethdb.KeyValueWriter, hash common.Hash) {
 	if err := db.Delete(txLookupKey(hash)); err != nil {
 		log.Crit("Failed to delete transaction lookup entry", "err", err)
@@ -87,6 +93,7 @@ func DeleteTxLookupEntry(db ethdb.KeyValueWriter, hash common.Hash) {
 }
 
 // DeleteTxLookupEntries removes all transaction lookups for a given block.
+// 删除列表内的 交易哈希->区块号 映射
 func DeleteTxLookupEntries(db ethdb.KeyValueWriter, hashes []common.Hash) {
 	for _, hash := range hashes {
 		DeleteTxLookupEntry(db, hash)
@@ -95,7 +102,13 @@ func DeleteTxLookupEntries(db ethdb.KeyValueWriter, hashes []common.Hash) {
 
 // ReadTransaction retrieves a specific transaction from the database, along with
 // its added positional metadata.
+// 根据交易哈希查询交易的信息
+// 返回 交易对象,交易所在区块哈希,交易所在区块号,交易在区块中的序号
 func ReadTransaction(db ethdb.Reader, hash common.Hash) (*types.Transaction, common.Hash, uint64, uint64) {
+	// 先查到交易所在区块号
+	// 根据区块号查到区块哈希
+	// 使用区块号和区块哈希查到区块体
+	// 遍历区块体,找到交易哈希相同的交易
 	blockNumber := ReadTxLookupEntry(db, hash)
 	if blockNumber == nil {
 		return nil, common.Hash{}, 0, 0
@@ -120,6 +133,8 @@ func ReadTransaction(db ethdb.Reader, hash common.Hash) (*types.Transaction, com
 
 // ReadReceipt retrieves a specific transaction receipt from the database, along with
 // its added positional metadata.
+// 根据收据哈希查询收据的信息
+// 返回  收据对象,收据所在区块哈希,收据所在区块号,收据在区块内的编号
 func ReadReceipt(db ethdb.Reader, hash common.Hash, config *params.ChainConfig) (*types.Receipt, common.Hash, uint64, uint64) {
 	// Retrieve the context of the receipt based on the transaction hash
 	blockNumber := ReadTxLookupEntry(db, hash)
@@ -149,6 +164,7 @@ func ReadBloomBits(db ethdb.KeyValueReader, bit uint, section uint64, head commo
 
 // WriteBloomBits stores the compressed bloom bits vector belonging to the given
 // section and bit index.
+// 写入布隆过滤器
 func WriteBloomBits(db ethdb.KeyValueWriter, bit uint, section uint64, head common.Hash, bits []byte) {
 	if err := db.Put(bloomBitsKey(bit, section, head), bits); err != nil {
 		log.Crit("Failed to store bloom bits", "err", err)
