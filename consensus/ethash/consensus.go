@@ -32,7 +32,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 	"golang.org/x/crypto/sha3"
 )
@@ -557,6 +556,10 @@ func (ethash *Ethash) verifySeal(chain consensus.ChainHeaderReader, header *type
 			size = 32 * 1024
 		}
 		digest, result = hashimotoLight(size, cache.cache, ethash.SealHash(header).Bytes(), header.Nonce.Uint64())
+		//fmt.Println("number:",number,"hash:",ethash.SealHash(header).Bytes(),"nonce:",header.Nonce,header.Nonce.Uint64())
+		//fmt.Printf("%x\n",ethash.SealHash(header).Bytes())
+		//fmt.Println(header.Hash())
+		//fmt.Println("result:",result)
 
 		// Caches are unmapped in a finalizer. Ensure that the cache stays alive
 		// until after the call to hashimotoLight so it's not unmapped while being used.
@@ -624,7 +627,6 @@ func (ethash *Ethash) SealHash(header *types.Header) (hash common.Hash) {
 	if header.BaseFee != nil {
 		enc = append(enc, header.BaseFee)
 	}
-	rlp.Encode(hasher, enc)
 	hasher.Sum(hash[:0])
 	return hash
 }

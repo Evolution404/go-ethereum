@@ -34,7 +34,24 @@ package trie
 // in the case of an odd number. All remaining nibbles (now an even number) fit properly
 // into the remaining bytes. Compact encoding is used for nodes stored on disk.
 
+// keyBytes 就是初始的字节数组
+
+// hex格式
+// 每一个字节保存了一个半字节
+// 末尾可能保存有一字节的terminator为16
+
+// Compact的格式
+// 长度为偶数 增加额外一字节作为标记
+//   叶子节点 0010 0000
+//   扩展节点 0000 0000
+// 长度为奇数 使用最前面的4个比特位作为标记
+//   叶子节点 0011 xxxx
+//   扩展节点 0001 xxxx
+// 也就是说第4位为1代表长度是奇数,第3位为1代表是叶子节点
 func hexToCompact(hex []byte) []byte {
+	// terminator为1标记了是叶子节点
+	// 为0标记了是扩展节点
+	// 说明叶子节点有terminator,扩展节点没有terminator
 	terminator := byte(0)
 	if hasTerm(hex) {
 		terminator = 1
@@ -42,8 +59,11 @@ func hexToCompact(hex []byte) []byte {
 	}
 	buf := make([]byte, len(hex)/2+1)
 	buf[0] = terminator << 5 // the flag byte
+	// 长度是奇数
 	if len(hex)&1 == 1 {
+		// 长度是奇数的第4位是1
 		buf[0] |= 1 << 4 // odd flag
+		// 后4位使用hex[0]填充
 		buf[0] |= hex[0] // first nibble is contained in the first byte
 		hex = hex[1:]
 	}
@@ -53,6 +73,8 @@ func hexToCompact(hex []byte) []byte {
 
 // hexToCompactInPlace places the compact key in input buffer, returning the length
 // needed for the representation
+// 直接修改输入的hex数组,转换为Compact模式
+// 返回值是Compact编码的长度
 func hexToCompactInPlace(hex []byte) int {
 	var (
 		hexLen    = len(hex) // length of the hex input
@@ -80,20 +102,27 @@ func hexToCompactInPlace(hex []byte) int {
 	return binLen
 }
 
+// 生成Hex格式,叶子结点有terminator
+// Hex格式中叶子节点最后有terminator,扩展节点没有terminator
 func compactToHex(compact []byte) []byte {
 	if len(compact) == 0 {
 		return compact
 	}
 	base := keybytesToHex(compact)
 	// delete terminator flag
+	// base[0] < 2代表是扩展节点,扩展节点没有terminator,所以这里去掉
 	if base[0] < 2 {
 		base = base[:len(base)-1]
 	}
 	// apply odd flag
+	// 长度奇数chop是1,长度偶数chop是2
 	chop := 2 - base[0]&1
+	// 偶数标记位是一字节,转换成hex是前两字节
+	// 奇数标记位是四位,转换成hex是前一字节
 	return base[chop:]
 }
 
+// 将一个字节拆分成两个字节,最后添加terminator为16
 func keybytesToHex(str []byte) []byte {
 	l := len(str)*2 + 1
 	var nibbles = make([]byte, l)
@@ -107,7 +136,11 @@ func keybytesToHex(str []byte) []byte {
 
 // hexToKeybytes turns hex nibbles into key bytes.
 // This can only be used for keys of even length.
+// 去掉hex可能存在的terminator
+// 然后对hex元素两两合并,返回key
+// 输入的hex的长度必须是偶数
 func hexToKeybytes(hex []byte) []byte {
+	// 去掉末尾terminator
 	if hasTerm(hex) {
 		hex = hex[:len(hex)-1]
 	}
@@ -119,6 +152,8 @@ func hexToKeybytes(hex []byte) []byte {
 	return key
 }
 
+// 将nibbles内的数据两两合并到bytes里面
+// 输入的nibbles长度一定是偶数
 func decodeNibbles(nibbles []byte, bytes []byte) {
 	for bi, ni := 0, 0; ni < len(nibbles); bi, ni = bi+1, ni+2 {
 		bytes[bi] = nibbles[ni]<<4 | nibbles[ni+1]
@@ -126,7 +161,9 @@ func decodeNibbles(nibbles []byte, bytes []byte) {
 }
 
 // prefixLen returns the length of the common prefix of a and b.
+// 得到a和b共同前缀的长度
 func prefixLen(a, b []byte) int {
+	// length为min(len(a),len(b))
 	var i, length = 0, len(a)
 	if len(b) < length {
 		length = len(b)
@@ -140,6 +177,8 @@ func prefixLen(a, b []byte) int {
 }
 
 // hasTerm returns whether a hex key has the terminator flag.
+// 判断输入s是否有terminator,叶子节点返回true,扩展节点返回false
+// 也就是s的末尾项是不是16也就是16进制的10
 func hasTerm(s []byte) bool {
 	return len(s) > 0 && s[len(s)-1] == 16
 }

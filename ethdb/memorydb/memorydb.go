@@ -183,6 +183,7 @@ func (db *Database) NewIterator(prefix []byte, start []byte) ethdb.Iterator {
 }
 
 // Stat returns a particular internal stat of the database.
+// 内存数据库读取不到任何状态信息
 func (db *Database) Stat(property string) (string, error) {
 	return "", errors.New("unknown property")
 }

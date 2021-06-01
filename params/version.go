@@ -28,11 +28,13 @@ const (
 )
 
 // Version holds the textual version string.
+// 版本号的字符串, x.x.x
 var Version = func() string {
 	return fmt.Sprintf("%d.%d.%d", VersionMajor, VersionMinor, VersionPatch)
 }()
 
 // VersionWithMeta holds the textual version string including the metadata.
+// x.x.x-stable或者x.x.x-unstable
 var VersionWithMeta = func() string {
 	v := Version
 	if VersionMeta != "" {

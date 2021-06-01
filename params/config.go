@@ -26,6 +26,7 @@ import (
 )
 
 // Genesis hashes to enforce below configs on.
+// 各个网络的创世区块
 var (
 	MainnetGenesisHash = common.HexToHash("0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3")
 	RopstenGenesisHash = common.HexToHash("0x41941023680923e0fe4d74a34bdac8141f2540e3ae90623718e47d66d1ca4a2d")
@@ -134,6 +135,7 @@ var (
 	}
 
 	// RinkebyChainConfig contains the chain parameters to run a node on the Rinkeby test network.
+	// Rinkeyby使用的是Clique共识算法
 	RinkebyChainConfig = &ChainConfig{
 		ChainID:             big.NewInt(4),
 		HomesteadBlock:      big.NewInt(1),
@@ -268,6 +270,7 @@ type TrustedCheckpoint struct {
 }
 
 // HashEqual returns an indicator comparing the itself hash with given one.
+// 判断c.Hash与给定的hash是否一致
 func (c *TrustedCheckpoint) HashEqual(hash common.Hash) bool {
 	if c.Empty() {
 		return hash == common.Hash{}
@@ -276,6 +279,7 @@ func (c *TrustedCheckpoint) HashEqual(hash common.Hash) bool {
 }
 
 // Hash returns the hash of checkpoint's four key fields(index, sectionHead, chtRoot and bloomTrieRoot).
+// 就是将各个字段写入计算哈希
 func (c *TrustedCheckpoint) Hash() common.Hash {
 	var sectionIndex [8]byte
 	binary.BigEndian.PutUint64(sectionIndex[:], c.SectionIndex)
@@ -389,6 +393,8 @@ func (c *ChainConfig) String() string {
 	)
 }
 
+// 以下是一系列函数判断输入的块号是否已经超过了ChainConfig中对应的分叉位置
+
 // IsHomestead returns whether num is either equal to the homestead block or greater.
 func (c *ChainConfig) IsHomestead(num *big.Int) bool {
 	return isForked(c.HomesteadBlock, num)
@@ -463,6 +469,7 @@ func (c *ChainConfig) IsEWASM(num *big.Int) bool {
 
 // CheckCompatible checks whether scheduled fork transitions have been imported
 // with a mismatching chain configuration.
+// 找到给定高度第一个与输入配置不兼容的位置
 func (c *ChainConfig) CheckCompatible(newcfg *ChainConfig, height uint64) *ConfigCompatError {
 	bhead := new(big.Int).SetUint64(height)
 
@@ -578,18 +585,27 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *Confi
 
 // isForkIncompatible returns true if a fork scheduled at s1 cannot be rescheduled to
 // block s2 because head is already past the fork.
+// 判断一次分叉能不能从s1改期到s2
+// 返回true说明不能改期
+// 只要head越过了s1或者s2就不能改期
 func isForkIncompatible(s1, s2, head *big.Int) bool {
+	// 返回true的情况,head越过s1 或者 head越过了s2
 	return (isForked(s1, head) || isForked(s2, head)) && !configNumEqual(s1, s2)
 }
 
 // isForked returns whether a fork scheduled at block s is active at the given head block.
+// 输入s是分叉位置,head是当前位置
+// 判断是否已经进行了s分叉
 func isForked(s, head *big.Int) bool {
 	if s == nil || head == nil {
 		return false
 	}
+	// 当s<=head时说明当前head已经进入了s分叉
 	return s.Cmp(head) <= 0
 }
 
+// 判断x,y是否相等 x和y都可能为nil
+// x,y都是nil的时候会返回true
 func configNumEqual(x, y *big.Int) bool {
 	if x == nil {
 		return y == nil
@@ -610,6 +626,8 @@ type ConfigCompatError struct {
 	RewindTo uint64
 }
 
+// RewindTo代表storedblock和newblock较小的那个
+// 如果storedblock和newblock都是nil那么RewindTo代表0
 func newCompatError(what string, storedblock, newblock *big.Int) *ConfigCompatError {
 	var rew *big.Int
 	switch {
@@ -636,6 +654,7 @@ func (err *ConfigCompatError) Error() string {
 //
 // Rules is a one time interface meaning that it shouldn't be used in between transition
 // phases.
+// Rules代表了某条链的状态,是不是进入了某次硬分叉
 type Rules struct {
 	ChainID                                                 *big.Int
 	IsHomestead, IsEIP150, IsEIP155, IsEIP158               bool
@@ -644,6 +663,7 @@ type Rules struct {
 }
 
 // Rules ensures c's ChainID is not nil.
+// 根据ChainConfig以及当前区块号返回Rules对象,代表当前各个硬分叉的状态
 func (c *ChainConfig) Rules(num *big.Int) Rules {
 	chainID := c.ChainID
 	if chainID == nil {

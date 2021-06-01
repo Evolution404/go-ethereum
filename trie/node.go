@@ -27,22 +27,31 @@ import (
 
 var indices = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f", "[17]"}
 
+// 节点的接口,以下四种节点都要实现这两个方法
 type node interface {
 	fstring(string) string
 	cache() (hashNode, bool)
 }
 
+// MPT中有四种类型的节点
 type (
+	// 分支节点
 	fullNode struct {
 		Children [17]node // Actual trie node data to encode/decode (needs custom encoder)
 		flags    nodeFlag
 	}
+	// 叶子节点或者扩展节点
+	// Val是valueNode说明本身是叶子节点
+	// Val是fullNode类型说明本身是扩展节点
 	shortNode struct {
 		Key   []byte
 		Val   node
 		flags nodeFlag
 	}
-	hashNode  []byte
+	// 表示fullNode或shortNode的rlp编码的哈希值
+	// 代表该节点还没有载入内存
+	hashNode []byte
+	// MPT中真正存储数据的节点,是叶子节点,不能携带子节点
 	valueNode []byte
 )
 
@@ -51,10 +60,12 @@ type (
 var nilValueNode = valueNode(nil)
 
 // EncodeRLP encodes a full node into the consensus RLP format.
+// 对fullNode进行rlp编码,只编码内部的17个node
 func (n *fullNode) EncodeRLP(w io.Writer) error {
 	var nodes [17]node
 
 	for i, child := range &n.Children {
+		// 修改所有child为nil的项为nilValueNode
 		if child != nil {
 			nodes[i] = child
 		} else {
@@ -73,10 +84,13 @@ type nodeFlag struct {
 	dirty bool     // whether the node has changes that must be written to the database
 }
 
+// fullNode和shortNode需要缓存哈希
 func (n *fullNode) cache() (hashNode, bool)  { return n.flags.hash, n.flags.dirty }
 func (n *shortNode) cache() (hashNode, bool) { return n.flags.hash, n.flags.dirty }
-func (n hashNode) cache() (hashNode, bool)   { return nil, true }
-func (n valueNode) cache() (hashNode, bool)  { return nil, true }
+
+// hashNode,valueNode不需要缓存哈希
+func (n hashNode) cache() (hashNode, bool)  { return nil, true }
+func (n valueNode) cache() (hashNode, bool) { return nil, true }
 
 // Pretty printing.
 func (n *fullNode) String() string  { return n.fstring("") }
@@ -114,6 +128,14 @@ func mustDecodeNode(hash, buf []byte) node {
 }
 
 // decodeNode parses the RLP encoding of a trie node.
+// 从rlp编码解码到node对象,输入hash用来给解码对象填充flag字段
+// 可以解码short和full两种node对象
+// short长度是2,full长度是17
+// shortNode的编码
+//   [key,node]长度是2,node的编码可能是list或者string类型
+//   node是编码是list说明当时编码是直接对对象编码->恢复成对应的对象
+//   node是string说明编码的是哈希值->恢复成hashNode
+// fullNode的编码
 func decodeNode(hash, buf []byte) (node, error) {
 	if len(buf) == 0 {
 		return nil, io.ErrUnexpectedEOF
@@ -134,13 +156,16 @@ func decodeNode(hash, buf []byte) (node, error) {
 	}
 }
 
+// 解码返回shortNode对象
 func decodeShort(hash, elems []byte) (node, error) {
+	// 把shortNode的key读取出来
 	kbuf, rest, err := rlp.SplitString(elems)
 	if err != nil {
 		return nil, err
 	}
 	flag := nodeFlag{hash: hash}
 	key := compactToHex(kbuf)
+	// 判断是叶子节点,所以Val字段解码成valueNode类型
 	if hasTerm(key) {
 		// value node
 		val, _, err := rlp.SplitString(rest)
@@ -149,6 +174,7 @@ func decodeShort(hash, elems []byte) (node, error) {
 		}
 		return &shortNode{key, append(valueNode{}, val...), flag}, nil
 	}
+	// 不是叶子节点,解码成hashNode
 	r, _, err := decodeRef(rest)
 	if err != nil {
 		return nil, wrapError(err, "val")
@@ -156,6 +182,7 @@ func decodeShort(hash, elems []byte) (node, error) {
 	return &shortNode{key, r, flag}, nil
 }
 
+// 解码返回fullNode对象
 func decodeFull(hash, elems []byte) (*fullNode, error) {
 	n := &fullNode{flags: nodeFlag{hash: hash}}
 	for i := 0; i < 16; i++ {
@@ -177,12 +204,18 @@ func decodeFull(hash, elems []byte) (*fullNode, error) {
 
 const hashLen = len(common.Hash{})
 
+// 解码返回hashNode对象
 func decodeRef(buf []byte) (node, []byte, error) {
 	kind, val, rest, err := rlp.Split(buf)
 	if err != nil {
 		return nil, buf, err
 	}
+	// 保存引用节点的时候有三种可能
+	//   1. 一般的情况直接保存rlp编码的哈希值
+	//   2. rlp编码之后小于等于32字节,为了节省空间还减少一次哈希计算直接保存rlp编码,不再计算哈希
+	//   3. 空节点,rlp编码的空字符串
 	switch {
+	// 列表说明直接保存的rlp编码,rlp编码长度必须小于等于32
 	case kind == rlp.List:
 		// 'embedded' node reference. The encoding must be smaller
 		// than a hash in order to be valid.
@@ -195,6 +228,7 @@ func decodeRef(buf []byte) (node, []byte, error) {
 	case kind == rlp.String && len(val) == 0:
 		// empty node
 		return nil, rest, nil
+	// 保存了一个哈希值,是hashNode
 	case kind == rlp.String && len(val) == 32:
 		return append(hashNode{}, val...), rest, nil
 	default:

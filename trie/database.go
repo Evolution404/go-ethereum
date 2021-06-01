@@ -70,6 +70,7 @@ type Database struct {
 	diskdb ethdb.KeyValueStore // Persistent storage for matured trie nodes
 
 	cleans  *fastcache.Cache            // GC friendly memory cache of clean node RLPs
+	// 对梅克尔树中的节点进行引用计数
 	dirties map[common.Hash]*cachedNode // Data and references relationships of dirty trie nodes
 	oldest  common.Hash                 // Oldest tracked node, flush-list head
 	newest  common.Hash                 // Newest tracked node, flush-list tail
@@ -94,11 +95,14 @@ type Database struct {
 // rawNode is a simple binary blob used to differentiate between collapsed trie
 // nodes and already encoded RLP binary blobs (while at the same time store them
 // in the same cache fields).
+// 用于区分collapsed节点和rlp编码后的节点
+// rawNode代表原始的节点,保存了rlp编码
 type rawNode []byte
 
 func (n rawNode) cache() (hashNode, bool)   { panic("this should never end up in a live trie") }
 func (n rawNode) fstring(ind string) string { panic("this should never end up in a live trie") }
 
+// 将rlp编码写入w中
 func (n rawNode) EncodeRLP(w io.Writer) error {
 	_, err := w.Write(n)
 	return err
@@ -138,13 +142,19 @@ func (n rawShortNode) fstring(ind string) string { panic("this should never end 
 
 // cachedNode is all the information we know about a single cached trie node
 // in the memory database write layer.
+// 代表一个被引用的节点
 type cachedNode struct {
+	// 这里的node可能是rawNode,rawShortNode,rawFullNode
+	// rawNode类型保存了rlp编码
+	// rawShortNode,rawFullNode是去掉了flags字段后的类型
 	node node   // Cached collapsed trie node, or raw rlp data
 	size uint16 // Byte size of the useful cached data
 
+	// 这个节点被引用的次数,换句话说也就是父亲的个数
 	parents  uint32                 // Number of live nodes referencing this one
 	children map[common.Hash]uint16 // External children referenced by this node
 
+	// 用于flush-list链表,每个cachedNode都在flush-list链表中
 	flushPrev common.Hash // Previous node in the flush-list
 	flushNext common.Hash // Next node in the flush-list
 }
@@ -160,6 +170,8 @@ const cachedNodeChildrenSize = 48
 
 // rlp returns the raw rlp encoded blob of the cached trie node, either directly
 // from the cache, or by regenerating it from the collapsed node.
+// 获取cachedNode的rlp编码
+// 如果是rawNode类型直接返回,否则进行计算编码
 func (n *cachedNode) rlp() []byte {
 	if node, ok := n.node.(rawNode); ok {
 		return node
@@ -173,16 +185,21 @@ func (n *cachedNode) rlp() []byte {
 
 // obj returns the decoded and expanded trie node, either directly from the cache,
 // or by regenerating it from the rlp encoded blob.
+// 获取node的原始类型,输入hash用来恢复flags字段
 func (n *cachedNode) obj(hash common.Hash) node {
+	// rawNode类型从rlp编码进行解码
 	if node, ok := n.node.(rawNode); ok {
 		return mustDecodeNode(hash[:], node)
 	}
+	// 其他情况直接恢复
 	return expandNode(hash[:], n.node)
 }
 
 // forChilds invokes the callback for all the tracked children of this node,
 // both the implicit ones from inside the node as well as the explicit ones
 // from outside the node.
+// 对cachedNode的每一个children调用onChild
+// 如果n.node不是rawNode还将对n.node整棵树上的hashNode调用onChild
 func (n *cachedNode) forChilds(onChild func(hash common.Hash)) {
 	for child := range n.children {
 		onChild(child)
@@ -194,6 +211,7 @@ func (n *cachedNode) forChilds(onChild func(hash common.Hash)) {
 
 // forGatherChildren traverses the node hierarchy of a collapsed storage node and
 // invokes the callback for all the hashnode children.
+// 遍历梅克尔树,每遇到一个hashNode输入它的哈希调用onChild
 func forGatherChildren(n node, onChild func(hash common.Hash)) {
 	switch n := n.(type) {
 	case *rawShortNode:
@@ -212,12 +230,15 @@ func forGatherChildren(n node, onChild func(hash common.Hash)) {
 
 // simplifyNode traverses the hierarchy of an expanded memory node and discards
 // all the internal caches, returning a node that only contains the raw data.
+// 去掉整棵树的flags字段变成rawShortNode和rawFullNode类型
 func simplifyNode(n node) node {
 	switch n := n.(type) {
+	// shortNode丢弃flags字段
 	case *shortNode:
 		// Short nodes discard the flags and cascade
 		return &rawShortNode{Key: n.Key, Val: simplifyNode(n.Val)}
 
+	// fullNode也丢弃flags字段
 	case *fullNode:
 		// Full nodes discard the flags and cascade
 		node := rawFullNode(n.Children)
@@ -238,6 +259,7 @@ func simplifyNode(n node) node {
 
 // expandNode traverses the node hierarchy of a collapsed storage node and converts
 // all fields and keys into expanded memory form.
+// 从rawShortNode或者rawFullNode恢复到原来的类型
 func expandNode(hash hashNode, n node) node {
 	switch n := n.(type) {
 	case *rawShortNode:
@@ -275,13 +297,16 @@ func expandNode(hash hashNode, n node) node {
 // Config defines all necessary options for database.
 type Config struct {
 	Cache     int    // Memory allowance (MB) to use for caching trie nodes in memory
+	// fastcache保存到的文件
 	Journal   string // Journal of clean cache to survive node restarts
+	// 是否记录梅克尔树的key的原像
 	Preimages bool   // Flag whether the preimage of trie key is recorded
 }
 
 // NewDatabase creates a new trie database to store ephemeral trie content before
 // its written out to disk or garbage collected. No read cache is created, so all
 // data retrievals will hit the underlying disk database.
+// 创建一个梅克尔树数据库
 func NewDatabase(diskdb ethdb.KeyValueStore) *Database {
 	return NewDatabaseWithConfig(diskdb, nil)
 }
@@ -289,6 +314,7 @@ func NewDatabase(diskdb ethdb.KeyValueStore) *Database {
 // NewDatabaseWithConfig creates a new trie database to store ephemeral trie content
 // before its written out to disk or garbage collected. It also acts as a read cache
 // for nodes loaded from disk.
+// 根据配置信息新建一个梅克尔树数据库
 func NewDatabaseWithConfig(diskdb ethdb.KeyValueStore, config *Config) *Database {
 	var cleans *fastcache.Cache
 	if config != nil && config.Cache > 0 {
@@ -320,6 +346,8 @@ func (db *Database) DiskDB() ethdb.KeyValueStore {
 // The blob size must be specified to allow proper size tracking.
 // All nodes inserted by this function will be reference tracked
 // and in theory should only used for **trie nodes** insertion.
+// 根据输入的hash和node插入到db.dirties中
+// size保存在cachedNode.size中,并且用来记录db.dirtiesSize
 func (db *Database) insert(hash common.Hash, size int, node node) {
 	// If the node's already cached, skip
 	if _, ok := db.dirties[hash]; ok {
@@ -333,6 +361,7 @@ func (db *Database) insert(hash common.Hash, size int, node node) {
 		size:      uint16(size),
 		flushPrev: db.newest,
 	}
+	// 给所有子节点的引用都加一
 	entry.forChilds(func(child common.Hash) {
 		if c := db.dirties[child]; c != nil {
 			c.parents++
@@ -341,11 +370,15 @@ func (db *Database) insert(hash common.Hash, size int, node node) {
 	db.dirties[hash] = entry
 
 	// Update the flush-list endpoints
+	// 如果是插入的第一个,让oldest和newest都初始化为当前这个
 	if db.oldest == (common.Hash{}) {
 		db.oldest, db.newest = hash, hash
 	} else {
+		// 不是第一个,修改newest以及让前一个插入的连接到当前这个
 		db.dirties[db.newest].flushNext, db.newest = hash, hash
 	}
+	// 每插入一个新增了一个hash->value键值对
+	// 所以大小是 哈希的大小和插入元素的大小之和
 	db.dirtiesSize += common.StorageSize(common.HashLength + entry.size)
 }
 
@@ -354,6 +387,7 @@ func (db *Database) insert(hash common.Hash, size int, node node) {
 // only use if the preimage will NOT be changed later on.
 //
 // Note, this method assumes that the database's lock is held!
+// 修改db.preimages,增加一个键值对
 func (db *Database) insertPreimage(hash common.Hash, preimage []byte) {
 	// Short circuit if preimage collection is disabled
 	if db.preimages == nil {
@@ -369,8 +403,10 @@ func (db *Database) insertPreimage(hash common.Hash, preimage []byte) {
 
 // node retrieves a cached trie node from memory, or returns nil if none can be
 // found in the memory cache.
+// 输入哈希从数据库读取节点,返回的是node类型
 func (db *Database) node(hash common.Hash) node {
 	// Retrieve the node from the clean cache if available
+	// 先尝试从cleans中读取
 	if db.cleans != nil {
 		if enc := db.cleans.Get(nil, hash[:]); enc != nil {
 			memcacheCleanHitMeter.Mark(1)
@@ -379,6 +415,7 @@ func (db *Database) node(hash common.Hash) node {
 		}
 	}
 	// Retrieve the node from the dirty cache if available
+	// 再尝试从dirty中读取
 	db.lock.RLock()
 	dirty := db.dirties[hash]
 	db.lock.RUnlock()
@@ -391,10 +428,12 @@ func (db *Database) node(hash common.Hash) node {
 	memcacheDirtyMissMeter.Mark(1)
 
 	// Content unavailable in memory, attempt to retrieve from disk
+	// 最后从硬盘数据库中读取
 	enc, err := db.diskdb.Get(hash[:])
 	if err != nil || enc == nil {
 		return nil
 	}
+	// 从数据库中读取后加入到cleans中
 	if db.cleans != nil {
 		db.cleans.Set(hash[:], enc)
 		memcacheCleanMissMeter.Mark(1)
@@ -405,6 +444,9 @@ func (db *Database) node(hash common.Hash) node {
 
 // Node retrieves an encoded cached trie node from memory. If it cannot be found
 // cached, the method queries the persistent database for the content.
+// 从数据库中查询节点,返回的是rlp编码,字节数组
+// 先从cleans中查询,再从dirties中查询,最后从diskdb中查询
+// 从diskdb中查询成功后会缓存到cleans中
 func (db *Database) Node(hash common.Hash) ([]byte, error) {
 	// It doesn't make sense to retrieve the metaroot
 	if hash == (common.Hash{}) {
@@ -445,6 +487,8 @@ func (db *Database) Node(hash common.Hash) ([]byte, error) {
 
 // preimage retrieves a cached trie node pre-image from memory. If it cannot be
 // found cached, the method queries the persistent database for the content.
+// 输入哈希获取原像
+// 先从preimage中读取,读取不到从diskdb中读取
 func (db *Database) preimage(hash common.Hash) []byte {
 	// Short circuit if preimage collection is disabled
 	if db.preimages == nil {
@@ -464,6 +508,7 @@ func (db *Database) preimage(hash common.Hash) []byte {
 // Nodes retrieves the hashes of all the nodes cached within the memory database.
 // This method is extremely expensive and should only be used to validate internal
 // states in test code.
+// 返回dirties中保存的所有节点的哈希
 func (db *Database) Nodes() []common.Hash {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
@@ -481,6 +526,7 @@ func (db *Database) Nodes() []common.Hash {
 // This function is used to add reference between internal trie node
 // and external node(e.g. storage trie root), all internal trie nodes
 // are referenced together by database itself.
+// 用来在外部节点和内部节点间增加引用
 func (db *Database) Reference(child common.Hash, parent common.Hash) {
 	db.lock.Lock()
 	defer db.lock.Unlock()
@@ -499,11 +545,14 @@ func (db *Database) reference(child common.Hash, parent common.Hash) {
 	if db.dirties[parent].children == nil {
 		db.dirties[parent].children = make(map[common.Hash]uint16)
 		db.childrenSize += cachedNodeChildrenSize
+	// parent已经引用了child直接返回
 	} else if _, ok = db.dirties[parent].children[child]; ok && parent != (common.Hash{}) {
 		return
 	}
 	node.parents++
 	db.dirties[parent].children[child]++
+	// 只有第一次才需要增加大小
+	// hash->uint16,所以是一个哈希的大小加上uint16的大小
 	if db.dirties[parent].children[child] == 1 {
 		db.childrenSize += common.HashLength + 2 // uint16 counter
 	}
@@ -535,10 +584,15 @@ func (db *Database) Dereference(root common.Hash) {
 }
 
 // dereference is the private locked version of Dereference.
+// 删除parent对child的引用
+// 首先操作parent的children以及childrenSize
+// 然后让child.parent减一
+// 如果child.parent减一后为0说明没有引用它的了要中flush-list中删除
 func (db *Database) dereference(child common.Hash, parent common.Hash) {
 	// Dereference the parent-child
 	node := db.dirties[parent]
 
+	// child还保存在node.children中,尝试从node.children中删除这个child的映射
 	if node.children != nil && node.children[child] > 0 {
 		node.children[child]--
 		if node.children[child] == 0 {
@@ -547,6 +601,7 @@ func (db *Database) dereference(child common.Hash, parent common.Hash) {
 		}
 	}
 	// If the child does not exist, it's a previously committed node.
+	// child不在node.children中,说明之前提交过了
 	node, ok := db.dirties[child]
 	if !ok {
 		return
@@ -562,17 +617,21 @@ func (db *Database) dereference(child common.Hash, parent common.Hash) {
 	if node.parents == 0 {
 		// Remove the node from the flush-list
 		switch child {
+		// child是oldest那么oldest变成child的下一个
 		case db.oldest:
 			db.oldest = node.flushNext
 			db.dirties[node.flushNext].flushPrev = common.Hash{}
+		// child是newest那么newest变成child的前一个
 		case db.newest:
 			db.newest = node.flushPrev
 			db.dirties[node.flushPrev].flushNext = common.Hash{}
 		default:
+			// 一般情况的链表操作
 			db.dirties[node.flushPrev].flushNext = node.flushNext
 			db.dirties[node.flushNext].flushPrev = node.flushPrev
 		}
 		// Dereference all children and delete the node
+		// 要删除这个节点,这个节点作为父节点,对其子节点也都要dereference
 		node.forChilds(func(hash common.Hash) {
 			db.dereference(hash, child)
 		})
@@ -589,11 +648,13 @@ func (db *Database) dereference(child common.Hash, parent common.Hash) {
 //
 // Note, this method is a non-synchronized mutator. It is unsafe to call this
 // concurrently with other mutators.
+// 将节点写入到数据库中,使得内存占用小于输入的大小
 func (db *Database) Cap(limit common.StorageSize) error {
 	// Create a database batch to flush persistent data out. It is important that
 	// outside code doesn't see an inconsistent state (referenced data removed from
 	// memory cache during commit but not yet in persistent storage). This is ensured
 	// by only uncaching existing data when the database write finalizes.
+	// 记录写入数据库前有多少dirties,dirtiesSize
 	nodes, storage, start := len(db.dirties), db.dirtiesSize, time.Now()
 	batch := db.diskdb.NewBatch()
 
@@ -605,6 +666,7 @@ func (db *Database) Cap(limit common.StorageSize) error {
 
 	// If the preimage cache got large enough, push to disk. If it's still small
 	// leave for later to deduplicate writes.
+	// 先向数据库写入preimages
 	flushPreimages := db.preimagesSize > 4*1024*1024
 	if flushPreimages {
 		if db.preimages == nil {
@@ -620,6 +682,7 @@ func (db *Database) Cap(limit common.StorageSize) error {
 		}
 	}
 	// Keep committing nodes from the flush-list until we're below allowance
+	// 遍历flush-list,进行写入
 	oldest := db.oldest
 	for size > limit && oldest != (common.Hash{}) {
 		// Fetch the oldest referenced node and push into the batch
@@ -637,13 +700,16 @@ func (db *Database) Cap(limit common.StorageSize) error {
 		// Iterate to the next flush item, or abort if the size cap was achieved. Size
 		// is the total size, including the useful cached data (hash -> blob), the
 		// cache item metadata, as well as external children mappings.
+		// 计算写入这个节点后减少了多少size
 		size -= common.StorageSize(common.HashLength + int(node.size) + cachedNodeSize)
 		if node.children != nil {
 			size -= common.StorageSize(cachedNodeChildrenSize + len(node.children)*(common.HashLength+2))
 		}
+		// 链表后移
 		oldest = node.flushNext
 	}
 	// Flush out any remainder data from the last batch
+	// 写入上面循环结束后剩余的数据
 	if err := batch.Write(); err != nil {
 		log.Error("Failed to write flush list to disk", "err", err)
 		return err
@@ -652,6 +718,7 @@ func (db *Database) Cap(limit common.StorageSize) error {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
+	// 重置preimages
 	if flushPreimages {
 		if db.preimages == nil {
 			log.Error("Attempted to reset preimage cache whilst disabled")
@@ -659,6 +726,9 @@ func (db *Database) Cap(limit common.StorageSize) error {
 			db.preimages, db.preimagesSize = make(map[common.Hash][]byte), 0
 		}
 	}
+	// 从flush-list中删除已经写入的节点
+	// 从dirties中删除已经写入的节点
+	// 重新计算dirtiesSize
 	for db.oldest != oldest {
 		node := db.dirties[db.oldest]
 		delete(db.dirties, db.oldest)
@@ -672,6 +742,7 @@ func (db *Database) Cap(limit common.StorageSize) error {
 	if db.oldest != (common.Hash{}) {
 		db.dirties[db.oldest].flushPrev = common.Hash{}
 	}
+	// 之前的len(dirties)与现在的len(dirties)的差就是写入的节点个数
 	db.flushnodes += uint64(nodes - len(db.dirties))
 	db.flushsize += storage - db.dirtiesSize
 	db.flushtime += time.Since(start)
@@ -856,7 +927,9 @@ func (db *Database) Size() (common.StorageSize, common.StorageSize) {
 
 // saveCache saves clean state cache to given directory path
 // using specified CPU cores.
+// 可以指定线程数保存fastcache到文件中
 func (db *Database) saveCache(dir string, threads int) error {
+	// 根本没用fastcache直接返回
 	if db.cleans == nil {
 		return nil
 	}
@@ -874,12 +947,14 @@ func (db *Database) saveCache(dir string, threads int) error {
 
 // SaveCache atomically saves fast cache data to the given dir using all
 // available CPU cores.
+// 保存fastcache到文件中,使用cpu的所有核心
 func (db *Database) SaveCache(dir string) error {
 	return db.saveCache(dir, runtime.GOMAXPROCS(0))
 }
 
 // SaveCachePeriodically atomically saves fast cache data to the given dir with
 // the specified interval. All dump operation will only use a single CPU core.
+// 定期将db.clean保存到文件中,使用单线程保存
 func (db *Database) SaveCachePeriodically(dir string, interval time.Duration, stopCh <-chan struct{}) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

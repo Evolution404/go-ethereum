@@ -63,7 +63,7 @@ type Compacter interface {
 
 // KeyValueStore contains all the methods required to allow handling different
 // key-value data stores backing the high level database.
-// 包括了操作数据库的所有方法,实现了该接口就可以成为数据库对象
+// 包含操作键值数据库的所有方法
 type KeyValueStore interface {
 	KeyValueReader
 	KeyValueWriter
@@ -78,11 +78,15 @@ type KeyValueStore interface {
 type AncientReader interface {
 	// HasAncient returns an indicator whether the specified data exists in the
 	// ancient store.
+	// 对应KeyValueReader的Has方法
 	HasAncient(kind string, number uint64) (bool, error)
 
 	// Ancient retrieves an ancient binary blob from the append-only immutable files.
+	// 对应KeyValueReader的Get方法
+	// 查询指定表的第number项
 	Ancient(kind string, number uint64) ([]byte, error)
 
+	// 以下是新增的两个方法,可以用来获取保存的数据条数和占用的存储空间
 	// Ancients returns the ancient item numbers in the ancient store.
 	Ancients() (uint64, error)
 
@@ -94,17 +98,21 @@ type AncientReader interface {
 type AncientWriter interface {
 	// AppendAncient injects all binary blobs belong to block at the end of the
 	// append-only immutable table files.
+	// 旧数据不允许进行修改只能向后追加数据
 	AppendAncient(number uint64, hash, header, body, receipt, td []byte) error
 
 	// TruncateAncients discards all but the first n ancient data from the ancient store.
+	// 保留旧数据的前n条数据,其余的被清除
 	TruncateAncients(n uint64) error
 
 	// Sync flushes all in-memory ancient store data to disk.
+	// 进行数据修改后最终调用Sync方法保证写入硬盘
 	Sync() error
 }
 
 // Reader contains the methods required to read data from both key-value as well as
 // immutable ancient data.
+// Reader对键值数据库和旧数据都能读
 type Reader interface {
 	KeyValueReader
 	AncientReader
@@ -112,6 +120,7 @@ type Reader interface {
 
 // Writer contains the methods required to write data to both key-value as well as
 // immutable ancient data.
+// Writer对键值数据库和旧数据都能写
 type Writer interface {
 	KeyValueWriter
 	AncientWriter
@@ -119,6 +128,7 @@ type Writer interface {
 
 // AncientStore contains all the methods required to allow handling different
 // ancient data stores backing immutable chain data store.
+// 旧数据的读写器
 type AncientStore interface {
 	AncientReader
 	AncientWriter
@@ -127,6 +137,7 @@ type AncientStore interface {
 
 // Database contains all the methods required by the high level database to not
 // only access the key-value data store but also the chain freezer.
+// Database实现了对键值数据库和旧数据的所有操作
 type Database interface {
 	Reader
 	Writer

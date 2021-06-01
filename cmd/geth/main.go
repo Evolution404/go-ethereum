@@ -246,6 +246,7 @@ func init() {
 	app.Flags = append(app.Flags, metricsFlags...)
 
 	app.Before = func(ctx *cli.Context) error {
+		// debug.Setup设置了log模块的输出配置
 		return debug.Setup(ctx)
 	}
 	app.After = func(ctx *cli.Context) error {

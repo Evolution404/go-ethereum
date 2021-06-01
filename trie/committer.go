@@ -31,6 +31,7 @@ import (
 const leafChanSize = 200
 
 // leaf represents a trie leaf value
+// 代表梅克尔树的叶子节点
 type leaf struct {
 	size int         // size of the rlp data (estimate)
 	hash common.Hash // hash of rlp data
@@ -43,6 +44,8 @@ type leaf struct {
 // some level of parallelism.
 // By 'some level' of parallelism, it's still the case that all leaves will be
 // processed sequentially - onleaf will never be called in parallel or out of order.
+// committer内部有预分配的空间tmp
+// onleaf将在处理完叶子节点后调用
 type committer struct {
 	tmp sliceBuffer
 	sha crypto.KeccakState
@@ -73,6 +76,7 @@ func returnCommitterToPool(h *committer) {
 }
 
 // commit collapses a node down into a hash node and inserts it into the database
+// 向db中提交node,返回node压缩后的hashNode
 func (c *committer) Commit(n node, db *Database) (hashNode, error) {
 	if db == nil {
 		return nil, errors.New("no db provided")
@@ -88,10 +92,13 @@ func (c *committer) Commit(n node, db *Database) (hashNode, error) {
 func (c *committer) commit(n node, db *Database) (node, error) {
 	// if this path is clean, use available cached data
 	hash, dirty := n.cache()
+	// 有缓存的哈希,还没被修改过,那么直接返回就得了
 	if hash != nil && !dirty {
 		return hash, nil
 	}
 	// Commit children, then parent, and remove remove the dirty flag.
+	// 输入的node只要是shortNode或者fullNode就会调用store在其中发送到leafCh中
+	// 但是commitLoop中会判断接收的node是不是内嵌了valueNode,只有valueNode才会调用回调
 	switch cn := n.(type) {
 	case *shortNode:
 		// Commit child
@@ -99,6 +106,8 @@ func (c *committer) commit(n node, db *Database) (node, error) {
 
 		// If the child is fullnode, recursively commit.
 		// Otherwise it can only be hashNode or valueNode.
+		// 处理子节点,hashNode,valueNode不需要特殊处理
+		// 子节点是fullNode进行递归的commit
 		if _, ok := cn.Val.(*fullNode); ok {
 			childV, err := c.commit(cn.Val, db)
 			if err != nil {
@@ -109,6 +118,7 @@ func (c *committer) commit(n node, db *Database) (node, error) {
 		// The key needs to be copied, since we're delivering it to database
 		collapsed.Key = hexToCompact(cn.Key)
 		hashedNode := c.store(collapsed, db)
+		// 可能保存成了hashNode,也可能由于rlp编码长度不足32没变成hashNode
 		if hn, ok := hashedNode.(hashNode); ok {
 			return hn, nil
 		}
@@ -135,6 +145,8 @@ func (c *committer) commit(n node, db *Database) (node, error) {
 }
 
 // commitChildren commits the children of the given fullnode
+// 输入fullNode,对所有子节点进行提交
+// 返回的node前16项都是hashNode,第17项可能valueNode
 func (c *committer) commitChildren(n *fullNode, db *Database) ([17]node, error) {
 	var children [17]node
 	for i := 0; i < 16; i++ {
@@ -145,6 +157,7 @@ func (c *committer) commitChildren(n *fullNode, db *Database) ([17]node, error) 
 		// If it's the hashed child, save the hash value directly.
 		// Note: it's impossible that the child in range [0, 15]
 		// is a valuenode.
+		// 如果是hashNode的话,进行类型转换
 		if hn, ok := child.(hashNode); ok {
 			children[i] = hn
 			continue
@@ -168,6 +181,10 @@ func (c *committer) commitChildren(n *fullNode, db *Database) ([17]node, error) 
 // store hashes the node n and if we have a storage layer specified, it writes
 // the key/value pair to it and tracks any node->child references as well as any
 // node->external trie references.
+// 输入的n如果cache是nil直接返回n,不会操作leafCh或者db
+// 输入的n有cache的话返回缓存的hash
+// 在有leafCh的情况下向leafCh发送输入的node
+// 如果没有leafCh但是db不是nil的话调用db.insert
 func (c *committer) store(n node, db *Database) node {
 	// Larger nodes are replaced by their hash and stored in the database.
 	var (
@@ -187,6 +204,7 @@ func (c *committer) store(n node, db *Database) node {
 	}
 	// If we're using channel-based leaf-reporting, send to channel.
 	// The leaf channel will be active only when there an active leaf-callback
+	// 每保存一个叶子就向leafCh发送一个leaf对象
 	if c.leafCh != nil {
 		c.leafCh <- &leaf{
 			size: size,
@@ -204,7 +222,9 @@ func (c *committer) store(n node, db *Database) node {
 }
 
 // commitLoop does the actual insert + leaf callback for nodes.
+// 从c.leafCh不断接收叶子节点
 func (c *committer) commitLoop(db *Database) {
+	// 当管道被关闭的时候for停止
 	for item := range c.leafCh {
 		var (
 			hash = item.hash
@@ -216,6 +236,7 @@ func (c *committer) commitLoop(db *Database) {
 		db.insert(hash, size, n)
 		db.lock.Unlock()
 
+		// 只有内嵌了valueNode的才能调用回调函数
 		if c.onleaf != nil {
 			switch n := n.(type) {
 			case *shortNode:
@@ -233,6 +254,7 @@ func (c *committer) commitLoop(db *Database) {
 	}
 }
 
+// 计算输入数据的哈希值,然后返回hashNode
 func (c *committer) makeHashNode(data []byte) hashNode {
 	n := make(hashNode, c.sha.Size())
 	c.sha.Reset()
@@ -245,6 +267,7 @@ func (c *committer) makeHashNode(data []byte) hashNode {
 // rlp-encoding it (zero allocs). This method has been experimentally tried, and with a trie
 // with 1000 leafs, the only errors above 1% are on small shortnodes, where this
 // method overestimates by 2 or 3 bytes (e.g. 37 instead of 35)
+// 估算一棵树进行rlp编码后的大小
 func estimateSize(n node) int {
 	switch n := n.(type) {
 	case *shortNode:

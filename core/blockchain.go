@@ -114,6 +114,7 @@ const (
 	// - Version 8
 	//  The following incompatible database changes were added:
 	//    * New scheme for contract code in order to separate the codes and trie nodes
+	// 当前版本是8
 	BlockChainVersion uint64 = 8
 )
 

@@ -30,6 +30,7 @@ import (
 
 var (
 	// emptyRoot is the known root hash of an empty trie.
+	// 对[128]进行keccak256计算
 	emptyRoot = common.HexToHash("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
 
 	// emptyState is the known hash of an empty state trie entry.
@@ -50,6 +51,7 @@ var (
 // It's used by state sync and commit to allow handling external references
 // between account and storage tries. And also it's used in the state healing
 // for extracting the raw states(leaf nodes) with corresponding paths.
+// 当到达叶子节点的时候调用的函数
 type LeafCallback func(paths [][]byte, hexpath []byte, leaf []byte, parent common.Hash) error
 
 // Trie is a Merkle Patricia Trie.
@@ -57,8 +59,11 @@ type LeafCallback func(paths [][]byte, hexpath []byte, leaf []byte, parent commo
 // Use New to create a trie that sits on top of a database.
 //
 // Trie is not safe for concurrent use.
+// 梅克尔帕特里夏树对象
 type Trie struct {
+	// 保存数据库对象,用来读取节点内容
 	db   *Database
+	// 保存根节点
 	root node
 	// Keep track of the number leafs which have been inserted since the last
 	// hashing operation. This number will not directly map to the number of
@@ -67,6 +72,7 @@ type Trie struct {
 }
 
 // newFlag returns the cache flag value for a newly created node.
+// 设置dirty为true
 func (t *Trie) newFlag() nodeFlag {
 	return nodeFlag{dirty: true}
 }
@@ -77,6 +83,8 @@ func (t *Trie) newFlag() nodeFlag {
 // trie is initially empty and does not require a database. Otherwise,
 // New will panic if db is nil and returns a MissingNodeError if root does
 // not exist in the database. Accessing the trie loads nodes from db on demand.
+// root为空,新建一个空树
+// root不为空,根据root从数据库中重新加载整颗树
 func New(root common.Hash, db *Database) (*Trie, error) {
 	if db == nil {
 		panic("trie.New called without a database")
@@ -84,6 +92,7 @@ func New(root common.Hash, db *Database) (*Trie, error) {
 	trie := &Trie{
 		db: db,
 	}
+	// 如果root不为空,调用resolveHash加载整个树
 	if root != (common.Hash{}) && root != emptyRoot {
 		rootnode, err := trie.resolveHash(root[:], nil)
 		if err != nil {
@@ -273,7 +282,12 @@ func (t *Trie) TryUpdate(key, value []byte) error {
 	return nil
 }
 
+// prefix是已经处理完的部分key,key是还没有进行处理的key
+// 存储元素完整的key是prefix+key
+// 输入的n代表要插入的开始位置,可能是fullNode,shortNode,hashNode,valueNode,nil
+// 输入的value一定是valueNode类型
 func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error) {
+	// 输入的key长度为0,只有可能是在更新某个节点递归到最后一步
 	if len(key) == 0 {
 		if v, ok := n.(valueNode); ok {
 			return !bytes.Equal(v, value.(valueNode)), value, nil
@@ -281,19 +295,30 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		return true, value, nil
 	}
 	switch n := n.(type) {
+	// 这里n可能是叶子节点或者扩展节点
 	case *shortNode:
 		matchlen := prefixLen(key, n.Key)
 		// If the whole key matches, keep this short node as is
 		// and only update the value.
+		// 如果n是叶子节点,matchlen==len(n.Key)意味着n.Key和key完全一致,因为末尾的终止符也匹配到了
+		// 如果n是扩展节点,那么key一定比n.Key长
+		// 因为matchlen==len(n.Key),所以len(key)>=len(n.Key),这里总共就两种情况
+		//   key和n.Key长度相等->n是叶子节点
+		//   key比n.Key长->n是扩展节点
 		if matchlen == len(n.Key) {
+			// 如果n是叶子节点,由于n.Key和key完全一致,所以key[:matchlen]必然是空数组
 			dirty, nn, err := t.insert(n.Val, append(prefix, key[:matchlen]...), key[matchlen:], value)
+			// dirty==false说明没修改,直接返回原来的
 			if !dirty || err != nil {
 				return false, n, err
 			}
+			// 被修改了,使用返回的内部节点重新构造一个shortNode
 			return true, &shortNode{n.Key, nn, t.newFlag()}, nil
 		}
 		// Otherwise branch out at the index where they differ.
+		// 到这里说明n.Key没有被完全匹配
 		branch := &fullNode{flags: t.newFlag()}
+		// 构建分支节点的两个分叉
 		var err error
 		_, branch.Children[n.Key[matchlen]], err = t.insert(nil, append(prefix, n.Key[:matchlen+1]...), n.Key[matchlen+1:], n.Val)
 		if err != nil {
@@ -304,10 +329,12 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 			return false, nil, err
 		}
 		// Replace this shortNode with the branch if it occurs at index 0.
+		// 两者根本没有共同前缀,直接变成一个分支节点插入了两个shortNode
 		if matchlen == 0 {
 			return true, branch, nil
 		}
 		// Otherwise, replace it with a short node leading up to the branch.
+		// 使用两者的共同前缀,连接分支节点,分支节点连接两个分叉
 		return true, &shortNode{key[:matchlen], branch, t.newFlag()}, nil
 
 	case *fullNode:
@@ -320,9 +347,11 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 		n.Children[key[0]] = nn
 		return true, n, nil
 
+	// 向nil插入,直接生成一个叶子节点
 	case nil:
 		return true, &shortNode{key, value, t.newFlag()}, nil
 
+	// 先从数据库中加载出来再插入
 	case hashNode:
 		// We've hit a part of the trie that isn't loaded yet. Load
 		// the node and insert into it. This leaves all child nodes on
@@ -332,9 +361,11 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 			return false, nil, err
 		}
 		dirty, nn, err := t.insert(rn, prefix, key, value)
+		// dirty=false也就是没修改所以返回rn(rawn)
 		if !dirty || err != nil {
 			return false, rn, err
 		}
+		// dirty=true 而且 err=nil,被修改了返回新的n也就是nn(new n)
 		return true, nn, nil
 
 	default:
@@ -369,9 +400,12 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 	switch n := n.(type) {
 	case *shortNode:
 		matchlen := prefixLen(key, n.Key)
+		// 不能完全匹配对于叶子结点还是扩展节点都说明接下去都搜索不到这个key了
+		// 不进行修改,直接返回原来的节点
 		if matchlen < len(n.Key) {
 			return false, n, nil // don't replace n on mismatch
 		}
+		// 这种情况key和n.Key完全一致,这个shortNode是一个叶子节点直接删除
 		if matchlen == len(key) {
 			return true, nil, nil // remove n entirely for whole matches
 		}
@@ -379,11 +413,14 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 		// from the subtrie. Child can never be nil here since the
 		// subtrie must contain at least two other values with keys
 		// longer than n.Key.
+		// 这里的n是一个扩展节点,要向下搜索分支节点,进行删除
 		dirty, child, err := t.delete(n.Val, append(prefix, key[:len(n.Key)]...), key[len(n.Key):])
+		// 没修改直接返回
 		if !dirty || err != nil {
 			return false, n, err
 		}
 		switch child := child.(type) {
+		// 将两个shortNode包含的前缀合并
 		case *shortNode:
 			// Deleting from the subtrie reduced it to another
 			// short node. Merge the nodes to avoid creating a
@@ -392,6 +429,7 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 			// avoid modifying n.Key since it might be shared with
 			// other nodes.
 			return true, &shortNode{concat(n.Key, child.Key...), child.Val, t.newFlag()}, nil
+		// 其他类型直接设置n.Val为child即可
 		default:
 			return true, &shortNode{n.Key, child, t.newFlag()}, nil
 		}
@@ -414,12 +452,16 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 		// When the loop is done, pos contains the index of the single
 		// value that is left in n or -2 if n contains at least two
 		// values.
+		// 检查分支节点里保存了几个分支,如果只有一个的话降级成shortNode
+		// pos为-2代表至少两个分支,否则保存了唯一一个分支的下标
 		pos := -1
 		for i, cld := range &n.Children {
 			if cld != nil {
 				if pos == -1 {
+					// 遇到第一个非nil,记录下标
 					pos = i
 				} else {
+					// 遇到了第二个非nil,设置为-2并且退出循环
 					pos = -2
 					break
 				}
@@ -433,10 +475,12 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 				// shortNode{..., shortNode{...}}.  Since the entry
 				// might not be loaded yet, resolve it just for this
 				// check.
+				// pos不是16,剩的一个元素可能是shortNode也可能是fullNode
 				cnode, err := t.resolve(n.Children[pos], prefix)
 				if err != nil {
 					return false, nil, err
 				}
+				// 是shortNode就把分支的半字节和shortNode的前缀合并起来
 				if cnode, ok := cnode.(*shortNode); ok {
 					k := append([]byte{byte(pos)}, cnode.Key...)
 					return true, &shortNode{k, cnode.Val, t.newFlag()}, nil
@@ -444,14 +488,17 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 			}
 			// Otherwise, n is replaced by a one-nibble short node
 			// containing the child.
+			// 分支节点连接分支节点,将父分支节点修改为shortNode
 			return true, &shortNode{[]byte{byte(pos)}, n.Children[pos], t.newFlag()}, nil
 		}
 		// n still contains at least two values and cannot be reduced.
 		return true, n, nil
 
+	// 删除掉valueNode然后节点就变成了nil
 	case valueNode:
 		return true, nil, nil
 
+	// nil不能再删了
 	case nil:
 		return false, nil, nil
 
@@ -474,6 +521,7 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 	}
 }
 
+// 先输入一个字节数组,后面可以根任意个字节变量作为参数
 func concat(s1 []byte, s2 ...byte) []byte {
 	r := make([]byte, len(s1)+len(s2))
 	copy(r, s1)
@@ -481,6 +529,7 @@ func concat(s1 []byte, s2 ...byte) []byte {
 	return r
 }
 
+// 可以输入任意node,对于hashNode将从数据库中读取
 func (t *Trie) resolve(n node, prefix []byte) (node, error) {
 	if n, ok := n.(hashNode); ok {
 		return t.resolveHash(n, prefix)
@@ -488,6 +537,7 @@ func (t *Trie) resolve(n node, prefix []byte) (node, error) {
 	return n, nil
 }
 
+// 从数据库里读取hashNode
 func (t *Trie) resolveHash(n hashNode, prefix []byte) (node, error) {
 	hash := common.BytesToHash(n)
 	if node := t.db.node(hash); node != nil {
@@ -498,6 +548,7 @@ func (t *Trie) resolveHash(n hashNode, prefix []byte) (node, error) {
 
 // Hash returns the root hash of the trie. It does not write to the
 // database and can be used even if the trie doesn't have one.
+// 计算整棵树的哈希,设置root为缓存树的根,并返回树根哈希
 func (t *Trie) Hash() common.Hash {
 	hash, cached, _ := t.hashRoot()
 	t.root = cached
@@ -506,6 +557,9 @@ func (t *Trie) Hash() common.Hash {
 
 // Commit writes all nodes to the trie's memory database, tracking the internal
 // and external (for account tries) references.
+// 将整棵树保存到db中,也就是db.dirties中
+// onleaf不为nil的话,树中的每个叶子节点都会调用一次onleaf
+// t.root被修改为hashNode,返回树根的哈希
 func (t *Trie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
 	if t.db == nil {
 		panic("commit called on trie with nil database")
@@ -515,6 +569,7 @@ func (t *Trie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
 	}
 	// Derive the hash for all dirty nodes first. We hold the assumption
 	// in the following procedure that all nodes are hashed.
+	// 计算整棵树的哈希,并让t.root保存了缓存树的树根
 	rootHash := t.Hash()
 	h := newCommitter()
 	defer returnCommitterToPool(h)
@@ -532,27 +587,33 @@ func (t *Trie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// 监听leafCh
 			h.commitLoop(t.db)
 		}()
 	}
 	var newRoot hashNode
+	// 这里会不断向leafCh输入,由上面的commitLoop进行处理
 	newRoot, err = h.Commit(t.root, t.db)
 	if onleaf != nil {
 		// The leafch is created in newCommitter if there was an onleaf callback
 		// provided. The commitLoop only _reads_ from it, and the commit
 		// operation was the sole writer. Therefore, it's safe to close this
 		// channel here.
+		// 到这里Commit执行完了,关闭leafCh,commitLoop可以继续读取
 		close(h.leafCh)
+		// 等待commitLoop执行完成
 		wg.Wait()
 	}
 	if err != nil {
 		return common.Hash{}, err
 	}
+	// 让t.root变成hashNode
 	t.root = newRoot
 	return rootHash, nil
 }
 
 // hashRoot calculates the root hash of the given trie
+// 计算给定梅克尔树的根哈希,使用强制哈希,每个节点都被计算
 func (t *Trie) hashRoot() (node, node, error) {
 	if t.root == nil {
 		return hashNode(emptyRoot.Bytes()), nil, nil
@@ -560,6 +621,7 @@ func (t *Trie) hashRoot() (node, node, error) {
 	// If the number of changes is below 100, we let one thread handle it
 	h := newHasher(t.unhashed >= 100)
 	defer returnHasherToPool(h)
+	// 强制哈希,rlp编码长度小于32的节点也进行哈希
 	hashed, cached := h.hash(t.root, true)
 	t.unhashed = 0
 	return hashed, cached, nil
