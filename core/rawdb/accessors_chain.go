@@ -240,6 +240,7 @@ func ReadFastTrieProgress(db ethdb.KeyValueReader) uint64 {
 
 // WriteFastTrieProgress stores the fast sync trie process counter to support
 // retrieving it across restarts.
+// 写入当前fast模式下状态树同步的进度
 func WriteFastTrieProgress(db ethdb.KeyValueWriter, count uint64) {
 	if err := db.Put(fastTrieProgressKey, new(big.Int).SetUint64(count).Bytes()); err != nil {
 		log.Crit("Failed to store fast sync trie progress", "err", err)

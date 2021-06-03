@@ -325,6 +325,7 @@ func newStateSync(d *Downloader, root common.Hash) *stateSync {
 // run starts the task assignment and response processing loop, blocking until
 // it finishes, and finally notifying any goroutines waiting for the loop to
 // finish.
+// 当loop函数结束就关闭done管道
 func (s *stateSync) run() {
 	// 一旦启动就关闭started管道
 	close(s.started)
@@ -337,12 +338,14 @@ func (s *stateSync) run() {
 }
 
 // Wait blocks until the sync is done or canceled.
+// 一直等待s.done关闭,done管道关闭后再读取不会被阻塞
 func (s *stateSync) Wait() error {
 	<-s.done
 	return s.err
 }
 
 // Cancel cancels the sync and waits until it has shut down.
+// Cancel函数就是关闭cancel管道,然后一直等待done管道被关闭
 func (s *stateSync) Cancel() error {
 	s.cancelOnce.Do(func() {
 		close(s.cancel)
@@ -356,8 +359,11 @@ func (s *stateSync) Cancel() error {
 // receive data from peers, rather those are buffered up in the downloader and
 // pushed here async. The reason is to decouple processing from data receipt
 // and timeouts.
+// loop函数进行状态树同步的事件循环
+// 用于向节点分配任务
 func (s *stateSync) loop() (err error) {
 	// Listen for new peer events to assign tasks to them
+	// 订阅new peer事件,可以一旦有新节点注册就可以从管道读取
 	newPeer := make(chan *peerConnection, 1024)
 	peerSub := s.d.peers.SubscribeNewPeers(newPeer)
 	defer peerSub.Unsubscribe()
@@ -422,12 +428,17 @@ func (s *stateSync) loop() (err error) {
 	return nil
 }
 
+// force为false判断未提交的个数是否达到了一个batch,达到后才提交
+// force为true的时候不管未提交个数,直接提交
+// 另numUncommitted和bytesUncommitted都归零
 func (s *stateSync) commit(force bool) error {
+	// force为false且没达到一个batch不进行操作
 	if !force && s.bytesUncommitted < ethdb.IdealBatchSize {
 		return nil
 	}
 	start := time.Now()
 	b := s.d.stateDB.NewBatch()
+	// 将树保存在内存中的数据写入到数据库中
 	if err := s.sched.Commit(b); err != nil {
 		return err
 	}
@@ -444,9 +455,11 @@ func (s *stateSync) commit(force bool) error {
 // batch currently being retried, or fetching new data from the trie sync itself.
 func (s *stateSync) assignTasks() {
 	// Iterate over all idle peers and try to assign them state fetches
+	// 拿到所有空闲的节点
 	peers, _ := s.d.peers.NodeDataIdlePeers()
 	for _, p := range peers {
 		// Assign a batch of fetches proportional to the estimated latency/bandwidth
+		// 计算一个节点应该分配获取多少node data
 		cap := p.NodeDataCapacity(s.d.requestRTT())
 		req := &stateReq{peer: p, timeout: s.d.requestTTL()}
 
@@ -467,6 +480,7 @@ func (s *stateSync) assignTasks() {
 
 // fillTasks fills the given request object with a maximum of n state download
 // tasks to send to the remote peer.
+// 填充stateReq对象
 func (s *stateSync) fillTasks(n int, req *stateReq) (nodes []common.Hash, paths []trie.SyncPath, codes []common.Hash) {
 	// Refill available tasks from the scheduler.
 	if fill := n - (len(s.trieTasks) + len(s.codeTasks)); fill > 0 {
@@ -611,6 +625,7 @@ func (s *stateSync) processNodeData(blob []byte) (common.Hash, error) {
 
 // updateStats bumps the various state sync progress counters and displays a log
 // message for the user to see.
+// 更新s.d.syncStatsLockn里的各项数据,并将当前同步的进度写入数据库
 func (s *stateSync) updateStats(written, duplicate, unexpected int, duration time.Duration) {
 	s.d.syncStatsLock.Lock()
 	defer s.d.syncStatsLock.Unlock()
