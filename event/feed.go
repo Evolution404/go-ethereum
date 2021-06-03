@@ -13,6 +13,17 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
+// 发布订阅者模块
+// var feed event.Feed
+// ch := make(chan int)
+// feed.Subscribe(ch)
+// feed.Subscribe(ch)
+// go func(){
+//   feed.Send(100)
+// }
+// <-ch
+// <-ch
+// 订阅了几次,就会向指定的管道中发送几次数据
 
 package event
 

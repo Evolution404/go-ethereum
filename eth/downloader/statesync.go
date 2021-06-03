@@ -33,25 +33,34 @@ import (
 
 // stateReq represents a batch of state fetch requests grouped together into
 // a single data retrieval network packet.
+// 代表一次状态请求
 type stateReq struct {
+	// 请求的个数
 	nItems    uint16                    // Number of items requested for download (max is 384, so uint16 is sufficient)
 	trieTasks map[common.Hash]*trieTask // Trie node download tasks to track previous attempts
 	codeTasks map[common.Hash]*codeTask // Byte code download tasks to track previous attempts
-	timeout   time.Duration             // Maximum round trip time for this to complete
-	timer     *time.Timer               // Timer to fire when the RTT timeout expires
-	peer      *peerConnection           // Peer that we're requesting from
-	delivered time.Time                 // Time when the packet was delivered (independent when we process it)
-	response  [][]byte                  // Response data of the peer (nil for timeouts)
-	dropped   bool                      // Flag whether the peer dropped off early
+	// 超时时间
+	timeout time.Duration // Maximum round trip time for this to complete
+	// 定时器,用来计算超时
+	timer *time.Timer // Timer to fire when the RTT timeout expires
+	// 这次请求与哪个节点建立连接
+	peer *peerConnection // Peer that we're requesting from
+	// 所有数据都到达的时间
+	delivered time.Time // Time when the packet was delivered (independent when we process it)
+	response  [][]byte  // Response data of the peer (nil for timeouts)
+	dropped   bool      // Flag whether the peer dropped off early
 }
 
 // timedOut returns if this request timed out.
+// 判断这次请求是否超时
 func (req *stateReq) timedOut() bool {
+	// 请求超时的时候response是nil
 	return req.response == nil
 }
 
 // stateSyncStats is a collection of progress stats to report during a state trie
 // sync to RPC requests as well as to display in user logs.
+// 保存当前状态同步的状态
 type stateSyncStats struct {
 	processed  uint64 // Number of state entries processed
 	duplicate  uint64 // Number of state entries downloaded twice
@@ -257,9 +266,11 @@ func (d *Downloader) spindownStateSync(active map[string]*stateReq, finished []*
 
 // stateSync schedules requests for downloading a particular state trie defined
 // by a given state root.
+// 用来调度请求,下载一个指定树根的状态树
 type stateSync struct {
 	d *Downloader // Downloader instance to access and manage current peerset
 
+	// 当前要进行下载的状态树的树根
 	root   common.Hash        // State root currently being synced
 	sched  *trie.Sync         // State trie sync scheduler defining the tasks
 	keccak crypto.KeccakState // Keccak256 hasher to verify deliveries with
@@ -294,6 +305,8 @@ type codeTask struct {
 
 // newStateSync creates a new state trie download scheduler. This method does not
 // yet start the sync. The user needs to call run to initiate.
+// 创建一个状态同步的任务,但是并不会开始同步任务
+// 需要再调用run来开始同步
 func newStateSync(d *Downloader, root common.Hash) *stateSync {
 	return &stateSync{
 		d:         d,
@@ -313,6 +326,7 @@ func newStateSync(d *Downloader, root common.Hash) *stateSync {
 // it finishes, and finally notifying any goroutines waiting for the loop to
 // finish.
 func (s *stateSync) run() {
+	// 一旦启动就关闭started管道
 	close(s.started)
 	if s.d.snapSync {
 		s.err = s.d.SnapSyncer.Sync(s.root, s.cancel)

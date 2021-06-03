@@ -100,6 +100,7 @@ type Downloader struct {
 	// On 32 bit platforms, only 64-bit aligned fields can be atomic. The struct is
 	// guaranteed to be so aligned, so take advantage of that. For more information,
 	// see https://golang.org/pkg/sync/atomic/#pkg-note-BUG.
+	// 往返时延
 	rttEstimate   uint64 // Round trip time to target for download requests
 	rttConfidence uint64 // Confidence in the estimated RTT (unit: millionths to allow atomic ops)
 
@@ -115,7 +116,9 @@ type Downloader struct {
 	stateBloom *trie.SyncBloom // Bloom filter for fast trie node and contract code existence checks
 
 	// Statistics
+	// Downloader对象创建的时候开始同步的区块位置
 	syncStatsChainOrigin uint64 // Origin block number where syncing started at
+	// Downloader对象创建的时候其他节点最高的区块
 	syncStatsChainHeight uint64 // Highest block number known when syncing started
 	syncStatsState       stateSyncStats
 	syncStatsLock        sync.RWMutex // Lock protecting the sync stats fields
@@ -128,6 +131,7 @@ type Downloader struct {
 
 	// Status
 	synchroniseMock func(id string, hash common.Hash) error // Replacement for synchronise during testing
+	// 大于0的时候代表在同步进行中
 	synchronising   int32
 	notified        int32
 	committed       int32
@@ -145,6 +149,7 @@ type Downloader struct {
 	pivotHeader *types.Header // Pivot block header to dynamically push the syncing state root
 	pivotLock   sync.RWMutex  // Lock protecting pivot header reads from updates
 
+	// 是否使用snap协议来同步状态
 	snapSync       bool         // Whether to run state sync over the snap protocol
 	SnapSyncer     *snap.Syncer // TODO(karalabe): make private! hack for now
 	stateSyncStart chan *stateSync
@@ -168,6 +173,8 @@ type Downloader struct {
 }
 
 // LightChain encapsulates functions required to synchronise a light chain.
+// 对应syncmode为light
+// light chain只包括关于head的操作,因为light模式下应该不同步区块体
 type LightChain interface {
 	// HasHeader verifies a header's presence in the local chain.
 	HasHeader(common.Hash, uint64) bool
@@ -179,6 +186,7 @@ type LightChain interface {
 	CurrentHeader() *types.Header
 
 	// GetTd returns the total difficulty of a local block.
+	// Td是total difficulty, 从创世区块到当前区块难度的总和
 	GetTd(common.Hash, uint64) *big.Int
 
 	// InsertHeaderChain inserts a batch of headers into the local chain.
@@ -189,6 +197,8 @@ type LightChain interface {
 }
 
 // BlockChain encapsulates functions required to sync a (full or fast) blockchain.
+// 对应syncmode为fast或full
+// BlockChain包括对区块头和区块的操作
 type BlockChain interface {
 	LightChain
 
@@ -202,9 +212,11 @@ type BlockChain interface {
 	GetBlockByHash(common.Hash) *types.Block
 
 	// CurrentBlock retrieves the head block from the local chain.
+	// 同步模式是full的时候用来获取当前区块
 	CurrentBlock() *types.Block
 
 	// CurrentFastBlock retrieves the head fast block from the local chain.
+	// 同步模式是fast的时候用来获取当前区块
 	CurrentFastBlock() *types.Block
 
 	// FastSyncCommitHead directly commits the head block to a certain entity.
@@ -221,6 +233,7 @@ type BlockChain interface {
 }
 
 // New creates a new downloader to fetch hashes and blocks from remote peers.
+// 创建Downloader对象
 func New(checkpoint uint64, stateDb ethdb.Database, stateBloom *trie.SyncBloom, mux *event.TypeMux, chain BlockChain, lightchain LightChain, dropPeer peerDropFn) *Downloader {
 	if lightchain == nil {
 		lightchain = chain
@@ -264,13 +277,16 @@ func New(checkpoint uint64, stateDb ethdb.Database, stateBloom *trie.SyncBloom, 
 // In addition, during the state download phase of fast synchronisation the number
 // of processed and the total number of known states are also returned. Otherwise
 // these are zero.
+// 获取当前同步到的位置
 func (d *Downloader) Progress() ethereum.SyncProgress {
 	// Lock the current stats and return the progress
 	d.syncStatsLock.RLock()
 	defer d.syncStatsLock.RUnlock()
 
+	// current记录当前链已经同步到的区块位置
 	current := uint64(0)
 	mode := d.getMode()
+	// 按照full,fast,light的顺序进行判断
 	switch {
 	case d.blockchain != nil && mode == FullSync:
 		current = d.blockchain.CurrentBlock().NumberU64()
@@ -291,6 +307,7 @@ func (d *Downloader) Progress() ethereum.SyncProgress {
 }
 
 // Synchronising returns whether the downloader is currently retrieving blocks.
+// 获取当前是否在同步中
 func (d *Downloader) Synchronising() bool {
 	return atomic.LoadInt32(&d.synchronising) > 0
 }
