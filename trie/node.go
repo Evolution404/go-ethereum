@@ -46,6 +46,7 @@ type (
 	shortNode struct {
 		Key   []byte
 		Val   node
+		// 小写字母开头的字段不会被编码到rlp中
 		flags nodeFlag
 	}
 	// 表示fullNode或shortNode的rlp编码的哈希值
@@ -119,6 +120,7 @@ func (n valueNode) fstring(ind string) string {
 	return fmt.Sprintf("%x ", []byte(n))
 }
 
+// 强制解码到node对象,出现错误直接panic
 func mustDecodeNode(hash, buf []byte) node {
 	n, err := decodeNode(hash, buf)
 	if err != nil {
@@ -130,6 +132,7 @@ func mustDecodeNode(hash, buf []byte) node {
 // decodeNode parses the RLP encoding of a trie node.
 // 从rlp编码解码到node对象,输入hash用来给解码对象填充flag字段
 // 可以解码short和full两种node对象
+// 输入的buf最开始一定是一个列表的rlp编码,该函数只解析最开始的这个列表
 // short长度是2,full长度是17
 // shortNode的编码
 //   [key,node]长度是2,node的编码可能是list或者string类型
@@ -157,6 +160,9 @@ func decodeNode(hash, buf []byte) (node, error) {
 }
 
 // 解码返回shortNode对象
+// shortNode需要恢复key和val
+// key就保存在编码的第一个字符串,使用SplitString后再调用compactToHex
+// val保存在编码的第二个字符串,val可能是hashNode或者valueNode,根据key是否有terminator来判断
 func decodeShort(hash, elems []byte) (node, error) {
 	// 把shortNode的key读取出来
 	kbuf, rest, err := rlp.SplitString(elems)
@@ -164,6 +170,8 @@ func decodeShort(hash, elems []byte) (node, error) {
 		return nil, err
 	}
 	flag := nodeFlag{hash: hash}
+	// rlp编码里保存的是compact格式
+	// 解码之后再转换成hex格式
 	key := compactToHex(kbuf)
 	// 判断是叶子节点,所以Val字段解码成valueNode类型
 	if hasTerm(key) {
@@ -185,6 +193,7 @@ func decodeShort(hash, elems []byte) (node, error) {
 // 解码返回fullNode对象
 func decodeFull(hash, elems []byte) (*fullNode, error) {
 	n := &fullNode{flags: nodeFlag{hash: hash}}
+	// fullNode的前16个元素必然是hashNode
 	for i := 0; i < 16; i++ {
 		cld, rest, err := decodeRef(elems)
 		if err != nil {
@@ -192,10 +201,12 @@ func decodeFull(hash, elems []byte) (*fullNode, error) {
 		}
 		n.Children[i], elems = cld, rest
 	}
+	// 第17个元素可能保存的是空元素
 	val, _, err := rlp.SplitString(elems)
 	if err != nil {
 		return n, err
 	}
+	// 保存的不是空元素的话进行赋值
 	if len(val) > 0 {
 		n.Children[16] = append(valueNode{}, val...)
 	}
@@ -223,6 +234,7 @@ func decodeRef(buf []byte) (node, []byte, error) {
 			err := fmt.Errorf("oversized embedded node (size is %d bytes, want size < %d)", size, hashLen)
 			return nil, buf, err
 		}
+		// 解码shortNode或者fullNode
 		n, err := decodeNode(nil, buf)
 		return n, rest, err
 	case kind == rlp.String && len(val) == 0:

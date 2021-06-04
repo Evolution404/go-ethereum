@@ -68,11 +68,12 @@ type Trie struct {
 	// Keep track of the number leafs which have been inserted since the last
 	// hashing operation. This number will not directly map to the number of
 	// actually unhashed nodes
+	// 记录当前树中有多少没计算哈希的节点
 	unhashed int
 }
 
 // newFlag returns the cache flag value for a newly created node.
-// 设置dirty为true
+// 默认的dirty是false,通过这个函数生成一个dirty是true的flag
 func (t *Trie) newFlag() nodeFlag {
 	return nodeFlag{dirty: true}
 }
@@ -111,6 +112,8 @@ func (t *Trie) NodeIterator(start []byte) NodeIterator {
 
 // Get returns the value for key stored in the trie.
 // The value bytes must not be modified by the caller.
+// 输入key是原始的格式
+// Get函数不返回错误,有错误直接在日志打印
 func (t *Trie) Get(key []byte) []byte {
 	res, err := t.TryGet(key)
 	if err != nil {
@@ -122,14 +125,19 @@ func (t *Trie) Get(key []byte) []byte {
 // TryGet returns the value for key stored in the trie.
 // The value bytes must not be modified by the caller.
 // If a node was not found in the database, a MissingNodeError is returned.
+// 输入key是原始格式
+// TyrGet有错误将会返回
 func (t *Trie) TryGet(key []byte) ([]byte, error) {
 	value, newroot, didResolve, err := t.tryGet(t.root, keybytesToHex(key), 0)
+	// didResolve为true说明解析了某些hashNode
+	// 更改树根为新的解析了这些hashNode的树的树根
 	if err == nil && didResolve {
 		t.root = newroot
 	}
 	return value, err
 }
 
+// 输入key是hex格式,带有terminator
 func (t *Trie) tryGet(origNode node, key []byte, pos int) (value []byte, newnode node, didResolve bool, err error) {
 	switch n := (origNode).(type) {
 	case nil:
@@ -137,6 +145,9 @@ func (t *Trie) tryGet(origNode node, key []byte, pos int) (value []byte, newnode
 	case valueNode:
 		return n, n, false, nil
 	case *shortNode:
+		// 查询的key长度在遇到这个shortNode后不足
+		// 或者这个shortNode保存的key片段不匹配
+		// 那么说明查询不到,直接返回
 		if len(key)-pos < len(n.Key) || !bytes.Equal(n.Key, key[pos:pos+len(n.Key)]) {
 			// key not found in trie
 			return nil, n, false, nil
@@ -148,6 +159,7 @@ func (t *Trie) tryGet(origNode node, key []byte, pos int) (value []byte, newnode
 		}
 		return value, n, didResolve, err
 	case *fullNode:
+		// terminator是16,所以遇到分支节点保存值key[pos]就取到了最后一项
 		value, newnode, didResolve, err = t.tryGet(n.Children[key[pos]], key, pos+1)
 		if err == nil && didResolve {
 			n = n.copy()
@@ -155,6 +167,7 @@ func (t *Trie) tryGet(origNode node, key []byte, pos int) (value []byte, newnode
 		}
 		return value, n, didResolve, err
 	case hashNode:
+		// 将类型hashNode的n从数据库中解析为child
 		child, err := t.resolveHash(n, key[:pos])
 		if err != nil {
 			return nil, n, true, err
@@ -168,6 +181,8 @@ func (t *Trie) tryGet(origNode node, key []byte, pos int) (value []byte, newnode
 
 // TryGetNode attempts to retrieve a trie node by compact-encoded path. It is not
 // possible to use keybyte-encoding as the path might contain odd nibbles.
+// 输入compact格式的path查询树中节点
+// 这个函数用来获取树中的任意节点,得到节点的rlp编码
 func (t *Trie) TryGetNode(path []byte) ([]byte, int, error) {
 	item, newroot, resolved, err := t.tryGetNode(t.root, compactToHex(path), 0)
 	if err != nil {
@@ -184,6 +199,7 @@ func (t *Trie) TryGetNode(path []byte) ([]byte, int, error) {
 
 func (t *Trie) tryGetNode(origNode node, path []byte, pos int) (item []byte, newnode node, resolved int, err error) {
 	// If we reached the requested path, return the current node
+	// 查询位置到达末尾了,返回当前的节点
 	if pos >= len(path) {
 		// Although we most probably have the original node expanded, encoding
 		// that into consensus form can be nasty (needs to cascade down) and
@@ -249,6 +265,7 @@ func (t *Trie) tryGetNode(origNode node, path []byte, pos int) (item []byte, new
 //
 // The value bytes must not be modified by the caller while they are
 // stored in the trie.
+// 更新树中保存的键值
 func (t *Trie) Update(key, value []byte) {
 	if err := t.TryUpdate(key, value); err != nil {
 		log.Error(fmt.Sprintf("Unhandled trie error: %v", err))
@@ -361,7 +378,7 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 			return false, nil, err
 		}
 		dirty, nn, err := t.insert(rn, prefix, key, value)
-		// dirty=false也就是没修改所以返回rn(rawn)
+		// dirty=false也就是没修改所以返回rn(raw n)
 		if !dirty || err != nil {
 			return false, rn, err
 		}
@@ -529,7 +546,8 @@ func concat(s1 []byte, s2 ...byte) []byte {
 	return r
 }
 
-// 可以输入任意node,对于hashNode将从数据库中读取
+// 用于解析hashNode,对resolveHash函数的封装->可以输入任意类型节点
+// 其余类型的节点不进行处理
 func (t *Trie) resolve(n node, prefix []byte) (node, error) {
 	if n, ok := n.(hashNode); ok {
 		return t.resolveHash(n, prefix)
@@ -537,7 +555,8 @@ func (t *Trie) resolve(n node, prefix []byte) (node, error) {
 	return n, nil
 }
 
-// 从数据库里读取hashNode
+// 输入hashNode,从数据库中读取原始节点信息
+// 输入的prefix只是用来生成错误信息
 func (t *Trie) resolveHash(n hashNode, prefix []byte) (node, error) {
 	hash := common.BytesToHash(n)
 	if node := t.db.node(hash); node != nil {
@@ -557,9 +576,9 @@ func (t *Trie) Hash() common.Hash {
 
 // Commit writes all nodes to the trie's memory database, tracking the internal
 // and external (for account tries) references.
-// 将整棵树保存到db中,也就是db.dirties中
+// 对树进行过插入删除等操作后调用Commit来提交到内存数据库中,也就是db.dirties中
 // onleaf不为nil的话,树中的每个叶子节点都会调用一次onleaf
-// t.root被修改为hashNode,返回树根的哈希
+// t.root被修改为缓存树,返回树根的哈希
 func (t *Trie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
 	if t.db == nil {
 		panic("commit called on trie with nil database")
@@ -569,7 +588,8 @@ func (t *Trie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
 	}
 	// Derive the hash for all dirty nodes first. We hold the assumption
 	// in the following procedure that all nodes are hashed.
-	// 计算整棵树的哈希,并让t.root保存了缓存树的树根
+	// Database的操作中都假设所有的节点都计算了哈希
+	// 所以这里首先计算整棵树的哈希
 	rootHash := t.Hash()
 	h := newCommitter()
 	defer returnCommitterToPool(h)
@@ -577,6 +597,7 @@ func (t *Trie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
 	// Do a quick check if we really need to commit, before we spin
 	// up goroutines. This can happen e.g. if we load a trie for reading storage
 	// values, but don't write to it.
+	// dirty为false的时候没有必要提交
 	if _, dirty := t.root.cache(); !dirty {
 		return rootHash, nil
 	}
@@ -621,7 +642,7 @@ func (t *Trie) hashRoot() (node, node, error) {
 	// If the number of changes is below 100, we let one thread handle it
 	h := newHasher(t.unhashed >= 100)
 	defer returnHasherToPool(h)
-	// 强制哈希,rlp编码长度小于32的节点也进行哈希
+	// 强制哈希,输入的树根不管编码是不是小于32都计算哈希
 	hashed, cached := h.hash(t.root, true)
 	t.unhashed = 0
 	return hashed, cached, nil

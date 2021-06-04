@@ -66,9 +66,16 @@ var (
 // thread safe in providing individual, independent node access. The rationale
 // behind this split design is to provide read access to RPC handlers and sync
 // servers even while the trie is executing expensive garbage collection.
+// Database类型是保存在内存中的梅克尔树与保存在硬盘中的数据库的中间层
+// 数据先写入到内存中,积累到足够数量再写入到硬盘中
 type Database struct {
 	diskdb ethdb.KeyValueStore // Persistent storage for matured trie nodes
 
+	// 缓存一些节点
+	// Put函数中会将最近提交的节点放入cleans
+	// 每次访问硬盘数据库拿到的节点数据也会放入cleans
+	// 也就是最近使用的数据就加入到缓存中
+	// fastcache会自动管理保存在内部的数据,这里使用只需要关心加入缓存
 	cleans  *fastcache.Cache            // GC friendly memory cache of clean node RLPs
 	// 对梅克尔树中的节点进行引用计数
 	dirties map[common.Hash]*cachedNode // Data and references relationships of dirty trie nodes
@@ -102,7 +109,7 @@ type rawNode []byte
 func (n rawNode) cache() (hashNode, bool)   { panic("this should never end up in a live trie") }
 func (n rawNode) fstring(ind string) string { panic("this should never end up in a live trie") }
 
-// 将rlp编码写入w中
+// rawNode类型本身就保存的是rlp编码,所以直接写入
 func (n rawNode) EncodeRLP(w io.Writer) error {
 	_, err := w.Write(n)
 	return err
@@ -113,6 +120,7 @@ func (n rawNode) EncodeRLP(w io.Writer) error {
 // the same RLP encoding as the original parent.
 type rawFullNode [17]node
 
+// rawFullNode已经去除了flags字段不再支持cache
 func (n rawFullNode) cache() (hashNode, bool)   { panic("this should never end up in a live trie") }
 func (n rawFullNode) fstring(ind string) string { panic("this should never end up in a live trie") }
 
@@ -132,6 +140,8 @@ func (n rawFullNode) EncodeRLP(w io.Writer) error {
 // rawShortNode represents only the useful data content of a short node, with the
 // caches and flags stripped out to minimize its data storage. This type honors
 // the same RLP encoding as the original parent.
+// 对shortNode的压缩格式
+// key保存了compact格式
 type rawShortNode struct {
 	Key []byte
 	Val node
@@ -142,11 +152,13 @@ func (n rawShortNode) fstring(ind string) string { panic("this should never end 
 
 // cachedNode is all the information we know about a single cached trie node
 // in the memory database write layer.
-// 代表一个被引用的节点
+// 保存梅克尔树节点在内存数据库中的各种状态
+// node的类型可能是rawNode,rawShortNode,rawFullNode
 type cachedNode struct {
 	// 这里的node可能是rawNode,rawShortNode,rawFullNode
 	// rawNode类型保存了rlp编码
 	// rawShortNode,rawFullNode是去掉了flags字段后的类型
+	// hashNode,valueNode就保存了哈希或者值的字节数组
 	node node   // Cached collapsed trie node, or raw rlp data
 	size uint16 // Byte size of the useful cached data
 
@@ -185,13 +197,13 @@ func (n *cachedNode) rlp() []byte {
 
 // obj returns the decoded and expanded trie node, either directly from the cache,
 // or by regenerating it from the rlp encoded blob.
-// 获取node的原始类型,输入hash用来恢复flags字段
+// 从cachedNode转化为shortNode,fullNodee 输入hash用来恢复flags字段
 func (n *cachedNode) obj(hash common.Hash) node {
 	// rawNode类型从rlp编码进行解码
 	if node, ok := n.node.(rawNode); ok {
 		return mustDecodeNode(hash[:], node)
 	}
-	// 其他情况直接恢复
+	// rawShortNode,rawFullNode的情况根据对象内部的数据进行恢复
 	return expandNode(hash[:], n.node)
 }
 
@@ -211,6 +223,7 @@ func (n *cachedNode) forChilds(onChild func(hash common.Hash)) {
 
 // forGatherChildren traverses the node hierarchy of a collapsed storage node and
 // invokes the callback for all the hashnode children.
+// 输入的node是梅克尔树,树中节点由rawFullNode,rawShortNode组成
 // 遍历梅克尔树,每遇到一个hashNode输入它的哈希调用onChild
 func forGatherChildren(n node, onChild func(hash common.Hash)) {
 	switch n := n.(type) {
@@ -227,6 +240,11 @@ func forGatherChildren(n node, onChild func(hash common.Hash)) {
 		panic(fmt.Sprintf("unknown node type: %T", n))
 	}
 }
+
+// simplifyNode将shortNode,fullNode转化为rawShortNode,rawFullNode
+// expandNode将rawShortNode,rawFullNode转化为shortNode,fullNode
+// 两者对valueNode,hashNode都不进行操作
+// simplifyNode输入rawNode不进行操作,expandNode输入rawNode将报错
 
 // simplifyNode traverses the hierarchy of an expanded memory node and discards
 // all the internal caches, returning a node that only contains the raw data.
@@ -260,11 +278,13 @@ func simplifyNode(n node) node {
 // expandNode traverses the node hierarchy of a collapsed storage node and converts
 // all fields and keys into expanded memory form.
 // 从rawShortNode或者rawFullNode恢复到原来的类型
+// valueNode或者hashNode就不进行操作,直接返回
 func expandNode(hash hashNode, n node) node {
 	switch n := n.(type) {
 	case *rawShortNode:
 		// Short nodes need key and child expansion
 		return &shortNode{
+			// rawShortNode中key是compact格式
 			Key: compactToHex(n.Key),
 			Val: expandNode(nil, n.Val),
 			flags: nodeFlag{
@@ -306,7 +326,7 @@ type Config struct {
 // NewDatabase creates a new trie database to store ephemeral trie content before
 // its written out to disk or garbage collected. No read cache is created, so all
 // data retrievals will hit the underlying disk database.
-// 创建一个梅克尔树数据库
+// 创建一个梅克尔树的内存数据库
 func NewDatabase(diskdb ethdb.KeyValueStore) *Database {
 	return NewDatabaseWithConfig(diskdb, nil)
 }
@@ -317,7 +337,9 @@ func NewDatabase(diskdb ethdb.KeyValueStore) *Database {
 // 根据配置信息新建一个梅克尔树数据库
 func NewDatabaseWithConfig(diskdb ethdb.KeyValueStore, config *Config) *Database {
 	var cleans *fastcache.Cache
+	// 判断配置选项中是否使用了cache,初始化cleans字段
 	if config != nil && config.Cache > 0 {
+		// fastcache初始化输入的单位是字节,config.Cache保存的是MB所以乘两次1024转化为字节
 		if config.Journal == "" {
 			cleans = fastcache.New(config.Cache * 1024 * 1024)
 		} else {
@@ -346,8 +368,9 @@ func (db *Database) DiskDB() ethdb.KeyValueStore {
 // The blob size must be specified to allow proper size tracking.
 // All nodes inserted by this function will be reference tracked
 // and in theory should only used for **trie nodes** insertion.
-// 根据输入的hash和node插入到db.dirties中
-// size保存在cachedNode.size中,并且用来记录db.dirtiesSize
+// 输入shortNode或者fullNode类型的节点,构造出来cachedNode
+// 将cachedNode插入到db.dirties中
+// 维护db.oldest,db.newest,db.dirtiesSize,还有cachedNode中的flush list
 func (db *Database) insert(hash common.Hash, size int, node node) {
 	// If the node's already cached, skip
 	if _, ok := db.dirties[hash]; ok {
@@ -356,12 +379,13 @@ func (db *Database) insert(hash common.Hash, size int, node node) {
 	memcacheDirtyWriteMeter.Mark(int64(size))
 
 	// Create the cached entry for this node
+	// 构造新的cachedNode对象
 	entry := &cachedNode{
 		node:      simplifyNode(node),
 		size:      uint16(size),
 		flushPrev: db.newest,
 	}
-	// 给所有子节点的引用都加一
+	// 以插入节点为根的树引用的hashNode已经保存在db.dirties中的parents字段都加一
 	entry.forChilds(func(child common.Hash) {
 		if c := db.dirties[child]; c != nil {
 			c.parents++
@@ -403,7 +427,10 @@ func (db *Database) insertPreimage(hash common.Hash, preimage []byte) {
 
 // node retrieves a cached trie node from memory, or returns nil if none can be
 // found in the memory cache.
-// 输入哈希从数据库读取节点,返回的是node类型
+// 输入哈希从数据库读取节点,返回的是shortNode或者fullNode
+// 首先从cleans中读
+// 其次从dirties中读
+// 最次从硬盘数据库中读
 func (db *Database) node(hash common.Hash) node {
 	// Retrieve the node from the clean cache if available
 	// 先尝试从cleans中读取
@@ -415,7 +442,7 @@ func (db *Database) node(hash common.Hash) node {
 		}
 	}
 	// Retrieve the node from the dirty cache if available
-	// 再尝试从dirty中读取
+	// 再尝试从dirties中读取
 	db.lock.RLock()
 	dirty := db.dirties[hash]
 	db.lock.RUnlock()
@@ -873,6 +900,8 @@ type cleaner struct {
 // removed from the dirty cache and moved into the clean cache. The reason behind
 // the two-phase commit is to ensure ensure data availability while moving from
 // memory to disk.
+// 将节点从flush-list中移除,然后从dirties中移除
+// 如果有cleans的话将移除的节点加入cleans
 func (c *cleaner) Put(key []byte, rlp []byte) error {
 	hash := common.BytesToHash(key)
 

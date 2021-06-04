@@ -28,6 +28,8 @@ import (
 
 // leafChanSize is the size of the leafCh. It's a pretty arbitrary number, to allow
 // some parallelism but not incur too much memory overhead.
+// 在Trie.Commit中使用 trie.go文件中
+// 控制创建的leafCh管道的缓冲区的大小
 const leafChanSize = 200
 
 // leaf represents a trie leaf value
@@ -254,7 +256,7 @@ func (c *committer) commitLoop(db *Database) {
 	}
 }
 
-// 计算输入数据的哈希值,然后返回hashNode
+// 输入原始数据data,计算data的哈希值,然后返回hashNode
 func (c *committer) makeHashNode(data []byte) hashNode {
 	n := make(hashNode, c.sha.Size())
 	c.sha.Reset()
@@ -269,9 +271,12 @@ func (c *committer) makeHashNode(data []byte) hashNode {
 // method overestimates by 2 or 3 bytes (e.g. 37 instead of 35)
 // 估算一棵树进行rlp编码后的大小
 func estimateSize(n node) int {
+	// 估算过程中把rlp编码的前缀长度都当成3
+	// 也就是说预计各个元素的长度都大于55
 	switch n := n.(type) {
 	case *shortNode:
 		// A short node contains a compacted key, and a value.
+		// 加三是rlp编码的前缀
 		return 3 + len(n.Key) + estimateSize(n.Val)
 	case *fullNode:
 		// A full node contains up to 16 hashes (some nils), and a key

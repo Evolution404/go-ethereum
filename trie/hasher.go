@@ -85,6 +85,7 @@ func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
 		hashed := h.shortnodeToHash(collapsed, force)
 		// We need to retain the possibly _not_ hashed node, in case it was too
 		// small to be hashed
+		// 得到的hashed可能并不是hashNode
 		if hn, ok := hashed.(hashNode); ok {
 			cached.flags.hash = hn
 		} else {
@@ -111,6 +112,7 @@ func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
 // holds a live reference to the Key, and must not be modified.
 // The cached
 // 对shortNode.Val进行哈希,修改shortNode.Val并返回初始的shortNode
+// 返回collapsed的key是compact编码
 func (h *hasher) hashShortNodeChildren(n *shortNode) (collapsed, cached *shortNode) {
 	// Hash the short node's child, caching the newly hashed subtree
 	collapsed, cached = n.copy(), n.copy()
@@ -190,7 +192,7 @@ func (h *hasher) fullnodeToHash(n *fullNode, force bool) node {
 		panic("encode error: " + err.Error())
 	}
 
-	// 长度小于32直接返回输入的fullNode
+	// 没有使用强制模式且长度小于32直接返回输入的fullNode
 	if len(h.tmp) < 32 && !force {
 		return n // Nodes smaller than 32 bytes are stored inside their parent
 	}
