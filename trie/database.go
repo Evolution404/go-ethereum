@@ -164,6 +164,7 @@ type cachedNode struct {
 
 	// 这个节点被引用的次数,换句话说也就是父亲的个数
 	parents  uint32                 // Number of live nodes referencing this one
+	// 记录引用的各个节点的次数
 	children map[common.Hash]uint16 // External children referenced by this node
 
 	// 用于flush-list链表,每个cachedNode都在flush-list链表中
@@ -573,12 +574,16 @@ func (db *Database) reference(child common.Hash, parent common.Hash) {
 		db.dirties[parent].children = make(map[common.Hash]uint16)
 		db.childrenSize += cachedNodeChildrenSize
 	// parent已经引用了child直接返回
+	// parent为common.Hash说明child是一个根节点
+	// 根节点被多次引用的时候parent都是common.Hash,所以这里让parent!=common.Hash
+	// 好计算根节点被引用的次数
 	} else if _, ok = db.dirties[parent].children[child]; ok && parent != (common.Hash{}) {
 		return
 	}
 	node.parents++
 	db.dirties[parent].children[child]++
 	// 只有第一次才需要增加大小
+	// 能执行到这里只有根节点可能引用次数大于1
 	// hash->uint16,所以是一个哈希的大小加上uint16的大小
 	if db.dirties[parent].children[child] == 1 {
 		db.childrenSize += common.HashLength + 2 // uint16 counter
@@ -614,14 +619,16 @@ func (db *Database) Dereference(root common.Hash) {
 // 删除parent对child的引用
 // 首先操作parent的children以及childrenSize
 // 然后让child.parent减一
-// 如果child.parent减一后为0说明没有引用它的了要中flush-list中删除
+// 如果child.parent减一后为0说明这个child不再被引用,要从flush-list中删除
 func (db *Database) dereference(child common.Hash, parent common.Hash) {
 	// Dereference the parent-child
 	node := db.dirties[parent]
 
 	// child还保存在node.children中,尝试从node.children中删除这个child的映射
 	if node.children != nil && node.children[child] > 0 {
+		// 父节点对子节点的引用次数减一
 		node.children[child]--
+		// 如果这个父节点不再引用这个子节点了,那么就从父节点的children里删除
 		if node.children[child] == 0 {
 			delete(node.children, child)
 			db.childrenSize -= (common.HashLength + 2) // uint16 counter
@@ -634,6 +641,7 @@ func (db *Database) dereference(child common.Hash, parent common.Hash) {
 		return
 	}
 	// If there are no more references to the child, delete it and cascade
+	// 子节点的引用次数减一
 	if node.parents > 0 {
 		// This is a special cornercase where a node loaded from disk (i.e. not in the
 		// memcache any more) gets reinjected as a new node (short node split into full,
@@ -641,6 +649,7 @@ func (db *Database) dereference(child common.Hash, parent common.Hash) {
 		// no problem in itself, but don't make maxint parents out of it.
 		node.parents--
 	}
+	// 如果不再有节点引用该子节点,那么就删除它
 	if node.parents == 0 {
 		// Remove the node from the flush-list
 		switch child {
@@ -664,6 +673,7 @@ func (db *Database) dereference(child common.Hash, parent common.Hash) {
 		})
 		delete(db.dirties, child)
 		db.dirtiesSize -= common.StorageSize(common.HashLength + int(node.size))
+		// 这个节点初始化过children的话,最终删除的时候也去掉这部分空间
 		if node.children != nil {
 			db.childrenSize -= cachedNodeChildrenSize
 		}
