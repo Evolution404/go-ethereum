@@ -40,6 +40,7 @@ type SecureTrie struct {
 	// 每次要查询的key都计算哈希
 	// 计算的哈希保存这个缓存中
 	hashKeyBuf       [common.HashLength]byte
+	// 保存hash->key映射,调用Commit方法后会写入到数据库的preimage中
 	secKeyCache      map[string][]byte
 	secKeyCacheOwner *SecureTrie // Pointer to self, replace the key cache on mismatch
 }
@@ -116,6 +117,7 @@ func (t *SecureTrie) TryUpdate(key, value []byte) error {
 	if err != nil {
 		return err
 	}
+	// 将 hash->key 映射保存到secKeyCache中
 	t.getSecKeyCache()[string(hk)] = common.CopyBytes(key)
 	return nil
 }

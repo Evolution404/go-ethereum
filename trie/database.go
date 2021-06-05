@@ -79,17 +79,25 @@ type Database struct {
 	cleans  *fastcache.Cache            // GC friendly memory cache of clean node RLPs
 	// 对梅克尔树中的节点进行引用计数
 	dirties map[common.Hash]*cachedNode // Data and references relationships of dirty trie nodes
+	// flush-list双向链表
+	// 在Cap函数中按照从oldest到newest的顺序写入
 	oldest  common.Hash                 // Oldest tracked node, flush-list head
 	newest  common.Hash                 // Newest tracked node, flush-list tail
 
 	preimages map[common.Hash][]byte // Preimages of nodes from the secure trie
 
+	// gc数据每次commit后会归零
+	// gc相关数据只在dereference中使用
 	gctime  time.Duration      // Time spent on garbage collection since last commit
 	gcnodes uint64             // Nodes garbage collected since last commit
 	gcsize  common.StorageSize // Data storage garbage collected since last commit
 
+	// flush数据每次commit后会归零
+	// 记录自从上次commit至今写入硬盘总共使用的时间
 	flushtime  time.Duration      // Time spent on data flushing since last commit
+	// 记录自从上次commit至今已经写入硬盘的节点个数
 	flushnodes uint64             // Nodes flushed since last commit
+	// 记录自从上次commit至今已经写入硬盘的总大小
 	flushsize  common.StorageSize // Data storage flushed since last commit
 
 	dirtiesSize   common.StorageSize // Storage size of the dirty node cache (exc. metadata)
@@ -369,9 +377,10 @@ func (db *Database) DiskDB() ethdb.KeyValueStore {
 // The blob size must be specified to allow proper size tracking.
 // All nodes inserted by this function will be reference tracked
 // and in theory should only used for **trie nodes** insertion.
-// 输入shortNode或者fullNode类型的节点,构造出来cachedNode
-// 将cachedNode插入到db.dirties中
-// 维护db.oldest,db.newest,db.dirtiesSize,还有cachedNode中的flush list
+// 插入操作是将节点放入dirties中,并追加到flush-list末尾
+//   1. 输入shortNode或者fullNode类型的节点,构造出来cachedNode
+//   2. 将cachedNode插入到db.dirties中
+//   3. 维护db.oldest,db.newest,db.dirtiesSize,还有cachedNode中的flush list
 func (db *Database) insert(hash common.Hash, size int, node node) {
 	// If the node's already cached, skip
 	if _, ok := db.dirties[hash]; ok {
@@ -591,6 +600,7 @@ func (db *Database) reference(child common.Hash, parent common.Hash) {
 }
 
 // Dereference removes an existing reference from a root node.
+// 输入树根,对这个树根解引用
 func (db *Database) Dereference(root common.Hash) {
 	// Sanity check to ensure that the meta-root is not removed
 	if root == (common.Hash{}) {
@@ -600,9 +610,13 @@ func (db *Database) Dereference(root common.Hash) {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
+	// nodes保存解引用之前的dirties中节点个数,用于计算gcnodes
+	// storage保存解引用之前的dirtiesSize,用于计算gcsize
 	nodes, storage, start := len(db.dirties), db.dirtiesSize, time.Now()
+	// 删除对整棵树的引用
 	db.dereference(root, common.Hash{})
 
+	// 利用之前的数据与现在的数据之间的差,计算gc相关数据
 	db.gcnodes += uint64(nodes - len(db.dirties))
 	db.gcsize += storage - db.dirtiesSize
 	db.gctime += time.Since(start)
@@ -685,7 +699,8 @@ func (db *Database) dereference(child common.Hash, parent common.Hash) {
 //
 // Note, this method is a non-synchronized mutator. It is unsafe to call this
 // concurrently with other mutators.
-// 将节点写入到数据库中,使得内存占用小于输入的大小
+// 将保存在内存中的数据写入到数据库中,使得内存占用小于输入的大小
+// 根据flush-lits中的顺序来写入数据库,从oldest开始依次写入,newest最后写入
 func (db *Database) Cap(limit common.StorageSize) error {
 	// Create a database batch to flush persistent data out. It is important that
 	// outside code doesn't see an inconsistent state (referenced data removed from
@@ -703,7 +718,7 @@ func (db *Database) Cap(limit common.StorageSize) error {
 
 	// If the preimage cache got large enough, push to disk. If it's still small
 	// leave for later to deduplicate writes.
-	// 先向数据库写入preimages
+	// 如果preimage的容量达到使用限制,先向数据库写入preimages
 	flushPreimages := db.preimagesSize > 4*1024*1024
 	if flushPreimages {
 		if db.preimages == nil {
@@ -805,6 +820,8 @@ func (db *Database) Commit(node common.Hash, report bool, callback func(common.H
 	// outside code doesn't see an inconsistent state (referenced data removed from
 	// memory cache during commit but not yet in persistent storage). This is ensured
 	// by only uncaching existing data when the database write finalizes.
+	// 该函数要先完成硬盘数据库读写才删除内存中的数据
+	// 避免已经在内存中删除了但是还没有写入硬盘的情况发生
 	start := time.Now()
 	batch := db.diskdb.NewBatch()
 
@@ -827,12 +844,14 @@ func (db *Database) Commit(node common.Hash, report bool, callback func(common.H
 	// Move the trie itself into the batch, flushing if enough data is accumulated
 	nodes, storage := len(db.dirties), db.dirtiesSize
 
+	// 将db包装成cleaner,用于作为Replay的参数,在写入硬盘后清理内存中的dirties
 	uncacher := &cleaner{db}
 	if err := db.commit(node, batch, uncacher, callback); err != nil {
 		log.Error("Failed to commit trie from trie database", "err", err)
 		return err
 	}
 	// Trie mostly committed to disk, flush any batch leftovers
+	// 写入硬盘数据库中,这里没有判断IdealBatchSize,因为一定要写入
 	if err := batch.Write(); err != nil {
 		log.Error("Failed to write trie to disk", "err", err)
 		return err
@@ -841,6 +860,7 @@ func (db *Database) Commit(node common.Hash, report bool, callback func(common.H
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
+	// 清理缓存在内存中的数据
 	batch.Replay(uncacher)
 	batch.Reset()
 
@@ -860,6 +880,7 @@ func (db *Database) Commit(node common.Hash, report bool, callback func(common.H
 		"gcnodes", db.gcnodes, "gcsize", db.gcsize, "gctime", db.gctime, "livenodes", len(db.dirties), "livesize", db.dirtiesSize)
 
 	// Reset the garbage collection statistics
+	// 重置垃圾回收统计数据
 	db.gcnodes, db.gcsize, db.gctime = 0, 0, 0
 	db.flushnodes, db.flushsize, db.flushtime = 0, 0, 0
 
@@ -867,6 +888,7 @@ func (db *Database) Commit(node common.Hash, report bool, callback func(common.H
 }
 
 // commit is the private locked version of Commit.
+// 递归写入整棵树
 func (db *Database) commit(hash common.Hash, batch ethdb.Batch, uncacher *cleaner, callback func(common.Hash)) error {
 	// If the node does not exist, it's a previously committed node
 	node, ok := db.dirties[hash]
@@ -874,6 +896,7 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, uncacher *cleane
 		return nil
 	}
 	var err error
+	// 向下递归整棵树,所有节点都调用commit
 	node.forChilds(func(child common.Hash) {
 		if err == nil {
 			err = db.commit(child, batch, uncacher, callback)
@@ -892,6 +915,7 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, uncacher *cleane
 			return err
 		}
 		db.lock.Lock()
+		// 每次写入之后都重放到uncacher中,用来清理内存
 		batch.Replay(uncacher)
 		batch.Reset()
 		db.lock.Unlock()
@@ -901,6 +925,11 @@ func (db *Database) commit(hash common.Hash, batch ethdb.Batch, uncacher *cleane
 
 // cleaner is a database batch replayer that takes a batch of write operations
 // and cleans up the trie database from anything written to disk.
+// 实现了KeyValueWriter接口
+// 目的是可以作为batch.Replay的参数
+// 调用Replay方法时已经写入了硬盘数据库,可以开始清理内存中的数据
+// batch中保存了对硬盘数据库的写入操作
+// 将这些写入操作重放到cleaner中,意味着将dirties中数据移除并写入到cleans中
 type cleaner struct {
 	db *Database
 }
@@ -921,6 +950,7 @@ func (c *cleaner) Put(key []byte, rlp []byte) error {
 		return nil
 	}
 	// Node still exists, remove it from the flush-list
+	// 首先从flush-list中移除
 	switch hash {
 	case c.db.oldest:
 		c.db.oldest = node.flushNext
@@ -933,12 +963,14 @@ func (c *cleaner) Put(key []byte, rlp []byte) error {
 		c.db.dirties[node.flushNext].flushPrev = node.flushPrev
 	}
 	// Remove the node from the dirty cache
+	// 然后从dirties中移除
 	delete(c.db.dirties, hash)
 	c.db.dirtiesSize -= common.StorageSize(common.HashLength + int(node.size))
 	if node.children != nil {
 		c.db.dirtiesSize -= common.StorageSize(cachedNodeChildrenSize + len(node.children)*(common.HashLength+2))
 	}
 	// Move the flushed node into the clean cache to prevent insta-reloads
+	// 有可能的加入到cleans中
 	if c.db.cleans != nil {
 		c.db.cleans.Set(hash[:], rlp)
 		memcacheCleanWriteMeter.Mark(int64(len(rlp)))
