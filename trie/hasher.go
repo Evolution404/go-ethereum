@@ -111,7 +111,6 @@ func (h *hasher) hash(n node, force bool) (hashed node, cached node) {
 // hashShortNodeChildren collapses the short node. The returned collapsed node
 // holds a live reference to the Key, and must not be modified.
 // The cached
-// 对shortNode.Val进行哈希,修改shortNode.Val并返回初始的shortNode
 // 返回collapsed的key是compact编码
 func (h *hasher) hashShortNodeChildren(n *shortNode) (collapsed, cached *shortNode) {
 	// Hash the short node's child, caching the newly hashed subtree

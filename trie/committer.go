@@ -79,10 +79,13 @@ func returnCommitterToPool(h *committer) {
 
 // commit collapses a node down into a hash node and inserts it into the database
 // 向db中提交node,返回node压缩后的hashNode
+// 输入的n是缓存树的树根
 func (c *committer) Commit(n node, db *Database) (hashNode, error) {
 	if db == nil {
 		return nil, errors.New("no db provided")
 	}
+	// 由于输入的n是缓存树的树根,这里返回的h一定是一个hashNode
+	// 因为树根被强制计算了哈希,所以一定有缓存的哈希
 	h, err := c.commit(n, db)
 	if err != nil {
 		return nil, err

@@ -86,6 +86,7 @@ type nodeFlag struct {
 }
 
 // fullNode和shortNode需要缓存哈希
+// cache函数分别返回缓存的哈希和dirty
 func (n *fullNode) cache() (hashNode, bool)  { return n.flags.hash, n.flags.dirty }
 func (n *shortNode) cache() (hashNode, bool) { return n.flags.hash, n.flags.dirty }
 

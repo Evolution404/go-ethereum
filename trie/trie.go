@@ -634,7 +634,8 @@ func (t *Trie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
 }
 
 // hashRoot calculates the root hash of the given trie
-// 计算给定梅克尔树的根哈希,使用强制哈希,每个节点都被计算
+// 计算给定梅克尔树的根哈希,使用强制哈希,返回的树根一定是hashNode
+// 分别返回树根的hashNode以及缓存树
 func (t *Trie) hashRoot() (node, node, error) {
 	if t.root == nil {
 		return hashNode(emptyRoot.Bytes()), nil, nil
