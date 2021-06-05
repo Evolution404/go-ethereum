@@ -53,7 +53,9 @@ func returnToPool(st *StackTrie) {
 // StackTrie is a trie implementation that expects keys to be inserted
 // in order. Once it determines that a subtree will no longer be inserted
 // into, it will hash it and free up the memory it uses.
+// key按照顺序插入的类型
 type StackTrie struct {
+	// 分别有emptyNode,branchNode,extNode,leafNode,hashedNode五种类型
 	nodeType  uint8                // node type (as in branch, ext, leaf)
 	val       []byte               // value contained by this node if it's a leaf
 	key       []byte               // key chunk covered by this (full|ext) node
@@ -63,8 +65,12 @@ type StackTrie struct {
 }
 
 // NewStackTrie allocates and initializes an empty trie.
+// 新建一个StackTrie对象
+// 设置nodeType为emptyNode
+// 设置db为输入的db
 func NewStackTrie(db ethdb.KeyValueWriter) *StackTrie {
 	return &StackTrie{
+		// 新建的类型是emptyNode
 		nodeType: emptyNode,
 		db:       db,
 	}
@@ -84,6 +90,9 @@ func NewFromBinary(data []byte, db ethdb.KeyValueWriter) (*StackTrie, error) {
 }
 
 // MarshalBinary implements encoding.BinaryMarshaler
+// 返回StackTrie编码后的字节数组
+// 使用gob包进行编码,递归编码child
+// nil child使用0标记,不为nil的child有前缀1
 func (st *StackTrie) MarshalBinary() (data []byte, err error) {
 	var (
 		b bytes.Buffer
@@ -103,10 +112,13 @@ func (st *StackTrie) MarshalBinary() (data []byte, err error) {
 		return nil, err
 	}
 	for _, child := range st.children {
+		// child为nil写入0
 		if child == nil {
 			w.WriteByte(0)
 			continue
 		}
+		// child不是nil先写入一个1
+		// 然后对child进行编码
 		w.WriteByte(1)
 		if childData, err := child.MarshalBinary(); err != nil {
 			return nil, err
@@ -119,6 +131,7 @@ func (st *StackTrie) MarshalBinary() (data []byte, err error) {
 }
 
 // UnmarshalBinary implements encoding.BinaryUnmarshaler
+// 输入字节数组解码到StackTrie
 func (st *StackTrie) UnmarshalBinary(data []byte) error {
 	r := bytes.NewReader(data)
 	return st.unmarshalBinary(r)
@@ -131,7 +144,9 @@ func (st *StackTrie) unmarshalBinary(r io.Reader) error {
 		Key       []byte
 		KeyOffset uint8
 	}
+	// 使用gob包解码二进制流到dec中
 	gob.NewDecoder(r).Decode(&dec)
+	// 把dec中的数据写入到st中
 	st.nodeType = dec.Nodetype
 	st.val = dec.Val
 	st.key = dec.Key
@@ -139,6 +154,9 @@ func (st *StackTrie) unmarshalBinary(r io.Reader) error {
 
 	var hasChild = make([]byte, 1)
 	for i := range st.children {
+		// 一次读取一个字节
+		// 保存的是0的话继续读取下一个字节
+		// 不是0的话解码后面的字节成为StackTrie对象
 		if _, err := r.Read(hasChild); err != nil {
 			return err
 		} else if hasChild[0] == 0 {
@@ -151,6 +169,7 @@ func (st *StackTrie) unmarshalBinary(r io.Reader) error {
 	return nil
 }
 
+// 设置整棵树中每个节点的db字段
 func (st *StackTrie) setDb(db ethdb.KeyValueWriter) {
 	st.db = db
 	for _, child := range st.children {
