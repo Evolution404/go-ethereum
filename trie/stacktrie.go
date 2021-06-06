@@ -258,6 +258,8 @@ func (st *StackTrie) getDiffIndex(key []byte) int {
 // 向StackTrie中插入一个键值对
 func (st *StackTrie) insert(key, value []byte) {
 	switch st.nodeType {
+	// 分支节点的插入是根据key的第一位来判断在children中的位置
+	// 将前面的children就计算哈希,然后递归插入
 	case branchNode: /* Branch */
 		idx := int(key[st.keyOffset])
 		// Unresolve elder siblings
@@ -378,12 +380,19 @@ func (st *StackTrie) insert(key, value []byte) {
 		// Check if the split occurs at the first nibble of the
 		// chunk. In that case, no prefix extnode is necessary.
 		// Otherwise, create that
+		// 判断新插入的是不是和现有叶子用公共前缀
+		// 有公共前缀需要生成扩展节点
+		// 没有公共前缀不需要扩展节点,直接生成分支节点
+
+		// p保存了分支节点,原有节点和插入的节点就保存到该分支节点的两个分支
 		var p *StackTrie
+		// 没有前缀转换当前节点为分支节点
 		if diffidx == 0 {
 			// Convert current leaf into a branch
 			st.nodeType = branchNode
 			p = st
 			st.children[0] = nil
+		// 有前缀把当前节点转换为扩展节点,然后连接一个新生成的分支节点
 		} else {
 			// Convert current node into an ext,
 			// and insert a child branch node.
@@ -434,6 +443,9 @@ func (st *StackTrie) insert(key, value []byte) {
 // This method will also:
 // set 'st.type' to hashedNode
 // clear 'st.key'
+// 将st.type修改为hashedNode
+// 清空st.key
+// 设置st.val为哈希值(如果rlp编码不足32字节保存rlp编码)
 func (st *StackTrie) hash() {
 	/* Shortcut if node is already hashed */
 	if st.nodeType == hashedNode {
@@ -444,6 +456,8 @@ func (st *StackTrie) hash() {
 	// and we actually need one
 	var h *hasher
 
+	// 计算rlp编码到h.tmp中
+	// 清空st.children
 	switch st.nodeType {
 	case branchNode:
 		var nodes [17]node
@@ -483,6 +497,7 @@ func (st *StackTrie) hash() {
 			Key []byte
 			Val node
 		}{
+			// 扩展节点的key转换为compact格式
 			Key: hexToCompact(st.key),
 			Val: valuenode,
 		}
@@ -496,11 +511,13 @@ func (st *StackTrie) hash() {
 		defer returnHasherToPool(h)
 		h.tmp.Reset()
 		st.key = append(st.key, byte(16))
+		// 叶子节点需要将key转换为compact格式
 		sz := hexToCompactInPlace(st.key)
 		n := [][]byte{st.key[:sz], st.val}
 		if err := rlp.Encode(&h.tmp, n); err != nil {
 			panic(err)
 		}
+	// emptyNode直接使用提前计算好的哈希
 	case emptyNode:
 		st.val = emptyRoot.Bytes()
 		st.key = st.key[:0]
@@ -511,12 +528,14 @@ func (st *StackTrie) hash() {
 	}
 	st.key = st.key[:0]
 	st.nodeType = hashedNode
+	// 不足32字节直接返回rlp编码
 	if len(h.tmp) < 32 {
 		st.val = common.CopyBytes(h.tmp)
 		return
 	}
 	// Write the hash to the 'val'. We allocate a new val here to not mutate
 	// input values
+	// 计算哈希值
 	st.val = make([]byte, 32)
 	h.sha.Reset()
 	h.sha.Write(h.tmp)
@@ -529,6 +548,8 @@ func (st *StackTrie) hash() {
 }
 
 // Hash returns the hash of the current node
+// 执行后st.type变为hashedNode,返回树的哈希值
+// st.val执行后可能是rlp编码也可能是哈希
 func (st *StackTrie) Hash() (h common.Hash) {
 	st.hash()
 	if len(st.val) != 32 {
@@ -553,6 +574,8 @@ func (st *StackTrie) Hash() (h common.Hash) {
 //
 // The associated database is expected, otherwise the whole commit
 // functionality should be disabled.
+// 把整棵树各个节点 hash->rlp 映射写入数据库
+// 返回树根的哈希
 func (st *StackTrie) Commit() (common.Hash, error) {
 	if st.db == nil {
 		return common.Hash{}, ErrCommitDisabled

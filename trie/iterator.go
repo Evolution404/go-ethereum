@@ -27,10 +27,16 @@ import (
 )
 
 // Iterator is a key-value trie iterator that traverses a Trie.
+// 梅克尔树的迭代器
+// Iterator里面可以指定不同的NodeIterator
+// NodeIterator总共有三种 分别是
+// nodeIterator,differenceIterator,unionIterator
 type Iterator struct {
 	nodeIt NodeIterator
 
+	// 当前所处的key
 	Key   []byte // Current data key on which the iterator is positioned on
+	// 当前所处的value
 	Value []byte // Current data value on which the iterator is positioned on
 	Err   error
 }
@@ -38,6 +44,7 @@ type Iterator struct {
 // NewIterator creates a new key-value iterator from a node iterator.
 // Note that the value returned by the iterator is raw. If the content is encoded
 // (e.g. storage value is RLP-encoded), it's caller's duty to decode it.
+// 新建一个Iterator
 func NewIterator(it NodeIterator) *Iterator {
 	return &Iterator{
 		nodeIt: it,
@@ -45,6 +52,7 @@ func NewIterator(it NodeIterator) *Iterator {
 }
 
 // Next moves the iterator forward one key-value entry.
+// 获取下一个键值对,返回true说明迭代成功,it.Key和it.Value保存了对应的值
 func (it *Iterator) Next() bool {
 	for it.nodeIt.Next(true) {
 		if it.nodeIt.Leaf() {
@@ -61,11 +69,13 @@ func (it *Iterator) Next() bool {
 
 // Prove generates the Merkle proof for the leaf node the iterator is currently
 // positioned on.
+// 获取当前所处叶子节点的梅克尔证明
 func (it *Iterator) Prove() [][]byte {
 	return it.nodeIt.LeafProof()
 }
 
 // NodeIterator is an iterator to traverse the trie pre-order.
+// nodeIterator,differenceIterator,unionIterator实现了NodeIterator接口
 type NodeIterator interface {
 	// Next moves the iterator to the next node. If the parameter is false, any child
 	// nodes will be skipped.
@@ -120,6 +130,7 @@ type NodeIterator interface {
 
 // nodeIteratorState represents the iteration state at one particular node of the
 // trie, which can be resumed at a later invocation.
+// 保存当前迭代的状态,可以在之后用它来恢复迭代进度
 type nodeIteratorState struct {
 	hash    common.Hash // Hash of the node being iterated (nil if not standalone)
 	node    node        // Trie node being iterated
