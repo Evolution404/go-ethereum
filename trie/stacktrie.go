@@ -77,6 +77,7 @@ func NewStackTrie(db ethdb.KeyValueWriter) *StackTrie {
 }
 
 // NewFromBinary initialises a serialized stacktrie with the given db.
+// 输入字节数组解码为StackTrie
 func NewFromBinary(data []byte, db ethdb.KeyValueWriter) (*StackTrie, error) {
 	var st StackTrie
 	if err := st.UnmarshalBinary(data); err != nil {
@@ -179,6 +180,8 @@ func (st *StackTrie) setDb(db ethdb.KeyValueWriter) {
 	}
 }
 
+// 新建一个leafNode
+// ko代表keyOffset,表示输入key的开始位置
 func newLeaf(ko int, key, val []byte, db ethdb.KeyValueWriter) *StackTrie {
 	st := stackTrieFromPool(db)
 	st.nodeType = leafNode
@@ -188,6 +191,8 @@ func newLeaf(ko int, key, val []byte, db ethdb.KeyValueWriter) *StackTrie {
 	return st
 }
 
+// 指定ko,key和child新建一个extNode
+// 新建的extNode的key就是输入key从ko开始截取的后半部分
 func newExt(ko int, key []byte, child *StackTrie, db ethdb.KeyValueWriter) *StackTrie {
 	st := stackTrieFromPool(db)
 	st.nodeType = extNode
@@ -207,11 +212,14 @@ const (
 )
 
 // TryUpdate inserts a (key, value) pair into the stack trie
+// 设置key对应的值为value
+// value的长度不能为0,因为StackTrie不支持删除操作
 func (st *StackTrie) TryUpdate(key, value []byte) error {
 	k := keybytesToHex(key)
 	if len(value) == 0 {
 		panic("deletion not supported")
 	}
+	// 去掉k的最后一个元素,也就是去掉terminator
 	st.insert(k[:len(k)-1], value)
 	return nil
 }
@@ -222,6 +230,7 @@ func (st *StackTrie) Update(key, value []byte) {
 	}
 }
 
+// 让StackTrie的各个字段都清空
 func (st *StackTrie) Reset() {
 	st.db = nil
 	st.key = st.key[:0]
@@ -236,6 +245,7 @@ func (st *StackTrie) Reset() {
 // Helper function that, given a full key, determines the index
 // at which the chunk pointed by st.keyOffset is different from
 // the same chunk in the full key.
+// 找到st.key第一处与输入的key不一致的地方
 func (st *StackTrie) getDiffIndex(key []byte) int {
 	diffindex := 0
 	for ; diffindex < len(st.key) && st.key[diffindex] == key[st.keyOffset+diffindex]; diffindex++ {
@@ -245,11 +255,13 @@ func (st *StackTrie) getDiffIndex(key []byte) int {
 
 // Helper function to that inserts a (key, value) pair into
 // the trie.
+// 向StackTrie中插入一个键值对
 func (st *StackTrie) insert(key, value []byte) {
 	switch st.nodeType {
 	case branchNode: /* Branch */
 		idx := int(key[st.keyOffset])
 		// Unresolve elder siblings
+		// 把之前的节点都计算哈希
 		for i := idx - 1; i >= 0; i-- {
 			if st.children[i] != nil {
 				if st.children[i].nodeType != hashedNode {
@@ -259,11 +271,29 @@ func (st *StackTrie) insert(key, value []byte) {
 			}
 		}
 		// Add new child
+		// 插入新的节点
 		if st.children[idx] == nil {
 			st.children[idx] = stackTrieFromPool(st.db)
 			st.children[idx].keyOffset = st.keyOffset + 1
 		}
 		st.children[idx].insert(key, value)
+	// 假设当前extNode保存的key是abcd
+	// 当前节点扩展节点st连接分支节点child
+	// 1. 完全不匹配,例如exxx
+	//    生成新的扩展节点bcd连接原来的child
+	//    st改造为分支节点,连接扩展节点bcd和叶子节点xxx
+	// 2. 有两个或以上字符不匹配,例如axxx,abxxx,以下以axxx为例
+	//    生成新的扩展节点cd连接child
+	//    生成叶子节点xx
+	//    生成分支节点连接cd和xxx
+	//    st保持扩展节点,key修改为a,连接新增分支节点
+	// 3. 仅有末尾一个字符不匹配,例如abcxxx
+	//    生成叶子节点xx
+	//    生成分支节点连接child和xx
+	//    st保持扩展节点,key修改为abc,连接新增分支节点
+	// 4. 完全匹配abcdxxx
+	//    这个扩展节点不做操作,直接向children[0]保存的分支节点插入
+	// 2和3主要的区别在于3少生成一次扩展节点
 	case extNode: /* Ext */
 		// Compare both key chunks and see where they differ
 		diffidx := st.getDiffIndex(key)
@@ -273,6 +303,7 @@ func (st *StackTrie) insert(key, value []byte) {
 		// into 1) an optional common prefix, 2) the fullnode
 		// representing the two differing path, and 3) a leaf
 		// for each of the differentiated subtrees.
+		// 与这个扩展节点完全匹配,递归向子节点插入
 		if diffidx == len(st.key) {
 			// Ext key and key segment are identical, recurse into
 			// the child node.
@@ -283,6 +314,7 @@ func (st *StackTrie) insert(key, value []byte) {
 		// at the extension's last byte or not, create an
 		// intermediate extension or use the extension's child
 		// node directly.
+		// n用来记录原来的节点
 		var n *StackTrie
 		if diffidx < len(st.key)-1 {
 			n = newExt(diffidx+1, st.key, st.children[0], st.db)
@@ -293,7 +325,13 @@ func (st *StackTrie) insert(key, value []byte) {
 		}
 		// Convert to hash
 		n.hash()
+		// p用来记录插入生成的分支节点
+		// 接下来根据有没有共同前缀来构造分支节点
+		// 没有共同前缀直接改造当前节点为分支节点
+		// 有共同前缀改造当前节点的children[0],当前节点的key缩短到新前缀
 		var p *StackTrie
+		// 完全不匹配
+		// 当前节点改造成分支节点
 		if diffidx == 0 {
 			// the break is on the first byte, so
 			// the current node is converted into
@@ -301,6 +339,7 @@ func (st *StackTrie) insert(key, value []byte) {
 			st.children[0] = nil
 			p = st
 			st.nodeType = branchNode
+		// 有匹配的部分,在children[0]生成一个新的分支节点
 		} else {
 			// the common prefix is at least one byte
 			// long, insert a new intermediate branch
@@ -311,9 +350,11 @@ func (st *StackTrie) insert(key, value []byte) {
 			p = st.children[0]
 		}
 		// Create a leaf for the inserted part
+		// o用来保存插入的节点
 		o := newLeaf(st.keyOffset+diffidx+1, key, value, st.db)
 
 		// Insert both child leaves where they belong:
+		// 获得应该在分支节点children中的位置
 		origIdx := st.key[diffidx]
 		newIdx := key[diffidx+st.keyOffset]
 		p.children[origIdx] = n
@@ -368,6 +409,8 @@ func (st *StackTrie) insert(key, value []byte) {
 		// over to the children.
 		st.key = st.key[:diffidx]
 		st.val = nil
+	// 插入空节点直接赋值key,val即可
+	// 并设置类型为leafNode
 	case emptyNode: /* Empty */
 		st.nodeType = leafNode
 		st.key = key[st.keyOffset:]
