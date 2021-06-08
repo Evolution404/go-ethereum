@@ -75,6 +75,7 @@ func (it *Iterator) Prove() [][]byte {
 }
 
 // NodeIterator is an iterator to traverse the trie pre-order.
+// NodeIterator对梅克尔树进行先序遍历
 // nodeIterator,differenceIterator,unionIterator实现了NodeIterator接口
 type NodeIterator interface {
 	// Next moves the iterator to the next node. If the parameter is false, any child
@@ -139,6 +140,7 @@ type nodeIteratorState struct {
 	pathlen int         // Length of the path to this node
 }
 
+// 挨个节点进行遍历的迭代器
 type nodeIterator struct {
 	trie  *Trie                // Trie being iterated
 	stack []*nodeIteratorState // Hierarchy of trie nodes persisting the iteration state
@@ -161,26 +163,32 @@ func (e seekError) Error() string {
 	return "seek error: " + e.err.Error()
 }
 
+// 新建一个nodeIterator
 func newNodeIterator(trie *Trie, start []byte) NodeIterator {
 	if trie.Hash() == emptyState {
 		return new(nodeIterator)
 	}
 	it := &nodeIterator{trie: trie}
+	// 设置到输入的开始位置
 	it.err = it.seek(start)
 	return it
 }
 
+// 设置resolver
 func (it *nodeIterator) AddResolver(resolver ethdb.KeyValueStore) {
 	it.resolver = resolver
 }
 
+// 直接获取stack最后一项中保存的hash
 func (it *nodeIterator) Hash() common.Hash {
 	if len(it.stack) == 0 {
 		return common.Hash{}
 	}
+	// 返回stack最后一项的hash
 	return it.stack[len(it.stack)-1].hash
 }
 
+// 获取stack最后一项中保存的parent
 func (it *nodeIterator) Parent() common.Hash {
 	if len(it.stack) == 0 {
 		return common.Hash{}
@@ -188,10 +196,14 @@ func (it *nodeIterator) Parent() common.Hash {
 	return it.stack[len(it.stack)-1].parent
 }
 
+// 判断当前是否处于叶子节点
+// 也就是判断it.path末尾是不是terminator
 func (it *nodeIterator) Leaf() bool {
 	return hasTerm(it.path)
 }
 
+// 返回当前所处叶子节点的key
+// 也就是将it.path保存的hex格式转换成原始格式后返回
 func (it *nodeIterator) LeafKey() []byte {
 	if len(it.stack) > 0 {
 		if _, ok := it.stack[len(it.stack)-1].node.(valueNode); ok {
@@ -201,6 +213,7 @@ func (it *nodeIterator) LeafKey() []byte {
 	panic("not at leaf")
 }
 
+// 获取叶子节点保存的value
 func (it *nodeIterator) LeafBlob() []byte {
 	if len(it.stack) > 0 {
 		if node, ok := it.stack[len(it.stack)-1].node.(valueNode); ok {
@@ -210,6 +223,8 @@ func (it *nodeIterator) LeafBlob() []byte {
 	panic("not at leaf")
 }
 
+// 获取整条路径上的所有可以编码成hashNode的节点的rlp编码
+// 根节点一定加入
 func (it *nodeIterator) LeafProof() [][]byte {
 	if len(it.stack) > 0 {
 		if _, ok := it.stack[len(it.stack)-1].node.(valueNode); ok {
@@ -219,6 +234,7 @@ func (it *nodeIterator) LeafProof() [][]byte {
 
 			for i, item := range it.stack[:len(it.stack)-1] {
 				// Gather nodes that end up as hash nodes (or the root)
+				// 根节点无论如何都加入proffs中
 				node, hashed := hasher.proofHash(item.node)
 				if _, ok := hashed.(hashNode); ok || i == 0 {
 					enc, _ := rlp.EncodeToBytes(node)
@@ -235,6 +251,10 @@ func (it *nodeIterator) Path() []byte {
 	return it.path
 }
 
+// 返回错误
+// 如果err是errIteratorEnd返回nil
+// 如果err是seekError那么返回seekError内部保存的err
+// 其他情况直接返回err
 func (it *nodeIterator) Error() error {
 	if it.err == errIteratorEnd {
 		return nil
