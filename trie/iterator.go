@@ -31,6 +31,7 @@ import (
 // Iterator里面可以指定不同的NodeIterator
 // NodeIterator总共有三种 分别是
 // nodeIterator,differenceIterator,unionIterator
+// Iterator每次调用Next将会迭代到下一个叶子节点,获取该节点保存的键值对
 type Iterator struct {
 	nodeIt NodeIterator
 
@@ -52,8 +53,10 @@ func NewIterator(it NodeIterator) *Iterator {
 }
 
 // Next moves the iterator forward one key-value entry.
-// 获取下一个键值对,返回true说明迭代成功,it.Key和it.Value保存了对应的值
+// 迭代到下一个叶子节点
 func (it *Iterator) Next() bool {
+	// 一直调用NodeIterator对象的Next方法
+	// 直到迭代到一个叶子节点
 	for it.nodeIt.Next(true) {
 		if it.nodeIt.Leaf() {
 			it.Key = it.nodeIt.LeafKey()
@@ -77,9 +80,12 @@ func (it *Iterator) Prove() [][]byte {
 // NodeIterator is an iterator to traverse the trie pre-order.
 // NodeIterator对梅克尔树进行先序遍历
 // nodeIterator,differenceIterator,unionIterator实现了NodeIterator接口
+// 外部可以使用NewDifferenceIterator,NewUnionIterator两种
+// NodeIterator用来迭代树中的所有节点
 type NodeIterator interface {
 	// Next moves the iterator to the next node. If the parameter is false, any child
 	// nodes will be skipped.
+	// 迭代到下一个节点
 	Next(bool) bool
 
 	// Error returns the error status of the iterator.
@@ -126,24 +132,29 @@ type NodeIterator interface {
 	// Before adding a similar mechanism to any other place in Geth, consider
 	// making trie.Database an interface and wrapping at that level. It's a huge
 	// refactor, but it could be worth it if another occurrence arises.
+	// 只有nodeIterator支持该方法
+	// differenceIterator,unionIterator不支持该方法
 	AddResolver(ethdb.KeyValueStore)
 }
 
 // nodeIteratorState represents the iteration state at one particular node of the
 // trie, which can be resumed at a later invocation.
-// 保存当前迭代的状态,可以在之后用它来恢复迭代进度
+// 保存迭代器到达某个节点时的状态
 type nodeIteratorState struct {
 	hash    common.Hash // Hash of the node being iterated (nil if not standalone)
 	node    node        // Trie node being iterated
 	parent  common.Hash // Hash of the first full ancestor node (nil if current is the root)
 	index   int         // Child to be processed next
+	// 到达这个节点的key的长度
 	pathlen int         // Length of the path to this node
 }
 
 // 挨个节点进行遍历的迭代器
 type nodeIterator struct {
 	trie  *Trie                // Trie being iterated
+	// 保存迭代到当前节点路径上遇到的所有节点
 	stack []*nodeIteratorState // Hierarchy of trie nodes persisting the iteration state
+	// 当前迭代到节点所在路径
 	path  []byte               // Path to the current node
 	err   error                // Failure set in case of an internal error in the iterator
 
@@ -269,7 +280,10 @@ func (it *nodeIterator) Error() error {
 // further nodes. In case of an internal error this method returns false and
 // sets the Error field to the encountered failure. If `descend` is false,
 // skips iterating over any subnodes of the current node.
+// 输入descend为true表示继续迭代当前节点的子节点,为false跳过当前节点的子节点
+// 返回值为true说明迭代到下一个节点,为false说明遇到了错误 保存到it.err中
 func (it *nodeIterator) Next(descend bool) bool {
+	// 先进行错误处理
 	if it.err == errIteratorEnd {
 		return false
 	}
@@ -284,6 +298,7 @@ func (it *nodeIterator) Next(descend bool) bool {
 	if it.err != nil {
 		return false
 	}
+	// 没有错误加入到栈中
 	it.push(state, parentIndex, path)
 	return true
 }
@@ -317,12 +332,14 @@ func (it *nodeIterator) init() (*nodeIteratorState, error) {
 }
 
 // peek creates the next state of the iterator.
+// 构造下一个节点的nodeIteratorState对象
 func (it *nodeIterator) peek(descend bool) (*nodeIteratorState, *int, []byte, error) {
 	// Initialize the iterator if we've just started.
 	if len(it.stack) == 0 {
 		state, err := it.init()
 		return state, nil, nil, err
 	}
+	// 不搜索子节点,跳过当前节点继续搜索
 	if !descend {
 		// If we're skipping children, pop the current node first
 		it.pop()
@@ -343,6 +360,7 @@ func (it *nodeIterator) peek(descend bool) (*nodeIteratorState, *int, []byte, er
 			return state, &parent.index, path, nil
 		}
 		// No more child nodes, move back up.
+		// 当前节点没有子节点了
 		it.pop()
 	}
 	return nil, nil, nil, errIteratorEnd
@@ -381,7 +399,9 @@ func (it *nodeIterator) peekSeek(seekKey []byte) (*nodeIteratorState, *int, []by
 	return nil, nil, nil, errIteratorEnd
 }
 
+// 根据节点哈希解析出来node对象
 func (it *nodeIterator) resolveHash(hash hashNode, path []byte) (node, error) {
+	// nodeIterator设置了resolver,使用它来读取
 	if it.resolver != nil {
 		if blob, err := it.resolver.Get(hash); err == nil && len(blob) > 0 {
 			if resolved, err := decodeNode(hash, blob); err == nil {
@@ -389,10 +409,13 @@ func (it *nodeIterator) resolveHash(hash hashNode, path []byte) (node, error) {
 			}
 		}
 	}
+	// 没有设置resolver,或者前面出现错误,使用默认的resolverHash
 	resolved, err := it.trie.resolveHash(hash, path)
 	return resolved, err
 }
 
+// 解析nodeIteratorState对象内部保存的hashNode为node对象
+// 让st.hash保存原来的哈希值
 func (st *nodeIteratorState) resolve(it *nodeIterator, path []byte) error {
 	if hash, ok := st.node.(hashNode); ok {
 		resolved, err := it.resolveHash(hash, path)
@@ -405,12 +428,15 @@ func (st *nodeIteratorState) resolve(it *nodeIterator, path []byte) error {
 	return nil
 }
 
+// index代表开始搜索Children字段的下标
+// 搜索fullNode从index开始的第一个子节点
 func findChild(n *fullNode, index int, path []byte, ancestor common.Hash) (node, *nodeIteratorState, []byte, int) {
 	var (
 		child     node
 		state     *nodeIteratorState
 		childPath []byte
 	)
+	// 遍历Children字段找到第一个子节点
 	for ; index < len(n.Children); index++ {
 		if n.Children[index] != nil {
 			child = n.Children[index]
@@ -422,6 +448,7 @@ func findChild(n *fullNode, index int, path []byte, ancestor common.Hash) (node,
 				index:   -1,
 				pathlen: len(path),
 			}
+			// 构造子节点的路径,就是再添加一位下标
 			childPath = append(childPath, path...)
 			childPath = append(childPath, byte(index))
 			return child, state, childPath, index
@@ -430,6 +457,7 @@ func findChild(n *fullNode, index int, path []byte, ancestor common.Hash) (node,
 	return nil, nil, nil, 0
 }
 
+// 当前nodeIterator进入当前节点下一个子节点的状态
 func (it *nodeIterator) nextChild(parent *nodeIteratorState, ancestor common.Hash) (*nodeIteratorState, []byte, bool) {
 	switch node := parent.node.(type) {
 	case *fullNode:
@@ -458,6 +486,9 @@ func (it *nodeIterator) nextChild(parent *nodeIteratorState, ancestor common.Has
 
 // nextChildAt is similar to nextChild, except that it targets a child as close to the
 // target key as possible, thus skipping siblings.
+// 找到当前节点子节点中最接近输入key的那个
+// shortNode直接返回子节点
+// fullNode遍历子节点,找到第一个大于key的
 func (it *nodeIterator) nextChildAt(parent *nodeIteratorState, ancestor common.Hash, key []byte) (*nodeIteratorState, []byte, bool) {
 	switch n := parent.node.(type) {
 	case *fullNode:
@@ -502,6 +533,7 @@ func (it *nodeIterator) nextChildAt(parent *nodeIteratorState, ancestor common.H
 	return parent, it.path, false
 }
 
+// it.stack追加输入的state,it.path修改为输入的path,并让输入的parentIndex自增
 func (it *nodeIterator) push(state *nodeIteratorState, parentIndex *int, path []byte) {
 	it.path = path
 	it.stack = append(it.stack, state)
@@ -510,39 +542,56 @@ func (it *nodeIterator) push(state *nodeIteratorState, parentIndex *int, path []
 	}
 }
 
+// 弹出当前迭代的最后一个节点
+// 修改it.path和it.stack即可
 func (it *nodeIterator) pop() {
 	parent := it.stack[len(it.stack)-1]
 	it.path = it.path[:parent.pathlen]
 	it.stack = it.stack[:len(it.stack)-1]
 }
 
+// 比较两个节点的先后顺序
+// -1 a<b, 0 a=b, 1 a>b
 func compareNodes(a, b NodeIterator) int {
+	// 先直接比较路径
 	if cmp := bytes.Compare(a.Path(), b.Path()); cmp != 0 {
 		return cmp
 	}
+	// 路径相同判断叶子结点
+	// a是叶子,b不是叶子,明显a在b前面
 	if a.Leaf() && !b.Leaf() {
 		return -1
+	// b是叶子,a不是叶子,明显a大于b
 	} else if b.Leaf() && !a.Leaf() {
 		return 1
 	}
+	// 此时路径相同,且都是叶子节点或者都不是叶子节点
 	if cmp := bytes.Compare(a.Hash().Bytes(), b.Hash().Bytes()); cmp != 0 {
 		return cmp
 	}
+
+	// 两个叶子节点,哈希值相同,有可能是根节点
 	if a.Leaf() && b.Leaf() {
 		return bytes.Compare(a.LeafBlob(), b.LeafBlob())
 	}
+	// a和b的hash相同,路径相同还都不是叶子节点
+	// 只好让他俩相等
 	return 0
 }
 
+// 调用Next方法不断迭代b中的节点,但是会跳过a中的节点
 type differenceIterator struct {
 	a, b  NodeIterator // Nodes returned are those in b - a.
+	// 标记a是否已经到了末尾
 	eof   bool         // Indicates a has run out of elements
+	// 记录在两棵树中搜索过的节点个数
 	count int          // Number of nodes scanned on either trie
 }
 
 // NewDifferenceIterator constructs a NodeIterator that iterates over elements in b that
 // are not in a. Returns the iterator, and a pointer to an integer recording the number
 // of nodes seen.
+// 遍历在b中而不在a中的节点
 func NewDifferenceIterator(a, b NodeIterator) (NodeIterator, *int) {
 	a.Next(true)
 	it := &differenceIterator{
@@ -588,6 +637,7 @@ func (it *differenceIterator) Next(bool) bool {
 	// Invariants:
 	// - We always advance at least one element in b.
 	// - At the start of this function, a's path is lexically greater than b's.
+	// b先后移一个
 	if !it.b.Next(true) {
 		return false
 	}
@@ -600,6 +650,7 @@ func (it *differenceIterator) Next(bool) bool {
 
 	for {
 		switch compareNodes(it.a, it.b) {
+		// a<b的话a继续往前移动
 		case -1:
 			// b jumped past a; advance a
 			if !it.a.Next(true) {
@@ -612,11 +663,13 @@ func (it *differenceIterator) Next(bool) bool {
 			return true
 		case 0:
 			// a and b are identical; skip this whole subtree if the nodes have hashes
+			// hasHash为false的时候跳过子树
 			hasHash := it.a.Hash() == common.Hash{}
 			if !it.b.Next(hasHash) {
 				return false
 			}
 			it.count++
+			// a到尾部了标记一下eof,以后都不用查a了
 			if !it.a.Next(hasHash) {
 				it.eof = true
 				return true
@@ -633,6 +686,7 @@ func (it *differenceIterator) Error() error {
 	return it.b.Error()
 }
 
+// nodeIterator对象的小根堆
 type nodeIteratorHeap []NodeIterator
 
 func (h nodeIteratorHeap) Len() int            { return len(h) }
@@ -646,6 +700,7 @@ func (h *nodeIteratorHeap) Pop() interface{} {
 	return x
 }
 
+// 相当于合并给定的所有NodeIterator,遍历里面的所有节点
 type unionIterator struct {
 	items *nodeIteratorHeap // Nodes returned are the union of the ones in these iterators
 	count int               // Number of nodes scanned across all tries
@@ -654,15 +709,20 @@ type unionIterator struct {
 // NewUnionIterator constructs a NodeIterator that iterates over elements in the union
 // of the provided NodeIterators. Returns the iterator, and a pointer to an integer
 // recording the number of nodes visited.
+// 创建一个unionIterator对象
+// 遍历所有给定的NodeIterator里的节点
 func NewUnionIterator(iters []NodeIterator) (NodeIterator, *int) {
+	// 初始化一个堆h
 	h := make(nodeIteratorHeap, len(iters))
 	copy(h, iters)
 	heap.Init(&h)
 
+	// 新建的unionIterator使用刚才新建的堆
 	ui := &unionIterator{items: &h}
 	return ui, &ui.count
 }
 
+// 当前的节点其实就是小根堆的堆顶,对于这里就是数组中第一个元素
 func (it *unionIterator) Hash() common.Hash {
 	return (*it.items)[0].Hash()
 }
@@ -709,6 +769,7 @@ func (it *unionIterator) AddResolver(resolver ethdb.KeyValueStore) {
 // In the case that descend=false - eg, we're asked to ignore all subnodes of the
 // current node - we also advance any iterators in the heap that have the current
 // path as a prefix.
+// 获取unionIterator中的下一个元素
 func (it *unionIterator) Next(descend bool) bool {
 	if len(*it.items) == 0 {
 		return false
@@ -719,6 +780,9 @@ func (it *unionIterator) Next(descend bool) bool {
 
 	// Skip over other nodes as long as they're identical, or, if we're not descending, as
 	// long as they have the same prefix as the current node.
+	// 在获取下一个节点的时候
+	// 首先要跳过这些树中相同的元素
+	// 如果descend是false,那么这些树中具有相同前缀的节点也都跳过
 	for len(*it.items) > 0 && ((!descend && bytes.HasPrefix((*it.items)[0].Path(), least.Path())) || compareNodes(least, (*it.items)[0]) == 0) {
 		skipped := heap.Pop(it.items).(NodeIterator)
 		// Skip the whole subtree if the nodes have hashes; otherwise just skip this node

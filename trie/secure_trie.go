@@ -23,6 +23,11 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 )
 
+// 设计SecureTrie的目的
+//   查询一个节点可能会需要许多次IO读取，效率低下
+//   系统易遭受Dos攻击，攻击者可以通过在合约中存储特定的数据，“构造”一棵拥有一条很长路径的树，然后不断地调用SLOAD指令读取该树节点的内容，造成系统执行效率极度下降
+//   所有的key其实是一种明文的形式进行存储
+
 // SecureTrie wraps a trie with key hashing. In a secure trie, all
 // access operations hash the key using keccak256. This prevents
 // calling code from creating long chains of nodes that

@@ -35,11 +35,16 @@ import (
 // If the trie does not contain a value for key, the returned proof contains all
 // nodes of the longest existing prefix of the key (at least the root node), ending
 // with the node that proves the absence of the key.
+// 计算给定key的梅克尔证明,将每一层的计算结果写入proofDb
+// fromLevel代表从树的哪一层开始计算
 func (t *Trie) Prove(key []byte, fromLevel uint, proofDb ethdb.KeyValueWriter) error {
 	// Collect all nodes on the path to key.
 	key = keybytesToHex(key)
+	// 保存key路径的所有节点
 	var nodes []node
 	tn := t.root
+	// 循环过程中每向下一层key就去掉一层的路径,key逐渐变短
+	// 每向下一层node就添加这一层的节点
 	for len(key) > 0 && tn != nil {
 		switch n := tn.(type) {
 		case *shortNode:
@@ -70,11 +75,14 @@ func (t *Trie) Prove(key []byte, fromLevel uint, proofDb ethdb.KeyValueWriter) e
 	defer returnHasherToPool(hasher)
 
 	for i, n := range nodes {
+		// 一直找到对应的层
 		if fromLevel > 0 {
 			fromLevel--
 			continue
 		}
 		var hn node
+		// 计算路径上每一层的哈希
+		// 放入到proofDb中
 		n, hn = hasher.proofHash(n)
 		if hash, ok := hn.(hashNode); ok || i == 0 {
 			// If the node's database encoding is a hash (or is the
@@ -107,10 +115,12 @@ func VerifyProof(rootHash common.Hash, key []byte, proofDb ethdb.KeyValueReader)
 	key = keybytesToHex(key)
 	wantHash := rootHash
 	for i := 0; ; i++ {
+		// 读取rlp编码到buf中
 		buf, _ := proofDb.Get(wantHash[:])
 		if buf == nil {
 			return nil, fmt.Errorf("proof node %d (hash %064x) missing", i, wantHash)
 		}
+		// 从buf中解码出节点对象
 		n, err := decodeNode(wantHash[:], buf)
 		if err != nil {
 			return nil, fmt.Errorf("bad proof node %d: %v", i, err)
@@ -566,6 +576,9 @@ func VerifyRangeProof(rootHash common.Hash, firstKey []byte, lastKey []byte, key
 //
 // There is an additional flag `skipResolved`. If it's set then
 // all resolved nodes won't be returned.
+// 当skipResolved为true的时候返回的node不可能是shortNode和fullNode
+// 当skipResolved为true,一直沿着key的路径找到第一个hashNode或者valueNode
+// 当skipResolved为false,就直接找顺着key的第一个节点,hashNode或者valueNode直接返回
 func get(tn node, key []byte, skipResolved bool) ([]byte, node) {
 	for {
 		switch n := tn.(type) {
