@@ -36,16 +36,18 @@ import (
 // nodes of the longest existing prefix of the key (at least the root node), ending
 // with the node that proves the absence of the key.
 // 计算给定key的梅克尔证明,将每一层的计算结果写入proofDb
+// 写入的结果就是路径上的每一个节点对应的 hash->rlp 映射
 // fromLevel代表从树的哪一层开始计算
 func (t *Trie) Prove(key []byte, fromLevel uint, proofDb ethdb.KeyValueWriter) error {
 	// Collect all nodes on the path to key.
 	key = keybytesToHex(key)
-	// 保存key路径的所有节点
+	// 保存key路径的所有节点,里面只有shortNode和fullNode两种类型
 	var nodes []node
 	tn := t.root
 	// 循环过程中每向下一层key就去掉一层的路径,key逐渐变短
 	// 每向下一层node就添加这一层的节点
 	for len(key) > 0 && tn != nil {
+		// 每次循环更新tn为下一层节点,并缩短key
 		switch n := tn.(type) {
 		case *shortNode:
 			if len(key) < len(n.Key) || !bytes.Equal(n.Key, key[:len(n.Key)]) {
@@ -111,6 +113,7 @@ func (t *SecureTrie) Prove(key []byte, fromLevel uint, proofDb ethdb.KeyValueWri
 // VerifyProof checks merkle proofs. The given proof must contain the value for
 // key in a trie with the given root hash. VerifyProof returns an error if the
 // proof contains invalid trie nodes or the wrong value.
+// rootHash表示要验证的树的根,key为要验证的路径
 func VerifyProof(rootHash common.Hash, key []byte, proofDb ethdb.KeyValueReader) (value []byte, err error) {
 	key = keybytesToHex(key)
 	wantHash := rootHash
@@ -130,6 +133,7 @@ func VerifyProof(rootHash common.Hash, key []byte, proofDb ethdb.KeyValueReader)
 		case nil:
 			// The trie doesn't contain the key.
 			return nil, nil
+		// 读到hashNode下一轮从数据库中读原始rlp编码
 		case hashNode:
 			key = keyrest
 			copy(wantHash[:], cld)
@@ -144,8 +148,11 @@ func VerifyProof(rootHash common.Hash, key []byte, proofDb ethdb.KeyValueReader)
 // necessary nodes will be resolved and leave the remaining as hashnode.
 //
 // The given edge proof is allowed to be an existent or non-existent proof.
+// 根据输入的rootHash,key,proofDb恢复出来这一条节点链接起来的路径,路径上的hashNode都被解析为原来的对象
+// 返回的node就是被恢复出来的整条路径
 func proofToPath(rootHash common.Hash, root node, key []byte, proofDb ethdb.KeyValueReader, allowNonExistent bool) (node, []byte, error) {
 	// resolveNode retrieves and resolves trie node from merkle proof stream
+	// resolveNode用来输入hash,从proofDb中恢复haxh对应的节点对象
 	resolveNode := func(hash common.Hash) (node, error) {
 		buf, _ := proofDb.Get(hash[:])
 		if buf == nil {
@@ -172,6 +179,10 @@ func proofToPath(rootHash common.Hash, root node, key []byte, proofDb ethdb.KeyV
 		keyrest       []byte
 		valnode       []byte
 	)
+	// 将key转换为hex格式
+	// 逐层向下解析对象
+	// 遇到hashNode的时候才需要特殊处理
+	// 首先解析读到的hashNode然后让父节点串联起来这个解析出来的节点
 	key, parent = keybytesToHex(key), root
 	for {
 		keyrest, child = get(parent, key, false)
@@ -185,6 +196,7 @@ func proofToPath(rootHash common.Hash, root node, key []byte, proofDb ethdb.KeyV
 				return root, nil, nil
 			}
 			return nil, nil, errors.New("the node is not contained in trie")
+		// shortNode,fullNode直接continue进入下一层
 		case *shortNode:
 			key, parent = keyrest, child // Already resolved
 			continue
@@ -196,6 +208,7 @@ func proofToPath(rootHash common.Hash, root node, key []byte, proofDb ethdb.KeyV
 			if err != nil {
 				return nil, nil, err
 			}
+		// 读到valueNode就到底了,下面结束读取
 		case valueNode:
 			valnode = cld
 		}
@@ -354,14 +367,17 @@ findFork:
 //     keep the entire branch and return.
 //   - the fork point is a shortnode, the shortnode is excluded in the range,
 //     unset the entire branch.
+// pos代表当前处理的key的位置
 func unset(parent node, child node, key []byte, pos int, removeLeft bool) error {
 	switch cld := child.(type) {
 	case *fullNode:
+		// removeLeft为true就清空左侧的所有子节点
 		if removeLeft {
 			for i := 0; i < int(key[pos]); i++ {
 				cld.Children[i] = nil
 			}
 			cld.flags = nodeFlag{dirty: true}
+		// 否则清空右侧的所有节点
 		} else {
 			for i := key[pos] + 1; i < 16; i++ {
 				cld.Children[i] = nil
@@ -372,6 +388,9 @@ func unset(parent node, child node, key []byte, pos int, removeLeft bool) error 
 	case *shortNode:
 		if len(key[pos:]) < len(cld.Key) || !bytes.Equal(cld.Key, key[pos:pos+len(cld.Key)]) {
 			// Find the fork point, it's an non-existent branch.
+			// 当前这个shortNode不匹配路径了
+			// 如果removeLeft为true,那么当前节点小于路径的话从父节点移除
+			// 如果removeLeft为false,那么当前节点大于路径的话从父节点移除
 			if removeLeft {
 				if bytes.Compare(cld.Key, key[pos:]) < 0 {
 					// The key of fork shortnode is less than the path
@@ -399,12 +418,17 @@ func unset(parent node, child node, key []byte, pos int, removeLeft bool) error 
 			}
 			return nil
 		}
+		// 找到了路径末尾的节点
+		// 从它的父节点上清空末尾的这个节点
+		// 路径末尾一定是一个shortNode
+		// 而且shortNode的父节点也一定是一个fullNode
 		if _, ok := cld.Val.(valueNode); ok {
 			fn := parent.(*fullNode)
 			fn.Children[key[pos-1]] = nil
 			return nil
 		}
 		cld.flags = nodeFlag{dirty: true}
+		// 继续向下递归处理
 		return unset(cld, cld.Val, key, pos+len(cld.Key), removeLeft)
 	case nil:
 		// If the node is nil, then it's a child of the fork point
@@ -420,20 +444,28 @@ func unset(parent node, child node, key []byte, pos int, removeLeft bool) error 
 // key or a non-existent one. This function has the assumption that the whole
 // path should already be resolved.
 func hasRightElement(node node, key []byte) bool {
+	// pos记录当前读取到key的下标
 	pos, key := 0, keybytesToHex(key)
 	for node != nil {
 		switch rn := node.(type) {
 		case *fullNode:
+			// fullNode在后面只要有一个节点不是nil就说明右侧还有树
 			for i := key[pos] + 1; i < 16; i++ {
 				if rn.Children[i] != nil {
 					return true
 				}
 			}
+			// 后面所有位置都是nil
+			// 就在当前路径继续向下搜索一层
 			node, pos = rn.Children[key[pos]], pos+1
 		case *shortNode:
+			// shortNode里的key不能完全匹配
+			// 比较节点内保存的key与输入的key谁大
+			// 节点的key大就说明右侧还有
 			if len(key)-pos < len(rn.Key) || !bytes.Equal(rn.Key, key[pos:pos+len(rn.Key)]) {
 				return bytes.Compare(rn.Key, key[pos:]) > 0
 			}
+			// shortNode里的key能够完全匹配
 			node, pos = rn.Val, pos+len(rn.Key)
 		case valueNode:
 			return false // We have resolved the whole path

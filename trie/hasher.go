@@ -212,8 +212,8 @@ func (h *hasher) hashData(data []byte) hashNode {
 // node (for later RLP encoding) aswell as the hashed node -- unless the
 // node is smaller than 32 bytes, in which case it will be returned as is.
 // This method does not do anything on value- or hash-nodes.
-// collapsed指对内部节点计算过哈希
-// hashed指对节点自己也进行了哈希
+// collapsed指对内部节点计算过哈希,collapsed用来计算节点的rlp编码
+// hashed指对节点自己也进行了哈希,hashed就代表节点的哈希值
 // collapsed增加一步哈希计算即可得到hashed
 func (h *hasher) proofHash(original node) (collapsed, hashed node) {
 	switch n := original.(type) {
