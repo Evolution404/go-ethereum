@@ -114,6 +114,7 @@ func (t *SecureTrie) Prove(key []byte, fromLevel uint, proofDb ethdb.KeyValueWri
 // key in a trie with the given root hash. VerifyProof returns an error if the
 // proof contains invalid trie nodes or the wrong value.
 // rootHash表示要验证的树的根,key为要验证的路径
+// 如果返回的err为nil说明验证通过,此时返回的value代表key对应的值
 func VerifyProof(rootHash common.Hash, key []byte, proofDb ethdb.KeyValueReader) (value []byte, err error) {
 	key = keybytesToHex(key)
 	wantHash := rootHash
@@ -149,7 +150,7 @@ func VerifyProof(rootHash common.Hash, key []byte, proofDb ethdb.KeyValueReader)
 //
 // The given edge proof is allowed to be an existent or non-existent proof.
 // 根据输入的rootHash,key,proofDb恢复出来这一条节点链接起来的路径,路径上的hashNode都被解析为原来的对象
-// 返回的node就是被恢复出来的整条路径
+// 返回的node就是被恢复出来的整条路径,如果key能搜索到valueNode第二个返回值就是这个valueNode
 func proofToPath(rootHash common.Hash, root node, key []byte, proofDb ethdb.KeyValueReader, allowNonExistent bool) (node, []byte, error) {
 	// resolveNode retrieves and resolves trie node from merkle proof stream
 	// resolveNode用来输入hash,从proofDb中恢复haxh对应的节点对象
@@ -239,6 +240,8 @@ func proofToPath(rootHash common.Hash, root node, key []byte, proofDb ethdb.KeyV
 //
 // Note we have the assumption here the given boundary keys are different
 // and right is larger than left.
+// 清除树上在left和right路径之间的节点
+// 输入的right一定要大于left
 func unsetInternal(n node, left []byte, right []byte) (bool, error) {
 	left, right = keybytesToHex(left), keybytesToHex(right)
 
@@ -254,6 +257,7 @@ func unsetInternal(n node, left []byte, right []byte) (bool, error) {
 		// fork indicator, 0 means no fork, -1 means proof is less, 1 means proof is greater
 		shortForkLeft, shortForkRight int
 	)
+	// 结束这个for循环后, n就代表两条路径分叉位置的节点
 findFork:
 	for {
 		switch rn := (n).(type) {
@@ -262,6 +266,8 @@ findFork:
 
 			// If either the key of left proof or right proof doesn't match with
 			// shortnode, stop here and the forkpoint is the shortnode.
+			// shortForkLeft和shortForkRight分别记录两条路径是否与当前shortNode中保存的key一致
+			// 都是0说明两条路径都与当前的shortNode保存的key一致,继续向下一层
 			if len(left)-pos < len(rn.Key) {
 				shortForkLeft = bytes.Compare(left[pos:], rn.Key)
 			} else {
@@ -273,8 +279,10 @@ findFork:
 				shortForkRight = bytes.Compare(right[pos:pos+len(rn.Key)], rn.Key)
 			}
 			if shortForkLeft != 0 || shortForkRight != 0 {
+				// 这里直接使用break是跳出switch语句,所以使用label结束for循环
 				break findFork
 			}
+			// 左右两条路径都一致,向下一层
 			parent = n
 			n, pos = rn.Val, pos+len(rn.Key)
 		case *fullNode:
@@ -300,21 +308,31 @@ findFork:
 		// - left proof is less and right proof is greater => valid range, unset the shortnode entirely
 		// - left proof points to the shortnode, but right proof is greater
 		// - right proof points to the shortnode, but left proof is less
+		// 两条路径都小于
 		if shortForkLeft == -1 && shortForkRight == -1 {
 			return false, errors.New("empty range")
 		}
+		// 两条路径都大于
 		if shortForkLeft == 1 && shortForkRight == 1 {
 			return false, errors.New("empty range")
 		}
+		// left小于,right大于
 		if shortForkLeft != 0 && shortForkRight != 0 {
 			// The fork point is root node, unset the entire trie
+			// 根节点就分叉了,返回空树
 			if parent == nil {
 				return true, nil
 			}
+			// 分叉位置是shortNode,让父节点的fullNode下的这个分支置空即可
 			parent.(*fullNode).Children[left[pos-1]] = nil
 			return false, nil
 		}
+		// 执行到这里是分叉了但是没有完全分叉的情况
+		// 比如left完全匹配这个节点,但是right不匹配了
+		// 或者left不匹配这个节点,但是right匹配了
+		// 需要利用unset函数继续沿着路径清理左侧或者右侧的节点
 		// Only one proof points to non-existent key.
+		// 这种情况是left完全匹配,沿着left的路径删除所有left右侧的节点
 		if shortForkRight != 0 {
 			if _, ok := rn.Val.(valueNode); ok {
 				// The fork point is root node, unset the entire trie
@@ -338,14 +356,21 @@ findFork:
 			return false, unset(rn, rn.Val, right[pos:], len(rn.Key), true)
 		}
 		return false, nil
+	// 分叉位置是fullNode
+	// 1. 清除fullNode在左右路径中间的节点
+	// 2. 继续向下搜索左路径,清除左路径右侧的节点
+	// 3. 继续向下搜索右路径,清除右路径左侧的节点
 	case *fullNode:
 		// unset all internal nodes in the forkpoint
+		// 在fullNode位置分叉,将两者中间的节点置空
 		for i := left[pos] + 1; i < right[pos]; i++ {
 			rn.Children[i] = nil
 		}
+		// 清除左节点路径的右侧
 		if err := unset(rn, rn.Children[left[pos]], left[pos:], 1, false); err != nil {
 			return false, err
 		}
+		// 清除右节点路径的左侧
 		if err := unset(rn, rn.Children[right[pos]], right[pos:], 1, true); err != nil {
 			return false, err
 		}
@@ -367,6 +392,8 @@ findFork:
 //     keep the entire branch and return.
 //   - the fork point is a shortnode, the shortnode is excluded in the range,
 //     unset the entire branch.
+// removeLeft为true清空key代表路径左侧所有节点的引用
+// removeLeft为false清空key代表路径右侧所有节点的引用
 // pos代表当前处理的key的位置
 func unset(parent node, child node, key []byte, pos int, removeLeft bool) error {
 	switch cld := child.(type) {
@@ -377,7 +404,7 @@ func unset(parent node, child node, key []byte, pos int, removeLeft bool) error 
 				cld.Children[i] = nil
 			}
 			cld.flags = nodeFlag{dirty: true}
-		// 否则清空右侧的所有节点
+			// 否则清空右侧的所有节点
 		} else {
 			for i := key[pos] + 1; i < 16; i++ {
 				cld.Children[i] = nil
@@ -420,15 +447,14 @@ func unset(parent node, child node, key []byte, pos int, removeLeft bool) error 
 		}
 		// 找到了路径末尾的节点
 		// 从它的父节点上清空末尾的这个节点
-		// 路径末尾一定是一个shortNode
-		// 而且shortNode的父节点也一定是一个fullNode
+		// 末尾节点的父节点一定是一个fullNode
 		if _, ok := cld.Val.(valueNode); ok {
 			fn := parent.(*fullNode)
 			fn.Children[key[pos-1]] = nil
 			return nil
 		}
 		cld.flags = nodeFlag{dirty: true}
-		// 继续向下递归处理
+		// shortNode保存的不是vlaueNode,继续向下递归处理
 		return unset(cld, cld.Val, key, pos+len(cld.Key), removeLeft)
 	case nil:
 		// If the node is nil, then it's a child of the fork point
@@ -443,6 +469,8 @@ func unset(parent node, child node, key []byte, pos int, removeLeft bool) error 
 // in the right side of the given path. The given path can point to an existent
 // key or a non-existent one. This function has the assumption that the whole
 // path should already be resolved.
+// 假定树中已经不含有hashNode
+// 判断给定的路径右侧还有没有节点
 func hasRightElement(node node, key []byte) bool {
 	// pos记录当前读取到key的下标
 	pos, key := 0, keybytesToHex(key)
@@ -510,11 +538,14 @@ func hasRightElement(node node, key []byte) bool {
 // Note: This method does not verify that the proof is of minimal form. If the input
 // proofs are 'bloated' with neighbour leaves or random data, aside from the 'useful'
 // data, then the proof will still be accepted.
+// keys和values中的数据一一对应,代表要验证的键值对,而且输入的key必须要单调递增
+// 返回的bool代表树中在最后一个验证的key后面是否还有节点,error代表验证是否通过
 func VerifyRangeProof(rootHash common.Hash, firstKey []byte, lastKey []byte, keys [][]byte, values [][]byte, proof ethdb.KeyValueReader) (bool, error) {
 	if len(keys) != len(values) {
 		return false, fmt.Errorf("inconsistent proof data, keys: %d, values: %d", len(keys), len(values))
 	}
 	// Ensure the received batch is monotonic increasing.
+	// 检测是不是每个key都大于等于前一个key
 	for i := 0; i < len(keys)-1; i++ {
 		if bytes.Compare(keys[i], keys[i+1]) >= 0 {
 			return false, errors.New("range is not monotonically increasing")
@@ -522,14 +553,19 @@ func VerifyRangeProof(rootHash common.Hash, firstKey []byte, lastKey []byte, key
 	}
 	// Special case, there is no edge proof at all. The given range is expected
 	// to be the whole leaf-set in the trie.
+	// 输入的keys和values包括了整棵树中的所有叶子节点
+	// 直接计算出来树根的哈希与输入的rootHash对比
 	if proof == nil {
 		tr := NewStackTrie(nil)
 		for index, key := range keys {
 			tr.TryUpdate(key, values[index])
 		}
+		// 不匹配验证失败
 		if have, want := tr.Hash(), rootHash; have != want {
 			return false, fmt.Errorf("invalid proof, want hash %x, got %x", want, have)
 		}
+		// 验证匹配,返回nil
+		// 而且不存在其他节点了,返回false
 		return false, nil // No more elements
 	}
 	// Special case, there is a provided edge proof but zero key/value
@@ -539,6 +575,8 @@ func VerifyRangeProof(rootHash common.Hash, firstKey []byte, lastKey []byte, key
 		if err != nil {
 			return false, err
 		}
+		// val!=nil代表这个proof是一条完整的路径
+		// proof是完整的路径或者右侧还有节点都要求这里的keys不应该是空
 		if val != nil || hasRightElement(root, firstKey) {
 			return false, errors.New("more entries available")
 		}
@@ -547,16 +585,19 @@ func VerifyRangeProof(rootHash common.Hash, firstKey []byte, lastKey []byte, key
 	// Special case, there is only one element and two edge keys are same.
 	// In this case, we can't construct two edge paths. So handle it here.
 	if len(keys) == 1 && bytes.Equal(firstKey, lastKey) {
+		// 这里要求proof必须表示了完整的路径
 		root, val, err := proofToPath(rootHash, nil, firstKey, proof, false)
 		if err != nil {
 			return false, err
 		}
+		// 验证proof代表的路径和输入的keys里的唯一的路径是否一致
 		if !bytes.Equal(firstKey, keys[0]) {
 			return false, errors.New("correct proof but invalid key")
 		}
 		if !bytes.Equal(val, values[0]) {
 			return false, errors.New("correct proof but invalid data")
 		}
+		// 验证通过
 		return hasRightElement(root, firstKey), nil
 	}
 	// Ok, in all other cases, we require two edge paths available.
@@ -571,6 +612,7 @@ func VerifyRangeProof(rootHash common.Hash, firstKey []byte, lastKey []byte, key
 	// Convert the edge proofs to edge trie paths. Then we can
 	// have the same tree architecture with the original one.
 	// For the first edge proof, non-existent proof is allowed.
+	// 恢复出来firstKey的路径
 	root, _, err := proofToPath(rootHash, nil, firstKey, proof, true)
 	if err != nil {
 		return false, err
@@ -578,6 +620,8 @@ func VerifyRangeProof(rootHash common.Hash, firstKey []byte, lastKey []byte, key
 	// Pass the root node here, the second path will be merged
 	// with the first one. For the last edge proof, non-existent
 	// proof is also allowed.
+	// 在刚才firstKey路径的基础上再加上lastKey的路径
+	// 执行后root就是有了开始结束两条路径的树
 	root, _, err = proofToPath(rootHash, root, lastKey, proof, true)
 	if err != nil {
 		return false, err
@@ -594,9 +638,11 @@ func VerifyRangeProof(rootHash common.Hash, firstKey []byte, lastKey []byte, key
 	if empty {
 		tr.root = nil
 	}
+	// 使用要验证的key填充新建的树
 	for index, key := range keys {
 		tr.TryUpdate(key, values[index])
 	}
+	// 计算树根的哈希是否匹配
 	if tr.Hash() != rootHash {
 		return false, fmt.Errorf("invalid proof, want hash %x, got %x", rootHash, tr.Hash())
 	}
