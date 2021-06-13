@@ -47,7 +47,9 @@ type request struct {
 	data []byte      // Data content of the node, cached until all subtrees complete
 	code bool        // Whether this is a code entry
 
+	// 代表引用了这个请求的其他请求
 	parents []*request // Parent state nodes referencing this entry (notify all upon completion)
+	// 代表这个请求引用的其他请求
 	deps    int        // Number of dependencies before allowed to commit this node
 
 	callback LeafCallback // Callback to invoke if a leaf node it reached on this branch
@@ -161,6 +163,7 @@ func NewSync(root common.Hash, database ethdb.KeyValueReader, callback LeafCallb
 }
 
 // AddSubTrie registers a new trie to the sync code, rooted at the designated parent.
+// 构造一个请求节点的request对象
 func (s *Sync) AddSubTrie(root common.Hash, path []byte, parent common.Hash, callback LeafCallback) {
 	// Short circuit if the trie is empty or already known
 	if root == emptyRoot {
@@ -169,24 +172,30 @@ func (s *Sync) AddSubTrie(root common.Hash, path []byte, parent common.Hash, cal
 	if s.membatch.hasNode(root) {
 		return
 	}
+	// 布隆过滤器告诉包括了这个节点,我们还需要从数据库中查询确保真实存在
 	if s.bloom == nil || s.bloom.Contains(root[:]) {
 		// Bloom filter says this might be a duplicate, double check.
 		// If database says yes, then at least the trie node is present
 		// and we hold the assumption that it's NOT legacy contract code.
 		blob := rawdb.ReadTrieNode(s.database, root)
+		// 数据库中查询到了结果,直接返回
 		if len(blob) > 0 {
 			return
 		}
 		// False positive, bump fault meter
+		// 数据库中不存在,假阳性
 		bloomFaultMeter.Mark(1)
 	}
 	// Assemble the new sub-trie sync request
+	// 执行到这里root不存在于数据库中,需要新建一个子树
 	req := &request{
 		path:     path,
 		hash:     root,
 		callback: callback,
 	}
 	// If this sub-trie has a designated parent, link them together
+	// 如果给定了父节点的哈希
+	// 增加父节点的deps,当前节点的parents中增加父节点
 	if parent != (common.Hash{}) {
 		ancestor := s.nodeReqs[parent]
 		if ancestor == nil {
@@ -201,6 +210,7 @@ func (s *Sync) AddSubTrie(root common.Hash, path []byte, parent common.Hash, cal
 // AddCodeEntry schedules the direct retrieval of a contract code that should not
 // be interpreted as a trie node, but rather accepted and stored into the database
 // as is.
+// 构造一个请求code的request对象
 func (s *Sync) AddCodeEntry(hash common.Hash, path []byte, parent common.Hash) {
 	// Short circuit if the entry is empty or already known
 	if hash == emptyState {
@@ -356,10 +366,12 @@ func (s *Sync) schedule(req *request) {
 		reqset = s.codeReqs
 	}
 	// If we're already requesting this node, add a new reference and stop
+	// 如果新增的请求已经存在了,就把他们的parents合并一下,然后直接返回
 	if old, ok := reqset[req.hash]; ok {
 		old.parents = append(old.parents, req.parents...)
 		return
 	}
+	// 之前没有这个请求,新增这个请求
 	reqset[req.hash] = req
 
 	// Schedule the request for future retrieval. This queue is shared

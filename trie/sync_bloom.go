@@ -51,6 +51,7 @@ type SyncBloom struct {
 	closer sync.Once
 	// close函数中标记为1
 	closed uint32
+	// 在close函数中会等待pend结束
 	pend   sync.WaitGroup
 }
 
@@ -84,6 +85,9 @@ func NewSyncBloom(memory uint64, database ethdb.Iteratee) *SyncBloom {
 }
 
 // init iterates over the database, pushing every trie hash into the bloom filter.
+// 迭代数据库中的需要的键值对加入到布隆过滤器中
+// 需要的键是 32字节的哈希 或者 一个"c"加上32字节的哈希
+// 也就是所有的节点和合约代码
 func (b *SyncBloom) init(database ethdb.Iteratee) {
 	// Iterate over the database, but restart every now and again to avoid holding
 	// a persistent snapshot since fast sync can push a ton of data concurrently,
@@ -135,12 +139,14 @@ func (b *SyncBloom) init(database ethdb.Iteratee) {
 
 // meter periodically recalculates the false positive error rate of the bloom
 // filter and reports it in a metric.
+// meter周期性的重新计算布隆过滤器的错误率
 func (b *SyncBloom) meter() {
 	for {
 		// Report the current error ration. No floats, lame, scale it up.
 		bloomErrorGauge.Update(int64(b.bloom.FalsePosititveProbability() * 100000))
 
 		// Wait one second, but check termination more frequently
+		// 等待一秒钟进行下次检测,但是为了尽快结束,将一秒分成十次不断检测closed
 		for i := 0; i < 10; i++ {
 			if atomic.LoadUint32(&b.closed) == 1 {
 				return
@@ -168,6 +174,7 @@ func (b *SyncBloom) Close() error {
 }
 
 // Add inserts a new trie node hash into the bloom filter.
+// 向布隆过滤器加入一个哈希
 func (b *SyncBloom) Add(hash []byte) {
 	if atomic.LoadUint32(&b.closed) == 1 {
 		return
@@ -181,8 +188,11 @@ func (b *SyncBloom) Add(hash []byte) {
 //   - true:  the bloom maybe contains hash
 //
 // While the bloom is being initialized, any query will return true.
+// 检测一个哈希是否在布隆过滤器内
 func (b *SyncBloom) Contains(hash []byte) bool {
 	bloomTestMeter.Mark(1)
+	// 还没有初始化完成,并不能确定任何值是缺失的
+	// 都先返回true
 	if atomic.LoadUint32(&b.inited) == 0 {
 		// We didn't load all the trie nodes from the previous run of Geth yet. As
 		// such, we can't say for sure if a hash is not present for anything. Until
