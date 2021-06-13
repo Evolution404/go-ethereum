@@ -40,6 +40,7 @@ var ErrAlreadyProcessed = errors.New("already processed")
 const maxFetchesPerDepth = 16384
 
 // request represents a scheduled or already in-flight state retrieval request.
+// 代表一次查询的请求,是查询梅克尔树中的一个节点
 type request struct {
 	path []byte      // Merkle path leading to this node for prioritization
 	hash common.Hash // Hash of the node data content to retrieve
@@ -73,6 +74,12 @@ type SyncPath [][]byte
 
 // newSyncPath converts an expanded trie path from nibble form into a compact
 // version that can be sent over the network.
+// 输入的path是hex格式,保存的是半字节
+// 该函数将path转换为compact格式,用于网络传输
+// 返回的SyncPath长度可能是1也可能是2
+// 长度是1就保存了一个compact编码,查询的是世界状态树
+// 长度是2,第一个元素保存的是原始key,第二个元素才是compact编码
+//   此时查询的是二层树,第一个元素代表账户,第二个元素代表该账户存储树的key
 func newSyncPath(path []byte) SyncPath {
 	// If the hash is from the account trie, append a single item, if it
 	// is from the a storage trie, append a tuple. Note, the length 64 is
@@ -86,6 +93,8 @@ func newSyncPath(path []byte) SyncPath {
 }
 
 // SyncResult is a response with requested data along with it's hash.
+// 查询的结果
+// 包括节点的哈希以及该节点的内容
 type SyncResult struct {
 	Hash common.Hash // Hash of the originally unknown trie node
 	Data []byte      // Data content of the retrieved node
@@ -93,12 +102,15 @@ type SyncResult struct {
 
 // syncMemBatch is an in-memory buffer of successfully downloaded but not yet
 // persisted data items.
+// 在内存中暂时保存的同步下来的节点,代码
+// 还没有被保存到硬盘
 type syncMemBatch struct {
 	nodes map[common.Hash][]byte // In-memory membatch of recently completed nodes
 	codes map[common.Hash][]byte // In-memory membatch of recently completed codes
 }
 
 // newSyncMemBatch allocates a new memory-buffer for not-yet persisted trie nodes.
+// 创建syncMemBatch对象,缓存下载下来的数据
 func newSyncMemBatch() *syncMemBatch {
 	return &syncMemBatch{
 		nodes: make(map[common.Hash][]byte),
@@ -107,12 +119,14 @@ func newSyncMemBatch() *syncMemBatch {
 }
 
 // hasNode reports the trie node with specific hash is already cached.
+// 根据节点哈希,判断syncMemBatch是否已经缓存了某个节点
 func (batch *syncMemBatch) hasNode(hash common.Hash) bool {
 	_, ok := batch.nodes[hash]
 	return ok
 }
 
 // hasCode reports the contract code with specific hash is already cached.
+// 根据合约代码的哈希,判断syncMemBatch是否已经缓存这个代码
 func (batch *syncMemBatch) hasCode(hash common.Hash) bool {
 	_, ok := batch.codes[hash]
 	return ok
