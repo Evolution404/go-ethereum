@@ -20,6 +20,7 @@ import "fmt"
 
 // SyncMode represents the synchronisation mode of the downloader.
 // It is a uint32 as it is used with atomic operations.
+// SyncMode表示四种节点同步方式
 // SyncMode其实就是一个uint32
 // 实现了Stringer,TextMarshaler和TextUnmarshaler接口
 type SyncMode uint32
