@@ -26,6 +26,11 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 )
 
+// 首先调用NewSync创建Sync对象
+// 然后调用Missing方法获得需要请求的节点或代码哈希
+// 外部请求的结果构造成SyncResult对象,传入Process方法
+// 最后调用Commit将请求的结果写入数据库
+
 // ErrNotRequested is returned by the trie sync when it's requested to process a
 // node it did not request.
 var ErrNotRequested = errors.New("not requested")
@@ -148,6 +153,7 @@ type Sync struct {
 }
 
 // NewSync creates a new trie data download scheduler.
+// 创建一个用来同步以root为根的梅克尔树的Sync对象
 func NewSync(root common.Hash, database ethdb.KeyValueReader, callback LeafCallback, bloom *SyncBloom) *Sync {
 	ts := &Sync{
 		database: database,
@@ -158,6 +164,7 @@ func NewSync(root common.Hash, database ethdb.KeyValueReader, callback LeafCallb
 		fetches:  make(map[int]int),
 		bloom:    bloom,
 	}
+	// 构造根节点的request对象
 	ts.AddSubTrie(root, nil, common.Hash{}, callback)
 	return ts
 }
@@ -253,14 +260,19 @@ func (s *Sync) AddCodeEntry(hash common.Hash, path []byte, parent common.Hash) {
 // Missing retrieves the known missing nodes from the trie for retrieval. To aid
 // both eth/6x style fast sync and snap/1x style state sync, the paths of trie
 // nodes are returned too, as well as separate hash list for codes.
+// 返回要请求节点和代码的哈希
+// max用来限制返回的 节点和代码哈希总和的个数,也就是最多请求max个
+// max为0代表不限制
 func (s *Sync) Missing(max int) (nodes []common.Hash, paths []SyncPath, codes []common.Hash) {
 	var (
+		// nodeHashes于nodePaths一一对应
 		nodeHashes []common.Hash
 		nodePaths  []SyncPath
 		codeHashes []common.Hash
 	)
 	for !s.queue.Empty() && (max == 0 || len(nodeHashes)+len(codeHashes) < max) {
 		// Retrieve th enext item in line
+		// 首先不把请求对象从队列中移除,需要先判断一下当前的深度是不是有过多的请求
 		item, prio := s.queue.Peek()
 
 		// If we have too many already-pending tasks for this depth, throttle
@@ -269,10 +281,12 @@ func (s *Sync) Missing(max int) (nodes []common.Hash, paths []SyncPath, codes []
 			break
 		}
 		// Item is allowed to be scheduled, add it to the task list
+		// 优先级最高的请求可以进行执行
 		s.queue.Pop()
 		s.fetches[depth]++
 
 		hash := item.(common.Hash)
+		// 区分当前请求对象是node还是code
 		if req, ok := s.nodeReqs[hash]; ok {
 			nodeHashes = append(nodeHashes, hash)
 			nodePaths = append(nodePaths, newSyncPath(req.path))
@@ -289,12 +303,16 @@ func (s *Sync) Missing(max int) (nodes []common.Hash, paths []SyncPath, codes []
 // is same). In this case the second response for the same hash will
 // be treated as "non-requested" item or "already-processed" item but
 // there is no downside.
+// 下载好的数据调用Process进行处理
+// 对于code直接保存到membatch中,等待调用Commit写入数据库
+// 对于node继续构造子节点的请求并放入请求队列,如果没有子节点请求那么将这个节点写入membatch等待Commit
 func (s *Sync) Process(result SyncResult) error {
 	// If the item was not requested either for code or node, bail out
 	if s.nodeReqs[result.Hash] == nil && s.codeReqs[result.Hash] == nil {
 		return ErrNotRequested
 	}
 	// There is an pending code request for this data, commit directly
+	// 同步到的数据是code,直接加入到membatch中
 	var filled bool
 	if req := s.codeReqs[result.Hash]; req != nil && req.data == nil {
 		filled = true
@@ -302,6 +320,7 @@ func (s *Sync) Process(result SyncResult) error {
 		s.commit(req)
 	}
 	// There is an pending node request for this data, fill it.
+	// 同步到的数据是节点,继续构造所有子节点的请求
 	if req := s.nodeReqs[result.Hash]; req != nil && req.data == nil {
 		filled = true
 		// Decode the node data content and update the request
@@ -333,8 +352,11 @@ func (s *Sync) Process(result SyncResult) error {
 
 // Commit flushes the data stored in the internal membatch out to persistent
 // storage, returning any occurred error.
+// 将membatch中的数据写入到输入的dbw数据库中
+// 然后重置membatch
 func (s *Sync) Commit(dbw ethdb.Batch) error {
 	// Dump the membatch into a database dbw
+	// 将membatch中的nodes和codes都写入到给定的dbw数据库中
 	for key, value := range s.membatch.nodes {
 		rawdb.WriteTrieNode(dbw, key, value)
 		if s.bloom != nil {
@@ -348,11 +370,13 @@ func (s *Sync) Commit(dbw ethdb.Batch) error {
 		}
 	}
 	// Drop the membatch data and return
+	// 之前的已经写入完了,重置一个新的membatch
 	s.membatch = newSyncMemBatch()
 	return nil
 }
 
 // Pending returns the number of state entries currently pending for download.
+// 当前还在等待下载的请求就是nodeReqs和codeReqs的和
 func (s *Sync) Pending() int {
 	return len(s.nodeReqs) + len(s.codeReqs)
 }
@@ -360,6 +384,8 @@ func (s *Sync) Pending() int {
 // schedule inserts a new state retrieval request into the fetch queue. If there
 // is already a pending request for this node, the new request will be discarded
 // and only a parent reference added to the old one.
+// 将输入的request对象加入到Sync.nodeReqs或者Sync.codeReqs中
+// 并将输入的请求加入到Sync.queue中,优先级由req.path的字典序计算出来
 func (s *Sync) schedule(req *request) {
 	var reqset = s.nodeReqs
 	if req.code {
@@ -379,6 +405,7 @@ func (s *Sync) schedule(req *request) {
 	// is a trie node and code has same hash. In this case two elements
 	// with same hash and same or different depth will be pushed. But it's
 	// ok the worst case is the second response will be treated as duplicated.
+	// 计算新增的这个请求的优先级
 	prio := int64(len(req.path)) << 56 // depth >= 128 will never happen, storage leaves will be included in their parents
 	for i := 0; i < 14 && i < len(req.path); i++ {
 		prio |= int64(15-req.path[i]) << (52 - i*4) // 15-nibble => lexicographic order
@@ -388,6 +415,8 @@ func (s *Sync) schedule(req *request) {
 
 // children retrieves all the missing children of a state trie entry for future
 // retrieval scheduling.
+// req是请求对象,object是这个请求已经获取到的节点
+// 遍历object所有直接子节点,如果有缺失的子节点,构造新的request对象并返回
 func (s *Sync) children(req *request, object node) ([]*request, error) {
 	// Gather all the children of the node, irrelevant whether known or not
 	type child struct {
@@ -419,12 +448,16 @@ func (s *Sync) children(req *request, object node) ([]*request, error) {
 		panic(fmt.Sprintf("unknown node: %+v", node))
 	}
 	// Iterate over the children, and request all unknown ones
+	// 遍历所有子节点,缺失的节点构造新的request对象
 	requests := make([]*request, 0, len(children))
 	for _, child := range children {
 		// Notify any external watcher of a new key/value node
+		// 找到叶子节点调用callback
 		if req.callback != nil {
 			if node, ok := (child.node).(valueNode); ok {
 				var paths [][]byte
+				// 路径可能是单个哈希
+				// 也可能是两个哈希,第一个代表账户,第二个代表该账户的存储树
 				if len(child.path) == 2*common.HashLength {
 					paths = append(paths, hexToKeybytes(child.path))
 				} else if len(child.path) == 4*common.HashLength {
@@ -437,6 +470,7 @@ func (s *Sync) children(req *request, object node) ([]*request, error) {
 			}
 		}
 		// If the child references another node, resolve or schedule
+		// 子节点如果是hashNode,判断是不是在本地已经有了,没有的话构造新的request对象
 		if node, ok := (child.node).(hashNode); ok {
 			// Try to resolve the node from the local database
 			hash := common.BytesToHash(node)
@@ -468,6 +502,8 @@ func (s *Sync) children(req *request, object node) ([]*request, error) {
 // commit finalizes a retrieval request and stores it into the membatch. If any
 // of the referencing parent requests complete due to this commit, they are also
 // committed themselves.
+// 将请求到的结果加入到membatch中,并删除Sync中保存的请求对象
+// 让输入的request对象的父对象减少引用,如果父对象引用归零也对他们进行提交
 func (s *Sync) commit(req *request) (err error) {
 	// Write the node content to the membatch
 	if req.code {
