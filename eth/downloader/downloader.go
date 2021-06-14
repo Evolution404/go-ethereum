@@ -54,6 +54,7 @@ var (
 	ttlLimit         = time.Minute      // Maximum TTL allowance to prevent reaching crazy timeouts
 
 	qosTuningPeers   = 5    // Number of peers to tune based on (best peers)
+	// 节点数目超过10,新增节点就不会再减少信心指数
 	qosConfidenceCap = 10   // Number of peers above which not to modify RTT confidence
 	qosTuningImpact  = 0.25 // Impact that a new tuning target has on the previous value
 
@@ -102,6 +103,8 @@ type Downloader struct {
 	// see https://golang.org/pkg/sync/atomic/#pkg-note-BUG.
 	// 往返时延
 	rttEstimate   uint64 // Round trip time to target for download requests
+	// 对上面rtt时间的信赖度,称为信心指数
+	// 在计算超时时间TTL时用到,信心指数越低超时时间就相对越长
 	rttConfidence uint64 // Confidence in the estimated RTT (unit: millionths to allow atomic ops)
 
 	mode uint32         // Synchronisation mode defining the strategy used (per sync cycle), use d.getMode() to get the SyncMode
@@ -158,6 +161,7 @@ type Downloader struct {
 
 	// Cancellation and termination
 	cancelPeer string         // Identifier of the peer currently being used as the master (cancel on drop)
+	// cancelCh不会发送数据,在cancel函数中会关闭cancelCh管道
 	cancelCh   chan struct{}  // Channel to cancel mid-flight syncs
 	cancelLock sync.RWMutex   // Lock to protect the cancel channel and peer in delivers
 	cancelWg   sync.WaitGroup // Make sure all fetcher goroutines have exited.
@@ -314,6 +318,7 @@ func (d *Downloader) Synchronising() bool {
 
 // RegisterPeer injects a new download peer into the set of block source to be
 // used for fetching hashes and blocks from.
+// 往d.peers里注册新的peer
 func (d *Downloader) RegisterPeer(id string, version uint, peer Peer) error {
 	var logger log.Logger
 	if len(id) < 16 {
@@ -632,6 +637,7 @@ func (d *Downloader) spawnSync(fetchers []func() error) error {
 // cancel aborts all of the operations and resets the queue. However, cancel does
 // not wait for the running download goroutines to finish. This method should be
 // used when cancelling the downloads from inside the downloader.
+// cancel直接关闭cancelCh管道
 func (d *Downloader) cancel() {
 	// Close the current cancel channel
 	d.cancelLock.Lock()
@@ -1980,21 +1986,25 @@ func (d *Downloader) commitPivotBlock(result *fetchResult) error {
 
 // DeliverHeaders injects a new batch of block headers received from a remote
 // node into the download schedule.
+// 将区块头数据发送到headerCh中
 func (d *Downloader) DeliverHeaders(id string, headers []*types.Header) error {
 	return d.deliver(d.headerCh, &headerPack{id, headers}, headerInMeter, headerDropMeter)
 }
 
 // DeliverBodies injects a new batch of block bodies received from a remote node.
+// 将区块体数据发送到bodyCh中
 func (d *Downloader) DeliverBodies(id string, transactions [][]*types.Transaction, uncles [][]*types.Header) error {
 	return d.deliver(d.bodyCh, &bodyPack{id, transactions, uncles}, bodyInMeter, bodyDropMeter)
 }
 
 // DeliverReceipts injects a new batch of receipts received from a remote node.
+// 将收据信息发送到receiptCh中
 func (d *Downloader) DeliverReceipts(id string, receipts [][]*types.Receipt) error {
 	return d.deliver(d.receiptCh, &receiptPack{id, receipts}, receiptInMeter, receiptDropMeter)
 }
 
 // DeliverNodeData injects a new batch of node state data received from a remote node.
+// 将获取到的node state data写入到stateCh中
 func (d *Downloader) DeliverNodeData(id string, data [][]byte) error {
 	return d.deliver(d.stateCh, &statePack{id, data}, stateInMeter, stateDropMeter)
 }
@@ -2026,6 +2036,8 @@ func (d *Downloader) DeliverSnapPacket(peer *snap.Peer, packet snap.Packet) erro
 }
 
 // deliver injects a new batch of data received from a remote node.
+// 将packet写入到destCh管道中
+// 如果d.cancelCh为nil或者收到数据返回错误errNoSyncActive
 func (d *Downloader) deliver(destCh chan dataPack, packet dataPack, inMeter, dropMeter metrics.Meter) (err error) {
 	// Update the delivery metrics for both good and failed deliveries
 	inMeter.Mark(int64(packet.Items()))
@@ -2074,6 +2086,10 @@ func (d *Downloader) qosTuner() {
 
 // qosReduceConfidence is meant to be called when a new peer joins the downloader's
 // peer set, needing to reduce the confidence we have in out QoS estimates.
+// 减少信心指数,当新节点加入的时候调用该方法
+// 由于新节点的rtt是估计出来的,所以每当有新节点加入就降低信心指数
+// 节点数为1信心指数始终为1
+// 节点数大于等于10,信心指数不再降低
 func (d *Downloader) qosReduceConfidence() {
 	// If we have a single peer, confidence is always 1
 	peers := uint64(d.peers.Len())
@@ -2090,6 +2106,7 @@ func (d *Downloader) qosReduceConfidence() {
 		return
 	}
 	// Otherwise drop the confidence factor
+	// 重新计算信心指数
 	conf := atomic.LoadUint64(&d.rttConfidence) * (peers - 1) / peers
 	if float64(conf)/1000000 < rttMinConfidence {
 		conf = uint64(rttMinConfidence * 1000000)
@@ -2112,12 +2129,18 @@ func (d *Downloader) requestRTT() time.Duration {
 
 // requestTTL returns the current timeout allowance for a single download request
 // to finish under.
+// 计算超时时间TTL
+// 默认超时时间等于就是RTT的3倍(ttlScaling)
+// 除了直接是RTT的倍数外还除以信心指数,信心指数越低,TTL就越长
 func (d *Downloader) requestTTL() time.Duration {
 	var (
 		rtt  = time.Duration(atomic.LoadUint64(&d.rttEstimate))
 		conf = float64(atomic.LoadUint64(&d.rttConfidence)) / 1000000.0
 	)
+	// 默认乘一个ttlScaling
+	// 还除以信心指数,信息指数越低,超时时间就越长
 	ttl := time.Duration(ttlScaling) * time.Duration(float64(rtt)/conf)
+	// 超时时间最长不能超过ttlLimit
 	if ttl > ttlLimit {
 		ttl = ttlLimit
 	}
