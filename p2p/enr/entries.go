@@ -29,10 +29,13 @@ import (
 // To define a new entry that is to be included in a node record,
 // create a Go type that satisfies this interface. The type should
 // also implement rlp.Decoder if additional checks are needed on the value.
+// Entry代表已知的键值对
+// 例如TCP,TCP6,UDP,UDP6,ID,IP,IPv4,IPv6
 type Entry interface {
 	ENRKey() string
 }
 
+// 通用的Entry类型,用来表示没有特殊定义的
 type generic struct {
 	key   string
 	value interface{}
@@ -40,10 +43,12 @@ type generic struct {
 
 func (g generic) ENRKey() string { return g.key }
 
+// 编码的时候只编码value字段到w里
 func (g generic) EncodeRLP(w io.Writer) error {
 	return rlp.Encode(w, g.value)
 }
 
+// 解码的时候从s中读取只解码到value中
 func (g *generic) DecodeRLP(s *rlp.Stream) error {
 	return s.Decode(g.value)
 }
@@ -51,6 +56,7 @@ func (g *generic) DecodeRLP(s *rlp.Stream) error {
 // WithEntry wraps any value with a key name. It can be used to set and load arbitrary values
 // in a record. The value v must be supported by rlp. To use WithEntry with Load, the value
 // must be a pointer.
+// 构造一个通用的Entry对象
 func WithEntry(k string, v interface{}) Entry {
 	return &generic{key: k, value: v}
 }
@@ -85,6 +91,7 @@ func (v ID) ENRKey() string { return "id" }
 // IP is either the "ip" or "ip6" key, depending on the value.
 // Use this value to encode IP addresses that can be either v4 or v6.
 // To load an address from a record use the IPv4 or IPv6 types.
+// IP类型可以处理ipv4和ipv6
 type IP net.IP
 
 func (v IP) ENRKey() string {
@@ -110,6 +117,7 @@ func (v *IP) DecodeRLP(s *rlp.Stream) error {
 	if err := s.Decode((*net.IP)(v)); err != nil {
 		return err
 	}
+	// ipv4的长度是4字节,ipv6的长度是16字节
 	if len(*v) != 4 && len(*v) != 16 {
 		return fmt.Errorf("invalid IP address, want 4 or 16 bytes: %v", *v)
 	}
@@ -117,6 +125,7 @@ func (v *IP) DecodeRLP(s *rlp.Stream) error {
 }
 
 // IPv4 is the "ip" key, which holds the IP address of the node.
+// 明确代表ipv4,代表的key是ip
 type IPv4 net.IP
 
 func (v IPv4) ENRKey() string { return "ip" }
@@ -142,6 +151,7 @@ func (v *IPv4) DecodeRLP(s *rlp.Stream) error {
 }
 
 // IPv6 is the "ip6" key, which holds the IP address of the node.
+// 明确表示ipv6,代表的key是ip6
 type IPv6 net.IP
 
 func (v IPv6) ENRKey() string { return "ip6" }

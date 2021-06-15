@@ -40,6 +40,8 @@ type Node struct {
 
 // New wraps a node record. The record must be valid according to the given
 // identity scheme.
+// 新建一个Node对象
+// 输入的Record必须满足给定的scheme
 func New(validSchemes enr.IdentityScheme, r *enr.Record) (*Node, error) {
 	if err := r.VerifySignature(validSchemes); err != nil {
 		return nil, err
@@ -61,6 +63,10 @@ func MustParse(rawurl string) *Node {
 }
 
 // Parse decodes and verifies a base64-encoded node record.
+// 解析节点链接
+// 输入的格式可能是:
+//   enode://xxx
+//   enr:xxx
 func Parse(validSchemes enr.IdentityScheme, input string) (*Node, error) {
 	if strings.HasPrefix(input, "enode://") {
 		return ParseV4(input)
@@ -68,6 +74,7 @@ func Parse(validSchemes enr.IdentityScheme, input string) (*Node, error) {
 	if !strings.HasPrefix(input, "enr:") {
 		return nil, errMissingPrefix
 	}
+	// 去掉长度为4的enr:前缀,将base64解码
 	bin, err := base64.RawURLEncoding.DecodeString(input[4:])
 	if err != nil {
 		return nil, err

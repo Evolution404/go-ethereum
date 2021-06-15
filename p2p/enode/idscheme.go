@@ -45,11 +45,15 @@ type V4ID struct{}
 func SignV4(r *enr.Record, privkey *ecdsa.PrivateKey) error {
 	// Copy r to avoid modifying it if signing fails.
 	cpy := *r
+	// 往Record对象里加入两个pair  id:v4,secp256k1:publickey
 	cpy.Set(enr.ID("v4"))
+	// 保存的公钥是33字节的压缩格式
 	cpy.Set(Secp256k1(privkey.PublicKey))
 
 	h := sha3.NewLegacyKeccak256()
+	// 计算cpy的rlp编码
 	rlp.Encode(h, cpy.AppendElements(nil))
+	// 对rlp编码的哈希进行签名
 	sig, err := crypto.Sign(h.Sum(nil), privkey)
 	if err != nil {
 		return err
@@ -62,6 +66,7 @@ func SignV4(r *enr.Record, privkey *ecdsa.PrivateKey) error {
 }
 
 func (V4ID) Verify(r *enr.Record, sig []byte) error {
+	// 从Record中加载公钥,并且长度必须是33字节
 	var entry s256raw
 	if err := r.Load(&entry); err != nil {
 		return err
@@ -77,8 +82,10 @@ func (V4ID) Verify(r *enr.Record, sig []byte) error {
 	return nil
 }
 
+// 节点地址就是公钥的X,Y拼在一起求哈希
 func (V4ID) NodeAddr(r *enr.Record) []byte {
 	var pubkey Secp256k1
+	// 解析出来原始的公钥,未经压缩的
 	err := r.Load(&pubkey)
 	if err != nil {
 		return nil
