@@ -48,6 +48,7 @@ type LocalNode struct {
 	db  *DB
 
 	// everything below is protected by a lock
+	// 以下的字段都被锁保护
 	mu        sync.Mutex
 	seq       uint64
 	entries   map[string]enr.Entry
@@ -64,6 +65,7 @@ type lnEndpoint struct {
 // NewLocalNode creates a local node.
 func NewLocalNode(db *DB, key *ecdsa.PrivateKey) *LocalNode {
 	ln := &LocalNode{
+		// localNode的id是公钥x,y拼起来求哈希
 		id:      PubkeyToIDV4(&key.PublicKey),
 		db:      db,
 		key:     key,

@@ -19,6 +19,7 @@ package netutil
 import "net"
 
 // AddrIP gets the IP address contained in addr. It returns nil if no address is present.
+// 从net.Addr对象解析出来net.IP对象
 func AddrIP(addr net.Addr) net.IP {
 	switch a := addr.(type) {
 	case *net.IPAddr:

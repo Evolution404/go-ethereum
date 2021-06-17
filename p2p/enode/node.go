@@ -40,7 +40,7 @@ type Node struct {
 
 // New wraps a node record. The record must be valid according to the given
 // identity scheme.
-// 新建一个Node对象
+// 新建一个Node对象, node.id就是IdentityScheme.NodeAddr的返回值
 // 输入的Record必须满足给定的scheme
 func New(validSchemes enr.IdentityScheme, r *enr.Record) (*Node, error) {
 	if err := r.VerifySignature(validSchemes); err != nil {
@@ -194,6 +194,7 @@ func (n *Node) UnmarshalText(text []byte) error {
 }
 
 // ID is a unique identifier for each node.
+// ID是每个节点的唯一标识,本质是长度32字节的字节数组
 type ID [32]byte
 
 // Bytes returns a byte slice representation of the ID
@@ -234,6 +235,8 @@ func (n *ID) UnmarshalText(text []byte) error {
 // HexID converts a hex string to an ID.
 // The string may be prefixed with 0x.
 // It panics if the string is not a valid ID.
+// 将hex字符串解析为ID,格式错误将会panic
+// hex字符串有无0x前缀皆可
 func HexID(in string) ID {
 	id, err := ParseID(in)
 	if err != nil {
@@ -257,6 +260,10 @@ func ParseID(in string) (ID, error) {
 // DistCmp compares the distances a->target and b->target.
 // Returns -1 if a is closer to target, 1 if b is closer to target
 // and 0 if they are equal.
+// 比较节点间的距离
+// 返回1,a与target更近
+// 返回-1,b与target更近
+// 返回0, a与b和target一样近
 func DistCmp(target, a, b ID) int {
 	for i := range target {
 		da := a[i] ^ target[i]
@@ -271,6 +278,7 @@ func DistCmp(target, a, b ID) int {
 }
 
 // LogDist returns the logarithmic distance between a and b, log2(a ^ b).
+// 计算a与b距离的以2为底的对数
 func LogDist(a, b ID) int {
 	lz := 0
 	for i := range a {

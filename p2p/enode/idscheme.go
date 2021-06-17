@@ -82,7 +82,8 @@ func (V4ID) Verify(r *enr.Record, sig []byte) error {
 	return nil
 }
 
-// 节点地址就是公钥的X,Y拼在一起求哈希
+// 节点地址就是公钥的X,Y拼在一起变成64字节的buf
+// 然后对buf求哈希得到32字节的id
 func (V4ID) NodeAddr(r *enr.Record) []byte {
 	var pubkey Secp256k1
 	// 解析出来原始的公钥,未经压缩的

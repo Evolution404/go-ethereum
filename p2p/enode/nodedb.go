@@ -56,6 +56,7 @@ const (
 )
 
 const (
+	// 超过24小时没有发现的节点就从数据库删除
 	dbNodeExpiration = 24 * time.Hour // Time after which an unseen node should be dropped.
 	dbCleanupCycle   = time.Hour      // Time period for running the expiration task.
 	dbVersion        = 9
@@ -77,6 +78,8 @@ type DB struct {
 
 // OpenDB opens a node database for storing and retrieving infos about known peers in the
 // network. If no path is given an in-memory, temporary database is constructed.
+// 创建一个储存节点的数据库对象
+// path为空代表创建内存数据库,否则根据路径创建持久数据库
 func OpenDB(path string) (*DB, error) {
 	if path == "" {
 		return newMemoryDB()
@@ -85,7 +88,9 @@ func OpenDB(path string) (*DB, error) {
 }
 
 // newMemoryNodeDB creates a new in-memory node database without a persistent backend.
+// 创建内存数据库
 func newMemoryDB() (*DB, error) {
+	// 在内存中创建leveldb对象
 	db, err := leveldb.Open(storage.NewMemStorage(), nil)
 	if err != nil {
 		return nil, err
@@ -95,8 +100,11 @@ func newMemoryDB() (*DB, error) {
 
 // newPersistentNodeDB creates/opens a leveldb backed persistent node database,
 // also flushing its contents in case of a version mismatch.
+// 使用leveldb.OpenFile创建一个在硬盘的持久数据库
 func newPersistentDB(path string) (*DB, error) {
 	opts := &opt.Options{OpenFilesCacheCapacity: 5}
+	// 先直接打开数据库文件
+	// 如果有错误,而且报错是ErrCorrupted,那么就尝试恢复文件,恢复还是报错就返回错误
 	db, err := leveldb.OpenFile(path, opts)
 	if _, iscorrupted := err.(*errors.ErrCorrupted); iscorrupted {
 		db, err = leveldb.RecoverFile(path, nil)
@@ -106,10 +114,13 @@ func newPersistentDB(path string) (*DB, error) {
 	}
 	// The nodes contained in the cache correspond to a certain protocol version.
 	// Flush all nodes if the version doesn't match.
+	// currentVer代表当前版本,就是将int类型转换成可变长度的字节数组
 	currentVer := make([]byte, binary.MaxVarintLen64)
 	currentVer = currentVer[:binary.PutVarint(currentVer, int64(dbVersion))]
 
 	blob, err := db.Get([]byte(dbVersionKey), nil)
+	// 如果数据库里还没保存版本,就保存下来当前版本
+	// 如果保存的版本不匹配,清除现在的数据库文件,重新创建数据库
 	switch err {
 	case leveldb.ErrNotFound:
 		// Version not found (i.e. empty cache), insert it
@@ -132,6 +143,8 @@ func newPersistentDB(path string) (*DB, error) {
 }
 
 // nodeKey returns the database key for a node record.
+// 根据节点的id获取在数据库中的key
+// 格式就是 n:id:v4
 func nodeKey(id ID) []byte {
 	key := append([]byte(dbNodePrefix), id[:]...)
 	key = append(key, ':')
@@ -140,6 +153,9 @@ func nodeKey(id ID) []byte {
 }
 
 // splitNodeKey returns the node ID of a key created by nodeKey.
+// 根据数据库里的key,解析出来节点的ID
+// 返回节点的id 和 key在id后面剩余的部分
+// n:id:v4
 func splitNodeKey(key []byte) (id ID, rest []byte) {
 	if !bytes.HasPrefix(key, []byte(dbNodePrefix)) {
 		return ID{}, nil
@@ -150,6 +166,8 @@ func splitNodeKey(key []byte) (id ID, rest []byte) {
 }
 
 // nodeItemKey returns the database key for a node metadata field.
+// 拼接出来节点其他参数的key
+// 格式是 n:id:v4:ip16:field
 func nodeItemKey(id ID, ip net.IP, field string) []byte {
 	ip16 := ip.To16()
 	if ip16 == nil {
@@ -159,12 +177,16 @@ func nodeItemKey(id ID, ip net.IP, field string) []byte {
 }
 
 // splitNodeItemKey returns the components of a key created by nodeItemKey.
+// 将NodeItemKey里的各个元素切分开
+// key里面保存的ip是ip16,但是解析出来的ip会区分出来ipv4或者ipv6
 func splitNodeItemKey(key []byte) (id ID, ip net.IP, field string) {
 	id, key = splitNodeKey(key)
 	// Skip discover root.
+	// 如果剩余的部分只有"v4"那就结束
 	if string(key) == dbDiscoverRoot {
 		return id, nil, ""
 	}
+	// 跳过"v4"读取下面的部分
 	key = key[len(dbDiscoverRoot)+1:]
 	// Split out the IP.
 	ip = key[:16]
@@ -177,6 +199,8 @@ func splitNodeItemKey(key []byte) (id ID, ip net.IP, field string) {
 	return id, ip, field
 }
 
+// v5的key的格式如下
+// n:id:v5:ip16:field
 func v5Key(id ID, ip net.IP, field string) []byte {
 	return bytes.Join([][]byte{
 		[]byte(dbNodePrefix),
@@ -188,6 +212,8 @@ func v5Key(id ID, ip net.IP, field string) []byte {
 }
 
 // localItemKey returns the key of a local node item.
+// localItemKey的格式是
+// local:id:field
 func localItemKey(id ID, field string) []byte {
 	key := append([]byte(dbLocalPrefix), id[:]...)
 	key = append(key, ':')
@@ -196,6 +222,7 @@ func localItemKey(id ID, field string) []byte {
 }
 
 // fetchInt64 retrieves an integer associated with a particular key.
+// 输入key将对应的值解析为int64
 func (db *DB) fetchInt64(key []byte) int64 {
 	blob, err := db.lvl.Get(key, nil)
 	if err != nil {
@@ -209,6 +236,7 @@ func (db *DB) fetchInt64(key []byte) int64 {
 }
 
 // storeInt64 stores an integer in the given key.
+// 向指定的key保存int64
 func (db *DB) storeInt64(key []byte, n int64) error {
 	blob := make([]byte, binary.MaxVarintLen64)
 	blob = blob[:binary.PutVarint(blob, n)]
@@ -233,6 +261,7 @@ func (db *DB) storeUint64(key []byte, n uint64) error {
 }
 
 // Node retrieves a node with a given id from the database.
+// 输入节点ID从数据库中读取Node对象
 func (db *DB) Node(id ID) *Node {
 	blob, err := db.lvl.Get(nodeKey(id), nil)
 	if err != nil {
@@ -241,6 +270,7 @@ func (db *DB) Node(id ID) *Node {
 	return mustDecodeNode(id[:], blob)
 }
 
+// 输入节点id和节点rlp编码解析出来Node对象
 func mustDecodeNode(id, data []byte) *Node {
 	node := new(Node)
 	if err := rlp.DecodeBytes(data, &node.r); err != nil {
@@ -253,6 +283,7 @@ func mustDecodeNode(id, data []byte) *Node {
 
 // UpdateNode inserts - potentially overwriting - a node into the peer database.
 func (db *DB) UpdateNode(node *Node) error {
+	// 更新的节点的seq一定要大于现有的
 	if node.Seq() < db.NodeSeq(node.ID()) {
 		return nil
 	}
@@ -260,19 +291,23 @@ func (db *DB) UpdateNode(node *Node) error {
 	if err != nil {
 		return err
 	}
+	// 更新数据库中保存的节点rlp编码
 	if err := db.lvl.Put(nodeKey(node.ID()), blob, nil); err != nil {
 		return err
 	}
+	// 更新数据库中节点的seq
 	return db.storeUint64(nodeItemKey(node.ID(), zeroIP, dbNodeSeq), node.Seq())
 }
 
 // NodeSeq returns the stored record sequence number of the given node.
+// 获取指定节点的seq
 func (db *DB) NodeSeq(id ID) uint64 {
 	return db.fetchUint64(nodeItemKey(id, zeroIP, dbNodeSeq))
 }
 
 // Resolve returns the stored record of the node if it has a larger sequence
 // number than n.
+// 输入一个Node对象,判断输入的对象和数据库中哪个seq更大,返回seq更大的结果
 func (db *DB) Resolve(n *Node) *Node {
 	if n.Seq() > db.NodeSeq(n.ID()) {
 		return n
@@ -281,6 +316,7 @@ func (db *DB) Resolve(n *Node) *Node {
 }
 
 // DeleteNode deletes all information associated with a node.
+// 删除数据库所有和这个节点有关的信息
 func (db *DB) DeleteNode(id ID) {
 	deleteRange(db.lvl, nodeKey(id))
 }
@@ -308,6 +344,7 @@ func (db *DB) ensureExpirer() {
 
 // expirer should be started in a go routine, and is responsible for looping ad
 // infinitum and dropping stale data from the database.
+// 每小时周期性的调用db.expireNodes
 func (db *DB) expirer() {
 	tick := time.NewTicker(dbCleanupCycle)
 	defer tick.Stop()
@@ -336,6 +373,7 @@ func (db *DB) expireNodes() {
 		atEnd        = false
 	)
 	for !atEnd {
+		// 判断节点上一次pong的时间,超过24小时就删除节点
 		id, ip, field := splitNodeItemKey(it.Key())
 		if field == dbNodePong {
 			time, _ := binary.Varint(it.Value())
@@ -349,6 +387,7 @@ func (db *DB) expireNodes() {
 		}
 		atEnd = !it.Next()
 		nextID, _ := splitNodeKey(it.Key())
+		// 如果迭代到末尾或者进入了下一个节点的信息
 		if atEnd || nextID != id {
 			// We've moved beyond the last entry of the current ID.
 			// Remove everything if there was no recent enough pong.
@@ -362,6 +401,7 @@ func (db *DB) expireNodes() {
 
 // LastPingReceived retrieves the time of the last ping packet received from
 // a remote node.
+// 获取指定节点的lastping时间
 func (db *DB) LastPingReceived(id ID, ip net.IP) time.Time {
 	if ip = ip.To16(); ip == nil {
 		return time.Time{}
@@ -370,6 +410,7 @@ func (db *DB) LastPingReceived(id ID, ip net.IP) time.Time {
 }
 
 // UpdateLastPingReceived updates the last time we tried contacting a remote node.
+// 更新指定节点的lastping时间
 func (db *DB) UpdateLastPingReceived(id ID, ip net.IP, instance time.Time) error {
 	if ip = ip.To16(); ip == nil {
 		return errInvalidIP
@@ -378,6 +419,7 @@ func (db *DB) UpdateLastPingReceived(id ID, ip net.IP, instance time.Time) error
 }
 
 // LastPongReceived retrieves the time of the last successful pong from remote node.
+// 获取指定节点lastpong的时间
 func (db *DB) LastPongReceived(id ID, ip net.IP) time.Time {
 	if ip = ip.To16(); ip == nil {
 		return time.Time{}
@@ -388,6 +430,7 @@ func (db *DB) LastPongReceived(id ID, ip net.IP) time.Time {
 }
 
 // UpdateLastPongReceived updates the last pong time of a node.
+// 更新指定节点lastpong的时间
 func (db *DB) UpdateLastPongReceived(id ID, ip net.IP, instance time.Time) error {
 	if ip = ip.To16(); ip == nil {
 		return errInvalidIP
@@ -396,6 +439,7 @@ func (db *DB) UpdateLastPongReceived(id ID, ip net.IP, instance time.Time) error
 }
 
 // FindFails retrieves the number of findnode failures since bonding.
+// 获取指定节点findfail的次数
 func (db *DB) FindFails(id ID, ip net.IP) int {
 	if ip = ip.To16(); ip == nil {
 		return 0
@@ -404,6 +448,7 @@ func (db *DB) FindFails(id ID, ip net.IP) int {
 }
 
 // UpdateFindFails updates the number of findnode failures since bonding.
+// 更新指定节点findfail的次数
 func (db *DB) UpdateFindFails(id ID, ip net.IP, fails int) error {
 	if ip = ip.To16(); ip == nil {
 		return errInvalidIP
@@ -412,6 +457,7 @@ func (db *DB) UpdateFindFails(id ID, ip net.IP, fails int) error {
 }
 
 // FindFailsV5 retrieves the discv5 findnode failure counter.
+// 获取指定节点findfail的次数(v5版本)
 func (db *DB) FindFailsV5(id ID, ip net.IP) int {
 	if ip = ip.To16(); ip == nil {
 		return 0
@@ -420,6 +466,7 @@ func (db *DB) FindFailsV5(id ID, ip net.IP) int {
 }
 
 // UpdateFindFailsV5 stores the discv5 findnode failure counter.
+// 更新指定节点findfail的次数(V5版本)
 func (db *DB) UpdateFindFailsV5(id ID, ip net.IP, fails int) error {
 	if ip = ip.To16(); ip == nil {
 		return errInvalidIP
@@ -428,21 +475,26 @@ func (db *DB) UpdateFindFailsV5(id ID, ip net.IP, fails int) error {
 }
 
 // LocalSeq retrieves the local record sequence counter.
+// 获取指定节点本地保存的seq
 func (db *DB) localSeq(id ID) uint64 {
 	return db.fetchUint64(localItemKey(id, dbLocalSeq))
 }
 
 // storeLocalSeq stores the local record sequence counter.
+// 更新指定节点本地保存保存的seq
 func (db *DB) storeLocalSeq(id ID, n uint64) {
 	db.storeUint64(localItemKey(id, dbLocalSeq), n)
 }
 
 // QuerySeeds retrieves random nodes to be used as potential seed nodes
 // for bootstrapping.
+// 从数据库中随机出来最多n个节点
+// 随机出来的节点距离上次响应时间都不超过maxAge
 func (db *DB) QuerySeeds(n int, maxAge time.Duration) []*Node {
 	var (
 		now   = time.Now()
 		nodes = make([]*Node, 0, n)
+		// 用来遍历整个数据库
 		it    = db.lvl.NewIterator(nil, nil)
 		id    ID
 	)
@@ -453,24 +505,29 @@ seek:
 		// Seek to a random entry. The first byte is incremented by a
 		// random amount each time in order to increase the likelihood
 		// of hitting all existing nodes in very small databases.
+		// 循环每次随机取到数据库中的一个node
 		ctr := id[0]
 		rand.Read(id[:])
 		id[0] = ctr + id[0]%16
 		it.Seek(nodeKey(id))
 
 		n := nextNode(it)
+		// 随机的key后面没有节点了,重新随机一个
 		if n == nil {
 			id[0] = 0
 			continue seek // iterator exhausted
 		}
+		// 随机出来的节点lastpong过去太久了,重新随机一个
 		if now.Sub(db.LastPongReceived(n.ID(), n.IP())) > maxAge {
 			continue seek
 		}
+		// 随机到的节点与之前取到的重复了,重新随机一个
 		for i := range nodes {
 			if nodes[i].ID() == n.ID() {
 				continue seek // duplicate
 			}
 		}
+		// 新增随机到的节点
 		nodes = append(nodes, n)
 	}
 	return nodes
@@ -478,9 +535,11 @@ seek:
 
 // reads the next node record from the iterator, skipping over other
 // database entries.
+// 解析出来数据库中的下一个Node
 func nextNode(it iterator.Iterator) *Node {
 	for end := false; !end; end = !it.Next() {
 		id, rest := splitNodeKey(it.Key())
+		// 跳过所有这个节点相关的key,只关心nodeKey
 		if string(rest) != dbDiscoverRoot {
 			continue
 		}
@@ -490,6 +549,7 @@ func nextNode(it iterator.Iterator) *Node {
 }
 
 // close flushes and closes the database files.
+// 关闭节点数据库
 func (db *DB) Close() {
 	close(db.quit)
 	db.lvl.Close()

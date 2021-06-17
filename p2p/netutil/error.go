@@ -17,6 +17,7 @@
 package netutil
 
 // IsTemporaryError checks whether the given error should be considered temporary.
+// 判断一个错误是不是临时错误
 func IsTemporaryError(err error) bool {
 	tempErr, ok := err.(interface {
 		Temporary() bool
@@ -25,6 +26,7 @@ func IsTemporaryError(err error) bool {
 }
 
 // IsTimeout checks whether the given error is a timeout.
+// 判断一个错误是不是超时错误
 func IsTimeout(err error) bool {
 	timeoutErr, ok := err.(interface {
 		Timeout() bool
