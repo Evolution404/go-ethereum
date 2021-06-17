@@ -29,7 +29,7 @@ import (
 // To define a new entry that is to be included in a node record,
 // create a Go type that satisfies this interface. The type should
 // also implement rlp.Decoder if additional checks are needed on the value.
-// Entry代表已知的键值对
+// Entry代表已知的键值对,也可以使用WithEntry创建通用的键值对
 // 例如TCP,TCP6,UDP,UDP6,ID,IP,IPv4,IPv6
 type Entry interface {
 	ENRKey() string
@@ -76,7 +76,7 @@ type UDP uint16
 
 func (v UDP) ENRKey() string { return "udp" }
 
-// UDP is the "udp" key, which holds the IPv6-specific UDP port of the node.
+// UDP6 is the "udp6" key, which holds the IPv6-specific UDP port of the node.
 type UDP6 uint16
 
 func (v UDP6) ENRKey() string { return "udp6" }

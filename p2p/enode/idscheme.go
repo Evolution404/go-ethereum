@@ -42,6 +42,7 @@ var ValidSchemesForTesting = enr.SchemeMap{
 type V4ID struct{}
 
 // SignV4 signs a record using the v4 scheme.
+// 使用输入的私钥对记录r签名
 func SignV4(r *enr.Record, privkey *ecdsa.PrivateKey) error {
 	// Copy r to avoid modifying it if signing fails.
 	cpy := *r

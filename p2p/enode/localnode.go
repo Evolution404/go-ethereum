@@ -42,6 +42,7 @@ const (
 // current process. Setting ENR entries via the Set method updates the record. A new version
 // of the record is signed on demand when the Node method is called.
 type LocalNode struct {
+	// 保存当前的Node对象
 	cur atomic.Value // holds a non-nil node pointer while the record is up-to-date.
 	id  ID
 	key *ecdsa.PrivateKey
@@ -51,6 +52,7 @@ type LocalNode struct {
 	// 以下的字段都被锁保护
 	mu        sync.Mutex
 	seq       uint64
+	// ENRKey->Entry对象的映射
 	entries   map[string]enr.Entry
 	endpoint4 lnEndpoint
 	endpoint6 lnEndpoint
@@ -63,6 +65,7 @@ type lnEndpoint struct {
 }
 
 // NewLocalNode creates a local node.
+// 创建一个本地节点,指定节点数据库和本地节点的私钥
 func NewLocalNode(db *DB, key *ecdsa.PrivateKey) *LocalNode {
 	ln := &LocalNode{
 		// localNode的id是公钥x,y拼起来求哈希
@@ -77,23 +80,29 @@ func NewLocalNode(db *DB, key *ecdsa.PrivateKey) *LocalNode {
 			track: netutil.NewIPTracker(iptrackWindow, iptrackContactWindow, iptrackMinStatements),
 		},
 	}
+	// seq使用数据库中保存的本地seq
 	ln.seq = db.localSeq(ln.id)
+	// 初始化时cur保存的是nil
 	ln.invalidate()
 	return ln
 }
 
 // Database returns the node database associated with the local node.
+// 获取本地节点使用的数据库
 func (ln *LocalNode) Database() *DB {
 	return ln.db
 }
 
 // Node returns the current version of the local node record.
+// 将本地节点转换为Node对象
 func (ln *LocalNode) Node() *Node {
+	// 首先使用cur中缓存的对象
 	n := ln.cur.Load().(*Node)
 	if n != nil {
 		return n
 	}
 	// Record was invalidated, sign a new copy.
+	// 没有保存好的对象,重新签名创建一个
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
 	ln.sign()
@@ -116,6 +125,8 @@ func (ln *LocalNode) ID() ID {
 // Set puts the given entry into the local record, overwriting any existing value.
 // Use Set*IP and SetFallbackUDP to set IP addresses and UDP port, otherwise they'll
 // be overwritten by the endpoint predictor.
+// 往LocalNode.entries字段一条 ENRKey->Entry 的映射
+// 并且添加后使得缓存的cur失效,因为增加了新的键值对要重新签名
 func (ln *LocalNode) Set(e enr.Entry) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
@@ -132,6 +143,7 @@ func (ln *LocalNode) set(e enr.Entry) {
 }
 
 // Delete removes the given entry from the local record.
+// 从LocalNode.entries删除一项,同样删除后也需要重新签名
 func (ln *LocalNode) Delete(e enr.Entry) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
@@ -147,6 +159,8 @@ func (ln *LocalNode) delete(e enr.Entry) {
 	}
 }
 
+// 得到给定的ip地址应该使用哪个endpoint
+// 也就是应该使用endpoint4还是endpoint6
 func (ln *LocalNode) endpointForIP(ip net.IP) *lnEndpoint {
 	if ip.To4() != nil {
 		return &ln.endpoint4
@@ -156,6 +170,7 @@ func (ln *LocalNode) endpointForIP(ip net.IP) *lnEndpoint {
 
 // SetStaticIP sets the local IP to the given one unconditionally.
 // This disables endpoint prediction.
+// 设置LocalNode的staticIP字段
 func (ln *LocalNode) SetStaticIP(ip net.IP) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
@@ -166,6 +181,8 @@ func (ln *LocalNode) SetStaticIP(ip net.IP) {
 
 // SetFallbackIP sets the last-resort IP address. This address is used
 // if no endpoint prediction can be made and no static IP is set.
+// 设置LocalNode.endpoint4或LocalNode.endpoint6 的fallbackIP字段
+// fallbackIP是没有预测结果而且静态ip也没有设置的最终结果
 func (ln *LocalNode) SetFallbackIP(ip net.IP) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
@@ -176,6 +193,7 @@ func (ln *LocalNode) SetFallbackIP(ip net.IP) {
 
 // SetFallbackUDP sets the last-resort UDP-on-IPv4 port. This port is used
 // if no endpoint prediction can be made.
+// 设置ln.endpoint4和ln.endpoint6的fallbackUDP字段
 func (ln *LocalNode) SetFallbackUDP(port int) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
@@ -187,6 +205,8 @@ func (ln *LocalNode) SetFallbackUDP(port int) {
 
 // UDPEndpointStatement should be called whenever a statement about the local node's
 // UDP endpoint is received. It feeds the local endpoint predictor.
+// 一旦有关于本地节点的statement接收到,就调用该方法
+// 为predictor提供预测的信息
 func (ln *LocalNode) UDPEndpointStatement(fromaddr, endpoint *net.UDPAddr) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
@@ -197,6 +217,7 @@ func (ln *LocalNode) UDPEndpointStatement(fromaddr, endpoint *net.UDPAddr) {
 
 // UDPContact should be called whenever the local node has announced itself to another node
 // via UDP. It feeds the local endpoint predictor.
+// 一旦本地向其他节点通知连接,就调用AddContact往IPTracker里面添加
 func (ln *LocalNode) UDPContact(toaddr *net.UDPAddr) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
@@ -206,6 +227,7 @@ func (ln *LocalNode) UDPContact(toaddr *net.UDPAddr) {
 }
 
 // updateEndpoints updates the record with predicted endpoints.
+// 更新ln.entries里面保存的ip,ip6,udp,udp6字段为预测的结果
 func (ln *LocalNode) updateEndpoints() {
 	ip4, udp4 := ln.endpoint4.get()
 	ip6, udp6 := ln.endpoint6.get()
@@ -233,6 +255,9 @@ func (ln *LocalNode) updateEndpoints() {
 }
 
 // get returns the endpoint with highest precedence.
+// 获取lnEndpoint中优先级最高的ip和端口
+// ip优先级: 预测结果ip > staticIP > fallbackIP
+// 端口优先级: 预测结果的端口 > fallbackUDP
 func (e *lnEndpoint) get() (newIP net.IP, newPort int) {
 	newPort = e.fallbackUDP
 	if e.fallbackIP != nil {
@@ -249,6 +274,7 @@ func (e *lnEndpoint) get() (newIP net.IP, newPort int) {
 
 // predictAddr wraps IPTracker.PredictEndpoint, converting from its string-based
 // endpoint representation to IP and port types.
+// 调用IPTracker.PredictEndpoint方法,将返回的 ip和端口 字符串转换成net.IP和int
 func predictAddr(t *netutil.IPTracker) (net.IP, int) {
 	ep := t.PredictEndpoint()
 	if ep == "" {
@@ -260,6 +286,7 @@ func predictAddr(t *netutil.IPTracker) (net.IP, int) {
 	return ip, port
 }
 
+// 设置ln.cur为nil
 func (ln *LocalNode) invalidate() {
 	ln.cur.Store((*Node)(nil))
 }
@@ -269,23 +296,29 @@ func (ln *LocalNode) sign() {
 		return // no changes
 	}
 
+	// 首先构造Record对象
 	var r enr.Record
 	for _, e := range ln.entries {
 		r.Set(e)
 	}
+	// 自增seq
 	ln.bumpSeq()
 	r.SetSeq(ln.seq)
+	// 对记录进行签名
 	if err := SignV4(&r, ln.key); err != nil {
 		panic(fmt.Errorf("enode: can't sign record: %v", err))
 	}
+	// 构造Node对象
 	n, err := New(ValidSchemes, &r)
 	if err != nil {
 		panic(fmt.Errorf("enode: can't verify local record: %v", err))
 	}
+	// 保存到cur字段中
 	ln.cur.Store(n)
 	log.Info("New local node record", "seq", ln.seq, "id", n.ID(), "ip", n.IP(), "udp", n.UDP(), "tcp", n.TCP())
 }
 
+// 让本地节点的seq自增,并保存的数据库中
 func (ln *LocalNode) bumpSeq() {
 	ln.seq++
 	ln.db.storeLocalSeq(ln.id, ln.seq)

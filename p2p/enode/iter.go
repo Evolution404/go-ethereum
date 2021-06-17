@@ -65,9 +65,12 @@ type sliceIter struct {
 	mu    sync.Mutex
 	nodes []*Node
 	index int
+	// 控制是否循环遍历,到达末尾是否回到开头
 	cycle bool
 }
 
+// 挨个遍历,如果cycle为true就到末尾后回到开头
+// 返回值代表是否读取成功下一个值
 func (it *sliceIter) Next() bool {
 	it.mu.Lock()
 	defer it.mu.Unlock()
@@ -87,6 +90,7 @@ func (it *sliceIter) Next() bool {
 	return true
 }
 
+// 返回迭代器当前的节点
 func (it *sliceIter) Node() *Node {
 	it.mu.Lock()
 	defer it.mu.Unlock()
@@ -105,6 +109,7 @@ func (it *sliceIter) Close() {
 
 // Filter wraps an iterator such that Next only returns nodes for which
 // the 'check' function returns true.
+// 只迭代满足check函数的节点
 func Filter(it Iterator, check func(*Node) bool) Iterator {
 	return &filterIter{it, check}
 }
@@ -133,18 +138,25 @@ func (f *filterIter) Next() bool {
 // will be returned.
 //
 // It's safe to call AddSource and Close concurrently with Next.
+// 可以以公平的方式从多个来源迭代节点
 type FairMix struct {
 	wg      sync.WaitGroup
 	fromAny chan *Node
+	// timeout指最多等待某个来源的时间,使用负数将禁用超时
 	timeout time.Duration
+	// 保存当前的Node
 	cur     *Node
 
 	mu      sync.Mutex
 	closed  chan struct{}
 	sources []*mixSource
+	// 记录当前选取的sources中的位置
 	last    int
 }
 
+// 代表FairMix对象内部的一个节点来源
+// 每个来源读取到的节点就会写入到自己的next管道中
+// 当使用pickSource选中这个来源后就会被FairMix.Next方法读取
 type mixSource struct {
 	it      Iterator
 	next    chan *Node
@@ -157,6 +169,8 @@ type mixSource struct {
 // before giving up and taking a node from any other source. A good way to set the timeout
 // is deciding how long you'd want to wait for a node on average. Passing a negative
 // timeout makes the mixer completely fair.
+// 创建一个FairMix迭代器,用来从多个来源平均的迭代节点
+// 输入的时间表示等待一个来源返回节点的超时时间
 func NewFairMix(timeout time.Duration) *FairMix {
 	m := &FairMix{
 		fromAny: make(chan *Node),
@@ -189,6 +203,7 @@ func (m *FairMix) Close() {
 	if m.closed == nil {
 		return
 	}
+	// 关闭所有内部的迭代器
 	for _, s := range m.sources {
 		s.it.Close()
 	}
@@ -237,6 +252,7 @@ func (m *FairMix) Node() *Node {
 
 // nextFromAny is used when there are no sources or when the 'fair' choice
 // doesn't turn up a node quickly enough.
+// 从fromAny管道获取一个节点保存的m.cur中
 func (m *FairMix) nextFromAny() bool {
 	n, ok := <-m.fromAny
 	if ok {
@@ -246,6 +262,7 @@ func (m *FairMix) nextFromAny() bool {
 }
 
 // pickSource chooses the next source to read from, cycling through them in order.
+// 从m.sources中选取下一个
 func (m *FairMix) pickSource() *mixSource {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -258,6 +275,7 @@ func (m *FairMix) pickSource() *mixSource {
 }
 
 // deleteSource deletes a source.
+// 从m.sources中移除指定的mixSource
 func (m *FairMix) deleteSource(s *mixSource) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -273,6 +291,7 @@ func (m *FairMix) deleteSource(s *mixSource) {
 }
 
 // runSource reads a single source in a loop.
+// 不断循环从输入的来源中读取下一个节点,写入到next或者fromAny管道中
 func (m *FairMix) runSource(closed chan struct{}, s *mixSource) {
 	defer m.wg.Done()
 	defer close(s.next)

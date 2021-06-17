@@ -35,6 +35,7 @@ import (
 )
 
 // RPC packet types
+// 定义了六种包类型
 const (
 	PingPacket = iota + 1 // zero is 'reserved'
 	PongPacket
@@ -206,7 +207,10 @@ var (
 var headSpace = make([]byte, headSize)
 
 // Decode reads a discovery v4 packet.
+// 数据包的结构
+// 32字节哈希 65字节签名 其余数据
 func Decode(input []byte) (Packet, Pubkey, []byte, error) {
+	// 数据包除了头之外至少得有一个字节
 	if len(input) < headSize+1 {
 		return nil, Pubkey{}, nil, ErrPacketTooSmall
 	}

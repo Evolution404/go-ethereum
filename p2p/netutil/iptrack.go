@@ -25,11 +25,17 @@ import (
 // IPTracker predicts the external endpoint, i.e. IP address and port, of the local host
 // based on statements made by other hosts.
 type IPTracker struct {
+	// 代表一条statement记录的超时时间,超过该时间在gcStatements中会被回收
 	window          time.Duration
+	// 代表一条contact记录的超时时间,超过该时间在gcContact中会被回收
 	contactWindow   time.Duration
+	// 必须有超过minStatements个数的节点认为本地的ip是某个ip,才会在PredictEndpoint返回这个ip
 	minStatements   int
 	clock           mclock.Clock
+	// statements和contact都是ip到时间的映射
+	// statements保存外部主机记录的本地ip
 	statements      map[string]ipStatement
+	// contact记录本地已经发送了endpoint information到指定的ip
 	contact         map[string]mclock.AbsTime
 	lastStatementGC mclock.AbsTime
 	lastContactGC   mclock.AbsTime
@@ -61,11 +67,15 @@ func NewIPTracker(window, contactWindow time.Duration, minStatements int) *IPTra
 // PredictFullConeNAT checks whether the local host is behind full cone NAT. It predicts by
 // checking whether any statement has been received from a node we didn't contact before
 // the statement was made.
+// 判断是不是Full Cone类型的NAT
+// 检测方法是判断有没有从外部主动建立的连接
 func (it *IPTracker) PredictFullConeNAT() bool {
 	now := it.clock.Now()
 	it.gcContact(now)
 	it.gcStatements(now)
 	for host, st := range it.statements {
+		// 遍历statements,如果statements里面有contact里面没有的host,就说明是Full Cone
+		// 或者如果有statement的生成时间比contact早,也说明是Full Cone
 		if c, ok := it.contact[host]; !ok || c > st.time {
 			return true
 		}
@@ -74,11 +84,14 @@ func (it *IPTracker) PredictFullConeNAT() bool {
 }
 
 // PredictEndpoint returns the current prediction of the external endpoint.
+// 预测本地节点在其他节点眼里以为的ip
+// 就是计算statements里面保存的哪个endpoint最多
 func (it *IPTracker) PredictEndpoint() string {
 	it.gcStatements(it.clock.Now())
 
 	// The current strategy is simple: find the endpoint with most statements.
 	counts := make(map[string]int)
+	// 循环遍历计算记录次数最多的ip
 	maxcount, max := 0, ""
 	for _, s := range it.statements {
 		c := counts[s.endpoint] + 1
@@ -109,6 +122,7 @@ func (it *IPTracker) AddContact(host string) {
 	}
 }
 
+// 回收it.statements中所有超过window时间的记录
 func (it *IPTracker) gcStatements(now mclock.AbsTime) {
 	it.lastStatementGC = now
 	cutoff := now.Add(-it.window)
@@ -119,6 +133,7 @@ func (it *IPTracker) gcStatements(now mclock.AbsTime) {
 	}
 }
 
+// 回收it.contact中所有超过contactWindow时间的记录
 func (it *IPTracker) gcContact(now mclock.AbsTime) {
 	it.lastContactGC = now
 	cutoff := now.Add(-it.contactWindow)
