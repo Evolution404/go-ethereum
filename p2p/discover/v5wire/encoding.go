@@ -48,6 +48,7 @@ type Header struct {
 
 // StaticHeader contains the static fields of a packet header.
 type StaticHeader struct {
+	// 使用6个字节保存协议版本,现在是 "discv5"
 	ProtocolID [6]byte
 	Version    uint16
 	Flag       byte

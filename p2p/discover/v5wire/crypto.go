@@ -41,6 +41,7 @@ const (
 type Nonce [gcmNonceSize]byte
 
 // EncodePubkey encodes a public key.
+// 获取压缩格式的公钥
 func EncodePubkey(key *ecdsa.PublicKey) []byte {
 	switch key.Curve {
 	case crypto.S256():
@@ -51,6 +52,8 @@ func EncodePubkey(key *ecdsa.PublicKey) []byte {
 }
 
 // DecodePubkey decodes a public key in compressed format.
+// 将压缩格式的公钥还原成ecdsa.PublicKey对象
+// 输入的曲线curve必须是secp256k1
 func DecodePubkey(curve elliptic.Curve, e []byte) (*ecdsa.PublicKey, error) {
 	switch curve {
 	case crypto.S256():
@@ -64,6 +67,7 @@ func DecodePubkey(curve elliptic.Curve, e []byte) (*ecdsa.PublicKey, error) {
 }
 
 // idNonceHash computes the ID signature hash used in the handshake.
+// 计算在握手的时候使用的ID签名哈希
 func idNonceHash(h hash.Hash, challenge, ephkey []byte, destID enode.ID) []byte {
 	h.Reset()
 	h.Write([]byte("discovery v5 identity proof"))
@@ -74,10 +78,13 @@ func idNonceHash(h hash.Hash, challenge, ephkey []byte, destID enode.ID) []byte 
 }
 
 // makeIDSignature creates the ID nonce signature.
+// 创建ID nonce的签名
 func makeIDSignature(hash hash.Hash, key *ecdsa.PrivateKey, challenge, ephkey []byte, destID enode.ID) ([]byte, error) {
+	// 计算相关数据的哈希
 	input := idNonceHash(hash, challenge, ephkey, destID)
 	switch key.Curve {
 	case crypto.S256():
+		// 然后用私钥对数据的哈希签名
 		idsig, err := crypto.Sign(input, key)
 		if err != nil {
 			return nil, err
@@ -89,12 +96,15 @@ func makeIDSignature(hash hash.Hash, key *ecdsa.PrivateKey, challenge, ephkey []
 }
 
 // s256raw is an unparsed secp256k1 public key ENR entry.
+// 未经压缩的secp256k1曲线的公钥
 type s256raw []byte
 
 func (s256raw) ENRKey() string { return "secp256k1" }
 
 // verifyIDSignature checks that signature over idnonce was made by the given node.
+// 验证签名
 func verifyIDSignature(hash hash.Hash, sig []byte, n *enode.Node, challenge, ephkey []byte, destID enode.ID) error {
+	// 现在只有v4
 	switch idscheme := n.Record().IdentityScheme(); idscheme {
 	case "v4":
 		var pubkey s256raw

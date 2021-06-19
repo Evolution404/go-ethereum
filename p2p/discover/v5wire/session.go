@@ -28,6 +28,7 @@ import (
 	"github.com/hashicorp/golang-lru/simplelru"
 )
 
+// 握手的超时时间是一秒
 const handshakeTimeout = time.Second
 
 // The SessionCache keeps negotiated encryption keys and

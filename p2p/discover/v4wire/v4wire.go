@@ -209,6 +209,8 @@ var headSpace = make([]byte, headSize)
 // Decode reads a discovery v4 packet.
 // 数据包的结构
 // 32字节哈希 65字节签名 其余数据
+// 其余数据的第一个字节保存了包类型
+// 返回包对象,远程节点的公钥,包中签名和数据整体的哈希,错误
 func Decode(input []byte) (Packet, Pubkey, []byte, error) {
 	// 数据包除了头之外至少得有一个字节
 	if len(input) < headSize+1 {
@@ -219,12 +221,14 @@ func Decode(input []byte) (Packet, Pubkey, []byte, error) {
 	if !bytes.Equal(hash, shouldhash) {
 		return nil, Pubkey{}, nil, ErrBadHash
 	}
+	// 根据数据的哈希和签名恢复出来对方节点的公钥
 	fromKey, err := recoverNodeKey(crypto.Keccak256(input[headSize:]), sig)
 	if err != nil {
 		return nil, fromKey, hash, err
 	}
 
 	var req Packet
+	// 根据实际数据的第一个字节,创建包对象
 	switch ptype := sigdata[0]; ptype {
 	case PingPacket:
 		req = new(Ping)
@@ -242,11 +246,13 @@ func Decode(input []byte) (Packet, Pubkey, []byte, error) {
 		return nil, fromKey, hash, fmt.Errorf("unknown type: %d", ptype)
 	}
 	s := rlp.NewStream(bytes.NewReader(sigdata[1:]), 0)
+	// 解码出实际的包
 	err = s.Decode(req)
 	return req, fromKey, hash, err
 }
 
 // Encode encodes a discovery packet.
+// 构造数据包的字节数组,返回的哈希是签名和数据的哈希,就是包字节数组的最开始部分
 func Encode(priv *ecdsa.PrivateKey, req Packet) (packet, hash []byte, err error) {
 	b := new(bytes.Buffer)
 	b.Write(headSpace)
@@ -255,28 +261,36 @@ func Encode(priv *ecdsa.PrivateKey, req Packet) (packet, hash []byte, err error)
 		return nil, nil, err
 	}
 	packet = b.Bytes()
+	// 计算签名,填充到[macSize,headSize]这一段
 	sig, err := crypto.Sign(crypto.Keccak256(packet[headSize:]), priv)
 	if err != nil {
 		return nil, nil, err
 	}
 	copy(packet[macSize:], sig)
 	// Add the hash to the front. Note: this doesn't protect the packet in any way.
+	// 计算签名和数据整体的哈希
 	hash = crypto.Keccak256(packet[macSize:])
+	// 填充到数据包最开始
 	copy(packet, hash)
 	return packet, hash, nil
 }
 
 // recoverNodeKey computes the public key used to sign the given hash from the signature.
+// 从签名和哈希恢复出来远程节点的公钥
+// 这里的哈希是数据包最后数据计算出来的哈希,不包括签名
 func recoverNodeKey(hash, sig []byte) (key Pubkey, err error) {
 	pubkey, err := crypto.Ecrecover(hash, sig)
 	if err != nil {
 		return key, err
 	}
+	// 恢复出来的公钥第一个字节是前缀04
+	// 这里不需要所以去掉
 	copy(key[:], pubkey[1:])
 	return key, nil
 }
 
 // EncodePubkey encodes a secp256k1 public key.
+// 编码公钥对象到65字节数组
 func EncodePubkey(key *ecdsa.PublicKey) Pubkey {
 	var e Pubkey
 	math.ReadBits(key.X, e[:len(e)/2])
@@ -285,6 +299,7 @@ func EncodePubkey(key *ecdsa.PublicKey) Pubkey {
 }
 
 // DecodePubkey reads an encoded secp256k1 public key.
+// 从65字节数组解码出来公钥对象
 func DecodePubkey(curve elliptic.Curve, e Pubkey) (*ecdsa.PublicKey, error) {
 	p := &ecdsa.PublicKey{Curve: curve, X: new(big.Int), Y: new(big.Int)}
 	half := len(e) / 2
