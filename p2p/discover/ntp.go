@@ -48,6 +48,7 @@ func checkClockDrift() {
 	if err != nil {
 		return
 	}
+	// 时间的误差超过正负十秒,打印警告信息
 	if drift < -driftThreshold || drift > driftThreshold {
 		log.Warn(fmt.Sprintf("System clock seems off by %v, which can prevent network connectivity", drift))
 		log.Warn("Please enable network time synchronisation in system settings.")

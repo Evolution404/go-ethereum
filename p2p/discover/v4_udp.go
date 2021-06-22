@@ -55,6 +55,7 @@ const (
 	maxFindnodeFailures = 5                // nodes exceeding this limit are dropped
 	ntpFailureThreshold = 32               // Continuous timeouts after which to check NTP
 	ntpWarningCooldown  = 10 * time.Minute // Minimum amount of time to pass before repeating NTP warning
+	// 时间误差最多十秒
 	driftThreshold      = 10 * time.Second // Allowed clock drift before warning user
 
 	// Discovery packets are defined to be no larger than 1280 bytes.

@@ -33,7 +33,9 @@ import (
 
 const (
 	// Encryption/authentication parameters.
+	// aes加密解密使用的密钥长度是16字节
 	aesKeySize   = 16
+	// 默认的Nonce长度是12字节
 	gcmNonceSize = 12
 )
 
@@ -67,7 +69,10 @@ func DecodePubkey(curve elliptic.Curve, e []byte) (*ecdsa.PublicKey, error) {
 }
 
 // idNonceHash computes the ID signature hash used in the handshake.
-// 计算在握手的时候使用的ID签名哈希
+// 发送握手包时要对挑战数据进行签名,签名是对哈希签名
+// 这个函数用来计算这个哈希
+// id-signature-input = "discovery v5 identity proof" || challenge-data || ephemeral-pubkey || node-id-B
+// 返回 sha256(id-signature-input)
 func idNonceHash(h hash.Hash, challenge, ephkey []byte, destID enode.ID) []byte {
 	h.Reset()
 	h.Write([]byte("discovery v5 identity proof"))
@@ -78,7 +83,9 @@ func idNonceHash(h hash.Hash, challenge, ephkey []byte, destID enode.ID) []byte 
 }
 
 // makeIDSignature creates the ID nonce signature.
-// 创建ID nonce的签名
+// 生成id-signature
+// id-signature = id_sign(sha256(id-signature-input))
+// 输入的key是本地私钥,ephkey是本地公钥
 func makeIDSignature(hash hash.Hash, key *ecdsa.PrivateKey, challenge, ephkey []byte, destID enode.ID) ([]byte, error) {
 	// 计算相关数据的哈希
 	input := idNonceHash(hash, challenge, ephkey, destID)
@@ -124,6 +131,9 @@ func verifyIDSignature(hash hash.Hash, sig []byte, n *enode.Node, challenge, eph
 type hashFn func() hash.Hash
 
 // deriveKeys creates the session keys.
+// 通过本地私钥和远程公钥得出来对称加密使用的密钥,返回会话对象
+// 需要注意接收方和发送方调用这个函数恢复出来的会话对象完全一致
+// 所以需要有一方调用session.keysFlipped来交换writeKey和readKey
 func deriveKeys(hash hashFn, priv *ecdsa.PrivateKey, pub *ecdsa.PublicKey, n1, n2 enode.ID, challenge []byte) *session {
 	const text = "discovery v5 key agreement"
 	var info = make([]byte, 0, len(text)+len(n1)+len(n2))
@@ -131,22 +141,28 @@ func deriveKeys(hash hashFn, priv *ecdsa.PrivateKey, pub *ecdsa.PublicKey, n1, n
 	info = append(info, n1[:]...)
 	info = append(info, n2[:]...)
 
+	// 两个节点都能计算出来的相同的秘密
 	eph := ecdh(priv, pub)
 	if eph == nil {
 		return nil
 	}
 	kdf := hkdf.New(hash, eph, challenge, info)
 	sec := session{writeKey: make([]byte, aesKeySize), readKey: make([]byte, aesKeySize)}
+	// 将秘密扩展成两个密钥
 	kdf.Read(sec.writeKey)
 	kdf.Read(sec.readKey)
 	for i := range eph {
 		eph[i] = 0
 	}
+	// 返回会话对象
 	return &sec
 }
 
 // ecdh creates a shared secret.
+// 通过本地私钥和远程公钥,计算本地和远程节点共享的密钥
 func ecdh(privkey *ecdsa.PrivateKey, pubkey *ecdsa.PublicKey) []byte {
+	// 计算本地私钥与远程节点公钥的乘积
+	// secX,secY分别是椭圆曲线上点的横纵坐标
 	secX, secY := pubkey.ScalarMult(pubkey.X, pubkey.Y, privkey.D.Bytes())
 	if secX == nil {
 		return nil
@@ -160,19 +176,24 @@ func ecdh(privkey *ecdsa.PrivateKey, pubkey *ecdsa.PublicKey) []byte {
 // encryptGCM encrypts pt using AES-GCM with the given key and nonce. The ciphertext is
 // appended to dest, which must not overlap with plaintext. The resulting ciphertext is 16
 // bytes longer than plaintext because it contains an authentication tag.
+// 加密plaintext,将密文追加到dest,并返回密文
 func encryptGCM(dest, key, nonce, plaintext, authData []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		panic(fmt.Errorf("can't create block cipher: %v", err))
 	}
+	// 这里可以直接使用cipher.NewGCM,因为nonce的长度就是标准的12字节
+	// 这里可能是为了避免以后可能修改nonce的长度
 	aesgcm, err := cipher.NewGCMWithNonceSize(block, gcmNonceSize)
 	if err != nil {
 		panic(fmt.Errorf("can't create GCM: %v", err))
 	}
+	// 将密文追加到dest后部,并返回密文
 	return aesgcm.Seal(dest, nonce, plaintext, authData), nil
 }
 
 // decryptGCM decrypts ct using AES-GCM with the given key and nonce.
+// AES-GCM的解密函数,用来解密ct
 func decryptGCM(key, nonce, ct, authData []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
