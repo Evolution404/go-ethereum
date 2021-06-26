@@ -49,6 +49,10 @@ type Config struct {
 	Clock        mclock.Clock
 }
 
+// 如果Log,ValidSchemes以及Clock没有设置,为Config对象设置默认值
+// Log = log.Root()
+// ValidSchemes = enode.ValidSchemes
+// Clock = mclock.System{}
 func (cfg Config) withDefaults() Config {
 	if cfg.Log == nil {
 		cfg.Log = log.Root()

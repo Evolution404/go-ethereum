@@ -38,6 +38,7 @@ import (
 // 普通包和握手包的AuthData的开始部分都是src-id,也就是消息包需要src-id
 
 // Packet is implemented by all message types.
+// v5版本的Packet对象
 // Packet的实现类型是各种消息
 type Packet interface {
 	Name() string        // Name returns a string corresponding to the message type.

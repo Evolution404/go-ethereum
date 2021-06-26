@@ -74,6 +74,7 @@ type UDPv4 struct {
 	db          *enode.DB
 	tab         *Table
 	closeOnce   sync.Once
+	// 用来等待loop和readLoop函数执行完成
 	wg          sync.WaitGroup
 
 	addReplyMatcher chan *replyMatcher
@@ -166,6 +167,7 @@ func (t *UDPv4) Close() {
 	t.closeOnce.Do(func() {
 		t.cancelCloseCtx()
 		t.conn.Close()
+		// 等待t.loop和t.readLoop执行完成
 		t.wg.Wait()
 		t.tab.close()
 	})

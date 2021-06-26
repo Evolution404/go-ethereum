@@ -261,8 +261,8 @@ func ParseID(in string) (ID, error) {
 // Returns -1 if a is closer to target, 1 if b is closer to target
 // and 0 if they are equal.
 // 比较节点间的距离
-// 返回1,a与target更近
-// 返回-1,b与target更近
+// 返回-1,a与target更近
+// 返回1,b与target更近
 // 返回0, a与b和target一样近
 func DistCmp(target, a, b ID) int {
 	for i := range target {

@@ -27,6 +27,10 @@ import (
 )
 
 var lan4, lan6, special4, special6 Netlist
+// lan4: ipv4的私有地址
+// lan6: ipv6的私有地址
+// special4: ipv4的特殊用途地址
+// special6: ipv6的特殊用途地址
 
 func init() {
 	// Lists from RFC 5735, RFC 5156,
@@ -66,6 +70,7 @@ func init() {
 }
 
 // Netlist is a list of IP networks.
+// 包含了一组子网
 type Netlist []net.IPNet
 
 // ParseNetlist parses a comma-separated list of CIDR masks.
@@ -114,15 +119,19 @@ func (l *Netlist) UnmarshalTOML(fn func(interface{}) error) error {
 
 // Add parses a CIDR mask and appends it to the list. It panics for invalid masks and is
 // intended to be used for setting up static lists.
+// 向子网列表中添加一个子网
 func (l *Netlist) Add(cidr string) {
+	// 解析CIDR字符串
 	_, n, err := net.ParseCIDR(cidr)
 	if err != nil {
 		panic(err)
 	}
+	// 追加一项IPNet 
 	*l = append(*l, *n)
 }
 
 // Contains reports whether the given IP is contained in the list.
+// 判断输入的ip是否在这一组中的任意子网中
 func (l *Netlist) Contains(ip net.IP) bool {
 	if l == nil {
 		return false
@@ -136,18 +145,23 @@ func (l *Netlist) Contains(ip net.IP) bool {
 }
 
 // IsLAN reports whether an IP is a local network address.
+// 判断给定的IP是不是本地私有地址
 func IsLAN(ip net.IP) bool {
+	// 判断是不是本地回环
 	if ip.IsLoopback() {
 		return true
 	}
+	// 判断在不在ipv4的本地地址中
 	if v4 := ip.To4(); v4 != nil {
 		return lan4.Contains(v4)
 	}
+	// ipv6地址判断在不在本地地址
 	return lan6.Contains(ip)
 }
 
 // IsSpecialNetwork reports whether an IP is located in a special-use network range
 // This includes broadcast, multicast and documentation addresses.
+// 判断是不是特殊地址
 func IsSpecialNetwork(ip net.IP) bool {
 	if ip.IsMulticast() {
 		return true
@@ -174,6 +188,11 @@ var (
 //   - Loopback addresses are OK if relayed by a loopback host.
 //   - LAN addresses are OK if relayed by a LAN host.
 //   - All other addresses are always acceptable.
+// 判断发送方要求转发的地址是不是合法地址
+//   目的地址不能是特殊地址
+//   目的地址是回环地址,只能是发送方也是回环地址
+//   目的地址是私网地址,发送方也必须是私网地址
+//   目的地址不是以上地址都接受
 func CheckRelayIP(sender, addr net.IP) error {
 	if len(addr) != net.IPv4len && len(addr) != net.IPv6len {
 		return errInvalid
@@ -194,6 +213,7 @@ func CheckRelayIP(sender, addr net.IP) error {
 }
 
 // SameNet reports whether two IP addresses have an equal prefix of the given bit length.
+// 判断ip和other是不是同一个子网
 func SameNet(bits uint, ip, other net.IP) bool {
 	ip4, other4 := ip.To4(), other.To4()
 	switch {
@@ -206,27 +226,35 @@ func SameNet(bits uint, ip, other net.IP) bool {
 	}
 }
 
+// 判断ip和other前面的bits这么多位是不是一样
 func sameNet(bits uint, ip, other net.IP) bool {
 	nb := int(bits / 8)
+	// 先判断末尾几位一不一样
 	mask := ^byte(0xFF >> (bits % 8))
 	if mask != 0 && nb < len(ip) && ip[nb]&mask != other[nb]&mask {
 		return false
 	}
+	// 末尾不足8的一样,判断前面整个字节的部分一不一样
 	return nb <= len(ip) && ip[:nb].Equal(other[:nb])
 }
 
 // DistinctNetSet tracks IPs, ensuring that at most N of them
 // fall into the same network range.
+// 用来限制来自同一个子网的ip个数
+// 一个DistinctNetSet对象可以管理多个前缀长度相同的子网
 type DistinctNetSet struct {
 	Subnet uint // number of common prefix bits
 	Limit  uint // maximum number of IPs in each subnet
 
+	// 一个子网内的所有ip都能生成相同的key
+	// members里面保存了各个子网的ip的个数
 	members map[string]uint
 	buf     net.IP
 }
 
 // Add adds an IP address to the set. It returns false (and doesn't add the IP) if the
 // number of existing IPs in the defined range exceeds the limit.
+// 添加成功返回true并且让对应子网的个数加一,如果达到了上限返回false
 func (s *DistinctNetSet) Add(ip net.IP) bool {
 	key := s.key(ip)
 	n := s.members[string(key)]
@@ -238,6 +266,7 @@ func (s *DistinctNetSet) Add(ip net.IP) bool {
 }
 
 // Remove removes an IP from the set.
+// 让该ip所在子网的计数器减去1
 func (s *DistinctNetSet) Remove(ip net.IP) {
 	key := s.key(ip)
 	if n, ok := s.members[string(key)]; ok {
@@ -250,6 +279,7 @@ func (s *DistinctNetSet) Remove(ip net.IP) {
 }
 
 // Contains whether the given IP is contained in the set.
+// 判断指定的ip是不是在DistinctNetSet已经保存的各种子网中
 func (s DistinctNetSet) Contains(ip net.IP) bool {
 	key := s.key(ip)
 	_, ok := s.members[string(key)]
@@ -257,6 +287,7 @@ func (s DistinctNetSet) Contains(ip net.IP) bool {
 }
 
 // Len returns the number of tracked IPs.
+// 保存的ip个数就是members保存的数的和
 func (s DistinctNetSet) Len() int {
 	n := uint(0)
 	for _, i := range s.members {
@@ -269,6 +300,9 @@ func (s DistinctNetSet) Len() int {
 //
 // The first byte of key is '4' or '6' to distinguish IPv4/IPv6 address types.
 // The remainder of the key is the IP, truncated to the number of bits.
+// 创建输入ip的key,在同一个子网的ip具有相同的key
+// key的首字节是'4'或'6',用来区分类型,后面是ip所在子网的前缀
+// 实际操作的是字节数组,返回的是net.IP类型,虽然返回的IP类型但是实际操作都是针对字符串
 func (s *DistinctNetSet) key(ip net.IP) net.IP {
 	// Lazily initialize storage.
 	if s.members == nil {
@@ -276,6 +310,7 @@ func (s *DistinctNetSet) key(ip net.IP) net.IP {
 		s.buf = make(net.IP, 17)
 	}
 	// Canonicalize ip and bits.
+	// 初始化typ为'4'或'6'
 	typ := byte('6')
 	if ip4 := ip.To4(); ip4 != nil {
 		typ, ip = '4', ip4

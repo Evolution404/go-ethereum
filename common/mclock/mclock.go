@@ -84,7 +84,7 @@ type ChanTimer interface {
 }
 
 // System implements Clock using the system clock.
-// 实现了Clock接口的5个函数
+// 使用系统内置方法实现了Clock接口的5个函数
 type System struct{}
 
 // Now returns the current monotonic time.

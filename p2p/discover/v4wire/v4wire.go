@@ -136,6 +136,8 @@ func (e Pubkey) ID() enode.ID {
 }
 
 // Node represents information about a node.
+// 一个节点信息
+// 相比于Endpoint,增加了对方的公钥所以就成为了一个节点
 type Node struct {
 	IP  net.IP // len 4 for IPv4 or 16 for IPv6
 	UDP uint16 // for discovery protocol
@@ -144,6 +146,7 @@ type Node struct {
 }
 
 // Endpoint represents a network endpoint.
+// 一个网络端点,包括对方的ip,UDP端口,TCP端口
 type Endpoint struct {
 	IP  net.IP // len 4 for IPv4 or 16 for IPv6
 	UDP uint16 // for discovery protocol
@@ -161,6 +164,7 @@ func NewEndpoint(addr *net.UDPAddr, tcpPort uint16) Endpoint {
 	return Endpoint{IP: ip, UDP: uint16(addr.Port), TCP: tcpPort}
 }
 
+// v4版本的Packet对象
 type Packet interface {
 	// packet name and type for logging purposes.
 	Name() string
@@ -186,6 +190,7 @@ func (req *ENRResponse) Name() string { return "ENRRESPONSE/v4" }
 func (req *ENRResponse) Kind() byte   { return ENRResponsePacket }
 
 // Expired checks whether the given UNIX time stamp is in the past.
+// 判断输入的时间戳是不是早于现在的时间
 func Expired(ts uint64) bool {
 	return time.Unix(int64(ts), 0).Before(time.Now())
 }
