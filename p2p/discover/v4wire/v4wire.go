@@ -200,6 +200,7 @@ func Expired(ts uint64) bool {
 const (
 	macSize  = 32
 	sigSize  = crypto.SignatureLength
+	// 头部长度97字节,哈希32字节,签名65字节
 	headSize = macSize + sigSize // space of packet frame data
 )
 
@@ -258,9 +259,16 @@ func Decode(input []byte) (Packet, Pubkey, []byte, error) {
 
 // Encode encodes a discovery packet.
 // 构造数据包的字节数组,返回的哈希是签名和数据的哈希,就是包字节数组的最开始部分
+// packet = packet-header || packet-data
+// packet-header = hash || signature || packet-type
+// hash = keccak256(signature || packet-type || packet-data)
+// signature = sign(packet-type || packet-data)
+// hash长度32字节,signature长度65字节
 func Encode(priv *ecdsa.PrivateKey, req Packet) (packet, hash []byte, err error) {
 	b := new(bytes.Buffer)
+	// 留空头部的97字节
 	b.Write(headSpace)
+	// 写入一字节的包类型
 	b.WriteByte(req.Kind())
 	if err := rlp.Encode(b, req); err != nil {
 		return nil, nil, err

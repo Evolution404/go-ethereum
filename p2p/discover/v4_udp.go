@@ -48,8 +48,11 @@ var (
 )
 
 const (
+	// 发送一个请求后,等待超时的时间是500毫秒
 	respTimeout    = 500 * time.Millisecond
+	// 发送的数据包的超时时间都是现在的时间加上20秒
 	expiration     = 20 * time.Second
+	// 超过这个时间没有沟通就发送ping
 	bondExpiration = 24 * time.Hour
 
 	maxFindnodeFailures = 5                // nodes exceeding this limit are dropped
@@ -338,13 +341,23 @@ func (t *UDPv4) findnode(toid enode.ID, toaddr *net.UDPAddr, target v4wire.Pubke
 }
 
 // RequestENR sends enrRequest to the given node and waits for a response.
+// RequestENR的结构
+// packet = packet-header || packet-data
+// packet-header = hash || signature || packet-type
+// hash = keccak256(signature || packet-type || packet-data)
+// signature = sign(packet-type || packet-data)
+// packet-data = [expiration]
 func (t *UDPv4) RequestENR(n *enode.Node) (*enode.Node, error) {
+	// 构造发送的目的地址
 	addr := &net.UDPAddr{IP: n.IP(), Port: n.UDP()}
+	// 保证远程节点处于正常状态,没有超过24小时不沟通,错误次数没有过多
 	t.ensureBond(n.ID(), addr)
 
+	// 构造请求对象
 	req := &v4wire.ENRRequest{
 		Expiration: uint64(time.Now().Add(expiration).Unix()),
 	}
+	// packet是最终发送的包的字节流,hash是 keccak256(signature || packet-type || packet-data)
 	packet, hash, err := v4wire.Encode(t.priv, req)
 	if err != nil {
 		return nil, err
@@ -569,7 +582,9 @@ func (t *UDPv4) checkBond(id enode.ID, ip net.IP) bool {
 // ensureBond solicits a ping from a node if we haven't seen a ping from it for a while.
 // This ensures there is a valid endpoint proof on the remote end.
 func (t *UDPv4) ensureBond(toid enode.ID, toaddr *net.UDPAddr) {
+	// 上次ping的时间是否超过24小时
 	tooOld := time.Since(t.db.LastPingReceived(toid, toaddr.IP)) > bondExpiration
+	// 超时或者错误次数过多,发送ping
 	if tooOld || t.db.FindFails(toid, toaddr.IP) > maxFindnodeFailures {
 		rm := t.sendPing(toid, toaddr, nil)
 		<-rm.errc
@@ -607,6 +622,9 @@ func nodeToRPC(n *node) v4wire.Node {
 }
 
 // wrapPacket returns the handler functions applicable to a packet.
+// 将v4wire.Packet对象封装成packetHandlerV4
+// 为Ping,Findnode,ENRRequest增加了preverify和handle函数
+// 为Pong,Neighbors,ENRResponse增加了preverify函数
 func (t *UDPv4) wrapPacket(p v4wire.Packet) *packetHandlerV4 {
 	var h packetHandlerV4
 	h.Packet = p
