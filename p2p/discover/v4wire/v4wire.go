@@ -63,6 +63,7 @@ type (
 		// of the ping packet, which provides a way to discover the
 		// the external address (after NAT).
 		To         Endpoint
+		// 保存对应的ping包的哈希
 		ReplyTok   []byte // This contains the hash of the ping packet.
 		Expiration uint64 // Absolute timestamp at which the packet becomes invalid.
 		ENRSeq     uint64 `rlp:"optional"` // Sequence number of local record, added by EIP-868.

@@ -188,11 +188,12 @@ var (
 //   - Loopback addresses are OK if relayed by a loopback host.
 //   - LAN addresses are OK if relayed by a LAN host.
 //   - All other addresses are always acceptable.
-// 判断发送方要求转发的地址是不是合法地址
-//   目的地址不能是特殊地址
-//   目的地址是回环地址,只能是发送方也是回环地址
-//   目的地址是私网地址,发送方也必须是私网地址
-//   目的地址不是以上地址都接受
+// sender是消息的来源地址,addr是sender返回的节点的地址
+// 判断sender返回的addr是不是合法
+//   得到的节点地址不能是特殊地址
+//   得到的节点地址是回环地址,只能是来源地址也是回环地址
+//   得到的节点地址是私网地址,来源地址也必须是私网地址
+//   得到的节点地址不是以上地址都接受
 func CheckRelayIP(sender, addr net.IP) error {
 	if len(addr) != net.IPv4len && len(addr) != net.IPv6len {
 		return errInvalid
