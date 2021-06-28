@@ -276,7 +276,8 @@ type (
 		node *enode.Node
 	}
 	linkEntry struct {
-		// 代表原始的字符串 enrtree://AM5FCQLWIZX2QFPNJAP7VUERCCRNGRHWZG3YYHIUV7BVDQ5FDPRT2@nodes.example.org
+		// 代表原始的字符串去掉前缀
+		// 例如: AM5FCQLWIZX2QFPNJAP7VUERCCRNGRHWZG3YYHIUV7BVDQ5FDPRT2@nodes.example.org
 		str    string
 		// 切割出来的域名
 		domain string
@@ -484,7 +485,7 @@ func truncateHash(hash string) string {
 // URL encoding
 
 // ParseURL parses an enrtree:// URL and returns its components.
-// 将以下格式链接切分成公钥和域名
+// 将以下格式链接切分成域名和公钥
 // enrtree://AM5FCQLWIZX2QFPNJAP7VUERCCRNGRHWZG3YYHIUV7BVDQ5FDPRT2@morenodes.example.org
 func ParseURL(url string) (domain string, pubkey *ecdsa.PublicKey, err error) {
 	le, err := parseLink(url)

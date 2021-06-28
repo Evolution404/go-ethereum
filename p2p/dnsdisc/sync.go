@@ -170,7 +170,9 @@ func (ct *clientTree) updateRoot(ctx context.Context) error {
 	ct.lastRootCheck = ct.c.clock.Now()
 	ctx, cancel := context.WithTimeout(ctx, ct.c.cfg.Timeout)
 	defer cancel()
+	// 执行DNS查询,获取最新的rootEntry记录
 	root, err := ct.c.resolveRoot(ctx, ct.loc)
+	// 查询失败增加失败次数的记录,然后直接返回
 	if err != nil {
 		ct.rootFailCount++
 		return err
@@ -204,18 +206,23 @@ func (ct *clientTree) nextScheduledRootCheck() mclock.AbsTime {
 // slowdownRootUpdate applies a delay to root resolution if is tried
 // too frequently. This avoids busy polling when the client is offline.
 // Returns true if the timeout passed, false if sync was canceled.
+// rootFailCount次数过多的话这个函数会进行阻塞,避免解析root的流程过于频繁
 func (ct *clientTree) slowdownRootUpdate(ctx context.Context) bool {
 	var delay time.Duration
 	switch {
+	// 超过20次阻塞10秒
 	case ct.rootFailCount > 20:
 		delay = 10 * time.Second
+	// 超过5次阻塞5秒
 	case ct.rootFailCount > 5:
 		delay = 5 * time.Second
+	// 小于等于5次这个函数不阻塞直接返回
 	default:
 		return true
 	}
 	timeout := ct.c.clock.NewTimer(delay)
 	defer timeout.Stop()
+	// 等待上面设定的时间
 	select {
 	case <-timeout.C():
 		return true
@@ -225,19 +232,25 @@ func (ct *clientTree) slowdownRootUpdate(ctx context.Context) bool {
 }
 
 // subtreeSync is the sync of an ENR or link subtree.
+// 表示当前同步一颗树的状态,有链接树和节点树
 type subtreeSync struct {
 	c       *Client
 	loc     *linkEntry
 	root    string
+	// 已知的缺失的节点的哈希
 	missing []string // missing tree node hashes
+	// 用于标记在同步链接树
 	link    bool     // true if this sync is for the link tree
+	// 记录已经同步的节点个数
 	leaves  int      // counter of synced leaves
 }
 
 func newSubtreeSync(c *Client, loc *linkEntry, root string, link bool) *subtreeSync {
+	// 初始的时候只知道缺失一个根节点
 	return &subtreeSync{c, loc, root, []string{root}, link, 0}
 }
 
+// 如果missing为0说明同步完了
 func (ts *subtreeSync) done() bool {
 	return len(ts.missing) == 0
 }

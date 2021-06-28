@@ -57,6 +57,7 @@ type Config struct {
 }
 
 // Resolver is a DNS resolver that can query TXT records.
+// 用来查询DNS请求的对象
 type Resolver interface {
 	LookupTXT(ctx context.Context, domain string) ([]string, error)
 }
@@ -78,6 +79,7 @@ func (cfg Config) withDefaults() Config {
 	if cfg.CacheLimit == 0 {
 		cfg.CacheLimit = defaultCache
 	}
+	// 默认每秒最多发起三个dns请求
 	if cfg.RateLimit == 0 {
 		cfg.RateLimit = defaultRateLimit
 	}
@@ -94,6 +96,7 @@ func (cfg Config) withDefaults() Config {
 }
 
 // NewClient creates a client.
+// 创建Client对象,用来从某一个链接同步节点数据
 func NewClient(cfg Config) *Client {
 	// 为输入的配置每设置的项设置默认值
 	cfg = cfg.withDefaults()
@@ -101,6 +104,7 @@ func NewClient(cfg Config) *Client {
 	if err != nil {
 		panic(err)
 	}
+	// 创建限流器
 	rlimit := rate.NewLimiter(rate.Limit(cfg.RateLimit), 10)
 	return &Client{
 		cfg:       cfg,
@@ -111,6 +115,7 @@ func NewClient(cfg Config) *Client {
 }
 
 // SyncTree downloads the entire node tree at the given URL.
+// 从指定的链接开始同步节点信息的梅克尔树
 func (c *Client) SyncTree(url string) (*Tree, error) {
 	le, err := parseLink(url)
 	if err != nil {
@@ -138,13 +143,17 @@ func (c *Client) NewIterator(urls ...string) (enode.Iterator, error) {
 }
 
 // resolveRoot retrieves a root entry via DNS.
+// 向loc.domain查询根节点的记录,返回rootEntry对象
 func (c *Client) resolveRoot(ctx context.Context, loc *linkEntry) (rootEntry, error) {
+	// 使用singleflight的目的是如果多次查询同样的loc.str只会执行一次里面定义的回调函数
 	e, err, _ := c.singleflight.Do(loc.str, func() (interface{}, error) {
 		txts, err := c.cfg.Resolver.LookupTXT(ctx, loc.domain)
 		c.cfg.Logger.Trace("Updating DNS discovery root", "tree", loc.domain, "err", err)
 		if err != nil {
 			return rootEntry{}, err
 		}
+		// 遍历查询到的记录,有没有以"enrtree-root:v1"开头的
+		// 找到后验证内部保存的签名是否正确
 		for _, txt := range txts {
 			if strings.HasPrefix(txt, rootPrefix) {
 				return parseAndVerifyRoot(txt, loc)
@@ -155,6 +164,7 @@ func (c *Client) resolveRoot(ctx context.Context, loc *linkEntry) (rootEntry, er
 	return e.(rootEntry), err
 }
 
+// 判断txt里面保存的根节点的签名是否正确,是否是使用loc.pubkey进行的签名
 func parseAndVerifyRoot(txt string, loc *linkEntry) (rootEntry, error) {
 	e, err := parseRoot(txt)
 	if err != nil {
@@ -168,23 +178,29 @@ func parseAndVerifyRoot(txt string, loc *linkEntry) (rootEntry, error) {
 
 // resolveEntry retrieves an entry from the cache or fetches it from the network
 // if it isn't cached.
+// 解析 hash.domain 域名对应的txt记录并解析成entry对象
+// 首先从缓存中查询,没有的话再从网络上查询
 func (c *Client) resolveEntry(ctx context.Context, domain, hash string) (entry, error) {
 	// The rate limit always applies, even when the result might be cached. This is
 	// important because it avoids hot-spinning in consumers of node iterators created on
 	// this client.
+	// 用ratelimit来限制查询的速度
 	if err := c.ratelimit.Wait(ctx); err != nil {
 		return nil, err
 	}
+	// 先从缓存中查找
 	cacheKey := truncateHash(hash)
 	if e, ok := c.entries.Get(cacheKey); ok {
 		return e.(entry), nil
 	}
 
+	// 缓存中每找到,执行dns查询
 	ei, err, _ := c.singleflight.Do(cacheKey, func() (interface{}, error) {
 		e, err := c.doResolveEntry(ctx, domain, hash)
 		if err != nil {
 			return nil, err
 		}
+		// 查询到的结果保存到缓存中
 		c.entries.Add(cacheKey, e)
 		return e, nil
 	})
