@@ -61,6 +61,7 @@ type Resolver interface {
 	LookupTXT(ctx context.Context, domain string) ([]string, error)
 }
 
+// 设置默认选项
 func (cfg Config) withDefaults() Config {
 	const (
 		defaultTimeout   = 5 * time.Second
@@ -94,6 +95,7 @@ func (cfg Config) withDefaults() Config {
 
 // NewClient creates a client.
 func NewClient(cfg Config) *Client {
+	// 为输入的配置每设置的项设置默认值
 	cfg = cfg.withDefaults()
 	cache, err := lru.New(cfg.CacheLimit)
 	if err != nil {

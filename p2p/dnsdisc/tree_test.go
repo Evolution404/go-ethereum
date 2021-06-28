@@ -17,6 +17,7 @@
 package dnsdisc
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
