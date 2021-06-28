@@ -209,6 +209,7 @@ func (c *Client) resolveEntry(ctx context.Context, domain, hash string) (entry, 
 }
 
 // doResolveEntry fetches an entry via DNS.
+// 执行实际的DNS请求,并解析出来entry对象
 func (c *Client) doResolveEntry(ctx context.Context, domain, hash string) (entry, error) {
 	wantHash, err := b32format.DecodeString(hash)
 	if err != nil {
@@ -225,6 +226,7 @@ func (c *Client) doResolveEntry(ctx context.Context, domain, hash string) (entry
 		if err == errUnknownEntry {
 			continue
 		}
+		// 校验域名里的hash是否与查询结果一致
 		if !bytes.HasPrefix(crypto.Keccak256([]byte(txt)), wantHash) {
 			err = nameError{name, errHashMismatch}
 		} else if err != nil {
