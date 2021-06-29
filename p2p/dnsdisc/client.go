@@ -37,6 +37,8 @@ import (
 )
 
 // Client discovers nodes by querying DNS servers.
+// Client对象用于执行DNS查询
+// 查询时先查询缓存entries,缓存中没有则使用cfg.Resolver执行DNS查询
 type Client struct {
 	cfg          Config
 	clock        mclock.Clock
@@ -47,7 +49,7 @@ type Client struct {
 
 // Config holds configuration options for the client.
 type Config struct {
-	Timeout         time.Duration      // timeout used for DNS lookups (default 5s)
+	Timeout time.Duration // timeout used for DNS lookups (default 5s)
 	// 每三十分钟重新查询一次域名的根记录
 	RecheckInterval time.Duration      // time between tree root update checks (default 30min)
 	CacheLimit      int                // maximum number of cached records (default 1000)
@@ -133,8 +135,10 @@ func (c *Client) SyncTree(url string) (*Tree, error) {
 
 // NewIterator creates an iterator that visits all nodes at the
 // given tree URLs.
+// 传入多个链接,生成一个节点的迭代器,在传入的这些链接间迭代节点
 func (c *Client) NewIterator(urls ...string) (enode.Iterator, error) {
 	it := c.newRandomIterator()
+	// 将传入的链接都加入到linkCache中
 	for _, url := range urls {
 		if err := it.addTree(url); err != nil {
 			return nil, err
@@ -239,13 +243,16 @@ func (c *Client) doResolveEntry(ctx context.Context, domain, hash string) (entry
 }
 
 // randomIterator traverses a set of trees and returns nodes found in them.
+// 实现了enode.Iterator接口,用来遍历多个链接中保存的节点
 type randomIterator struct {
+	// 迭代器当前的节点
 	cur      *enode.Node
 	ctx      context.Context
 	cancelFn context.CancelFunc
 	c        *Client
 
-	mu    sync.Mutex
+	mu sync.Mutex
+	// 保存遍历过程遇到的所有链接以及他们之间的引用关系
 	lc    linkCache              // tracks tree dependencies
 	trees map[string]*clientTree // all trees
 	// buffers for syncableTrees
@@ -269,6 +276,7 @@ func (it *randomIterator) Node() *enode.Node {
 }
 
 // Close closes the iterator.
+// 关闭迭代器
 func (it *randomIterator) Close() {
 	it.cancelFn()
 
@@ -278,12 +286,16 @@ func (it *randomIterator) Close() {
 }
 
 // Next moves the iterator to the next node.
+// 获取下一个节点
 func (it *randomIterator) Next() bool {
 	it.cur = it.nextNode()
 	return it.cur != nil
 }
 
 // addTree adds an enrtree:// URL to the iterator.
+// 传入的url是NewIterator的各个url
+// 将链接加入到linkCache中,并且都设置他们被空字符串引用
+// 保证都能在rebuildTrees中创建对应的clientTree对象
 func (it *randomIterator) addTree(url string) error {
 	le, err := parseLink(url)
 	if err != nil {
@@ -294,6 +306,11 @@ func (it *randomIterator) addTree(url string) error {
 }
 
 // nextNode syncs random tree entries until it finds a node.
+// 迭代器中同步下一条enr记录
+// 1. 随机确定要从哪条链接同步,也就是随机一个clientTree
+// 2. 再调用这个clientTree的syncRandom
+// 3. syncRandom可能同步到的是branchEntry返回nil
+//    所以不断循环直到返回不是nil,得到真正的下一条enr记录,进行返回
 func (it *randomIterator) nextNode() *enode.Node {
 	for {
 		ct := it.pickTree()
@@ -315,25 +332,31 @@ func (it *randomIterator) nextNode() *enode.Node {
 }
 
 // pickTree returns a random tree to sync from.
+// 从it.trees中随机挑选一个可以进行同步的clientTree对象
 func (it *randomIterator) pickTree() *clientTree {
 	it.mu.Lock()
 	defer it.mu.Unlock()
 
 	// Rebuild the trees map if any links have changed.
+	// 链接间的引用关系发生了变化,就重新创建clientTree对象们
 	if it.lc.changed {
 		it.rebuildTrees()
 		it.lc.changed = false
 	}
 
+	// 一直循环直到canSync为true,除非it.ctx执行了取消
 	for {
 		canSync, trees := it.syncableTrees()
 		switch {
 		case canSync:
 			// Pick a random tree.
 			return trees[rand.Intn(len(trees))]
+		// 不能同步,这时候返回的是disabledList
 		case len(trees) > 0:
 			// No sync action can be performed on any tree right now. The only meaningful
 			// thing to do is waiting for any root record to get updated.
+			// 如果等待过程中it.ctx结束了,那么直接返回
+			// 如果等待到下一次树根更新重新执行一次for循环
 			if !it.waitForRootUpdates(trees) {
 				// Iterator was closed while waiting.
 				return nil
@@ -346,6 +369,7 @@ func (it *randomIterator) pickTree() *clientTree {
 }
 
 // syncableTrees finds trees on which any meaningful sync action can be performed.
+// 遍历it.trees,按照可不可以同步区分保存到it.syncableList和it.disabledList中
 func (it *randomIterator) syncableTrees() (canSync bool, trees []*clientTree) {
 	// Resize tree lists.
 	it.syncableList = it.syncableList[:0]
@@ -359,14 +383,19 @@ func (it *randomIterator) syncableTrees() (canSync bool, trees []*clientTree) {
 			it.disabledList = append(it.disabledList, ct)
 		}
 	}
+	// 有可以同步的,返回syncableList
 	if len(it.syncableList) > 0 {
 		return true, it.syncableList
 	}
+	// 没有可以同步的,返回disabledList
 	return false, it.disabledList
 }
 
 // waitForRootUpdates waits for the closest scheduled root check time on the given trees.
+// 调用后会阻塞到下一次更新树根的时间
+// 如果是更新树根的时间到了返回true,如果是it.ctx结束了返回false
 func (it *randomIterator) waitForRootUpdates(trees []*clientTree) bool {
+	// 找到下次更新时间最近的clientTree对象
 	var minTree *clientTree
 	var nextCheck mclock.AbsTime
 	for _, ct := range trees {
@@ -377,6 +406,7 @@ func (it *randomIterator) waitForRootUpdates(trees []*clientTree) bool {
 		}
 	}
 
+	// 接下来阻塞到下一次树根更新
 	sleep := nextCheck.Sub(it.c.clock.Now())
 	it.c.cfg.Logger.Debug("DNS iterator waiting for root updates", "sleep", sleep, "tree", minTree.loc.domain)
 	timeout := it.c.clock.NewTimer(sleep)
@@ -390,14 +420,17 @@ func (it *randomIterator) waitForRootUpdates(trees []*clientTree) bool {
 }
 
 // rebuildTrees rebuilds the 'trees' map.
+// 将linkCache中所有被引用的链接构造成clientTree,保存到it.trees
 func (it *randomIterator) rebuildTrees() {
 	// Delete removed trees.
+	// 判断各个树要同步的链接还有没有被引用,没有引用就删除这个树
 	for loc := range it.trees {
 		if !it.lc.isReferenced(loc) {
 			delete(it.trees, loc)
 		}
 	}
 	// Add new trees.
+	// 将所有被引用的链接构造成clientTree
 	for loc := range it.lc.backrefs {
 		if it.trees[loc] == nil {
 			link, _ := parseLink(linkPrefix + loc)

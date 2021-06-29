@@ -30,6 +30,8 @@ import (
 const rootRecheckFailCount = 5
 
 // clientTree is a full tree being synced.
+// clientTree对象与链接一一对应,用来同步内部保存的链接
+// 比如链接: enrtree://AKA3AM6LPBYEUDMVNU3BSVQJ5AD45Y7YPOHJLEF6W26QOE4VTUDPE@all.mainnet.ethdisco.net
 type clientTree struct {
 	c   *Client
 	loc *linkEntry // link to this tree
@@ -43,7 +45,7 @@ type clientTree struct {
 	enrs  *subtreeSync
 	links *subtreeSync
 
-	lc       *linkCache          // tracks all links between all trees
+	lc *linkCache // tracks all links between all trees
 	// 链接树里保存的其他域名保存在这里
 	curLinks map[string]struct{} // links contained in this tree
 	// 调用gcLinks后会更新这个的值为ct.root.lroot
@@ -75,6 +77,8 @@ func (ct *clientTree) syncAll(dest map[string]entry) error {
 // syncRandom retrieves a single entry of the tree. The Node return value
 // is non-nil if the entry was a node.
 // 随机的查询树中的一个节点
+// 查询到了新纪录返回enode.Node对象
+// 如果查询到了branchEntry对象,那么返回nil
 func (ct *clientTree) syncRandom(ctx context.Context) (n *enode.Node, err error) {
 	// 判断是否需要更新树根
 	if ct.rootUpdateDue() {
@@ -109,6 +113,8 @@ func (ct *clientTree) syncRandom(ctx context.Context) (n *enode.Node, err error)
 }
 
 // canSyncRandom checks if any meaningful action can be performed by syncRandom.
+// 已经完全同步完成了但是在enrs树中没有发现任何一个叶子节点
+// 这样的树是一个空树,不能再继续同步了
 func (ct *clientTree) canSyncRandom() bool {
 	// Note: the check for non-zero leaf count is very important here.
 	// If we're done syncing all nodes, and no leaves were found, the tree
@@ -118,6 +124,8 @@ func (ct *clientTree) canSyncRandom() bool {
 
 // gcLinks removes outdated links from the global link cache. GC runs once
 // when the link sync finishes.
+// 如果根记录发生了变化,也就是链接树的树根发生了变化
+// 需要将原来的引用关系删除
 func (ct *clientTree) gcLinks() {
 	if !ct.links.done() || ct.root.lroot == ct.linkGCRoot {
 		return
@@ -127,7 +135,9 @@ func (ct *clientTree) gcLinks() {
 }
 
 // 同步一个链接树中的节点
-// 如果同步到了叶子节点其中保存的是新的链接,调用addLink,并且保存到curLinks中
+// 如果同步到了叶子节点其中保存的是新的链接
+//   调用addLink保存到多个clientTree共用的linkCache(ct.lc)中,记录链接间引用关系
+//   对于clientTree自身,保存到curLinks中
 func (ct *clientTree) syncNextLink(ctx context.Context) error {
 	// 取missing[0]进行同步
 	hash := ct.links.missing[0]
@@ -139,15 +149,18 @@ func (ct *clientTree) syncNextLink(ctx context.Context) error {
 	ct.links.missing = ct.links.missing[1:]
 
 	if dest, ok := e.(*linkEntry); ok {
-		// from是clientTree里保存的域名
-		// to是新同步到的域名,from引用了to
+		// from是clientTree里保存的链接
+		// to是新同步到的链接,from引用了to
 		ct.lc.addLink(ct.loc.str, dest.str)
-		// 将新同步到的域名保存下来
+		// 将新同步到的链接保存下来
 		ct.curLinks[dest.str] = struct{}{}
 	}
 	return nil
 }
 
+// 同步enrs.missing里的一个随机节点
+// 如果同步到了新记录返回enode.Node对象
+// 否则返回nil
 func (ct *clientTree) syncNextRandomENR(ctx context.Context) (*enode.Node, error) {
 	index := rand.Intn(len(ct.enrs.missing))
 	hash := ct.enrs.missing[index]
@@ -156,6 +169,8 @@ func (ct *clientTree) syncNextRandomENR(ctx context.Context) (*enode.Node, error
 		return nil, err
 	}
 	ct.enrs.missing = removeHash(ct.enrs.missing, index)
+	// 同步到的是enrEntry直接返回记录
+	// 否则如果是branchEntry返回nil
 	if ee, ok := e.(*enrEntry); ok {
 		return ee.node, nil
 	}
@@ -224,6 +239,7 @@ func (ct *clientTree) rootUpdateDue() bool {
 	return ct.root == nil || tooManyFailures || scheduledCheck
 }
 
+// 获取下次更新树根的时间
 func (ct *clientTree) nextScheduledRootCheck() mclock.AbsTime {
 	return ct.lastRootCheck.Add(ct.c.cfg.RecheckInterval)
 }
@@ -329,6 +345,9 @@ func (ts *subtreeSync) resolveNext(ctx context.Context, hash string) (entry, err
 
 // linkCache tracks links between trees.
 type linkCache struct {
+	// backrefs的各个键保存了所有的链接
+	// 每个值是还是一个映射,可以理解为数组,代表这个链接被哪些其他链接引用了
+	// 值不直接使用数组可能是因为使用map便于删除,直接delete就去掉了这个引用
 	backrefs map[string]map[string]struct{}
 	changed  bool
 }
@@ -356,21 +375,27 @@ func (lc *linkCache) addLink(from, to string) {
 }
 
 // resetLinks clears all links of the given tree.
+// 从lc.backrefs中删除from链接中引用的其他链接,在keep中的链接不删除
 func (lc *linkCache) resetLinks(from string, keep map[string]struct{}) {
 	stk := []string{from}
 	for len(stk) > 0 {
 		item := stk[len(stk)-1]
 		stk = stk[:len(stk)-1]
 
+		// r代表一个链接,refs代表所有引用了这个链接的其他链接
 		for r, refs := range lc.backrefs {
+			// 这个链接在keep里,不处理
 			if _, ok := keep[r]; ok {
 				continue
 			}
+			// 这个链接没有被当前需要解引用的对象引用,不处理
 			if _, ok := refs[item]; !ok {
 				continue
 			}
 			lc.changed = true
+			// 从引用列表删除当前需要解引用的对象
 			delete(refs, item)
+			// 没有引用这个链接的了,从backrefs中删除,然后被r引用的链接也要进行处理
 			if len(refs) == 0 {
 				delete(lc.backrefs, r)
 				stk = append(stk, r)
