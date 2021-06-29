@@ -34,6 +34,7 @@ type clientTree struct {
 	c   *Client
 	loc *linkEntry // link to this tree
 
+	// 记录上一次调用updateRoot的时间
 	lastRootCheck mclock.AbsTime // last revalidation of root
 	leafFailCount int
 	rootFailCount int
@@ -42,9 +43,11 @@ type clientTree struct {
 	enrs  *subtreeSync
 	links *subtreeSync
 
-	lc         *linkCache          // tracks all links between all trees
-	curLinks   map[string]struct{} // links contained in this tree
-	linkGCRoot string              // root on which last link GC has run
+	lc       *linkCache          // tracks all links between all trees
+	// 链接树里保存的其他域名保存在这里
+	curLinks map[string]struct{} // links contained in this tree
+	// 调用gcLinks后会更新这个的值为ct.root.lroot
+	linkGCRoot string // root on which last link GC has run
 }
 
 func newClientTree(c *Client, lc *linkCache, loc *linkEntry) *clientTree {
@@ -52,6 +55,10 @@ func newClientTree(c *Client, lc *linkCache, loc *linkEntry) *clientTree {
 }
 
 // syncAll retrieves all entries of the tree.
+// 同步所有记录到dest中,包括links和enrs
+// dest记录的键是base32字符串,域名的最开始部分
+// 例如:"QEJND7PRRXHXW4CTT5IG2AXE2Y.all.mainnet.ethdisco.net",中的"QEJND7PRRXHXW4CTT5IG2AXE2Y"
+// 这个保存的是dns的txt记录的keccak256的前16字节的base32编码
 func (ct *clientTree) syncAll(dest map[string]entry) error {
 	if err := ct.updateRoot(context.Background()); err != nil {
 		return err
@@ -67,7 +74,9 @@ func (ct *clientTree) syncAll(dest map[string]entry) error {
 
 // syncRandom retrieves a single entry of the tree. The Node return value
 // is non-nil if the entry was a node.
+// 随机的查询树中的一个节点
 func (ct *clientTree) syncRandom(ctx context.Context) (n *enode.Node, err error) {
+	// 判断是否需要更新树根
 	if ct.rootUpdateDue() {
 		if err := ct.updateRoot(ctx); err != nil {
 			return nil, err
@@ -91,9 +100,11 @@ func (ct *clientTree) syncRandom(ctx context.Context) (n *enode.Node, err error)
 	// Sync next random entry in ENR tree. Once every node has been visited, we simply
 	// start over. This is fine because entries are cached internally by the client LRU
 	// also by DNS resolvers.
+	// enrs已经全部同步完了就重新开始
 	if ct.enrs.done() {
 		ct.enrs = newSubtreeSync(ct.c, ct.loc, ct.root.eroot, false)
 	}
+	// 同步下一条enr记录
 	return ct.syncNextRandomENR(ctx)
 }
 
@@ -115,16 +126,23 @@ func (ct *clientTree) gcLinks() {
 	ct.linkGCRoot = ct.root.lroot
 }
 
+// 同步一个链接树中的节点
+// 如果同步到了叶子节点其中保存的是新的链接,调用addLink,并且保存到curLinks中
 func (ct *clientTree) syncNextLink(ctx context.Context) error {
+	// 取missing[0]进行同步
 	hash := ct.links.missing[0]
 	e, err := ct.links.resolveNext(ctx, hash)
 	if err != nil {
 		return err
 	}
+	// 同步成功从missing中移除
 	ct.links.missing = ct.links.missing[1:]
 
 	if dest, ok := e.(*linkEntry); ok {
+		// from是clientTree里保存的域名
+		// to是新同步到的域名,from引用了to
 		ct.lc.addLink(ct.loc.str, dest.str)
+		// 将新同步到的域名保存下来
 		ct.curLinks[dest.str] = struct{}{}
 	}
 	return nil
@@ -149,10 +167,14 @@ func (ct *clientTree) String() string {
 }
 
 // removeHash removes the element at index from h.
+// 将h[index]从h中删除,然后返回删除元素后的h
 func removeHash(h []string, index int) []string {
+	// 只有一个元素,删除后就变成空
 	if len(h) == 1 {
 		return nil
 	}
+	// 删除并不是把后面的元素向前移动
+	// 而是将最后一个元素移动到删除位置,这样删除后没有保证原来的顺序
 	last := len(h) - 1
 	if index < last {
 		h[index] = h[last]
@@ -162,6 +184,7 @@ func removeHash(h []string, index int) []string {
 }
 
 // updateRoot ensures that the given tree has an up-to-date root.
+// 获取最新的根记录,并且初始化links和enrs两颗subtreeSync对象
 func (ct *clientTree) updateRoot(ctx context.Context) error {
 	if !ct.slowdownRootUpdate(ctx) {
 		return ctx.Err()
@@ -193,6 +216,8 @@ func (ct *clientTree) updateRoot(ctx context.Context) error {
 }
 
 // rootUpdateDue returns true when a root update is needed.
+// 判断是否需要重新查询根记录
+// 超过30分钟,错误次数过多,root为nil都需要重新查询
 func (ct *clientTree) rootUpdateDue() bool {
 	tooManyFailures := ct.leafFailCount > rootRecheckFailCount
 	scheduledCheck := ct.c.clock.Now() >= ct.nextScheduledRootCheck()
@@ -234,15 +259,15 @@ func (ct *clientTree) slowdownRootUpdate(ctx context.Context) bool {
 // subtreeSync is the sync of an ENR or link subtree.
 // 表示当前同步一颗树的状态,有链接树和节点树
 type subtreeSync struct {
-	c       *Client
-	loc     *linkEntry
-	root    string
+	c    *Client
+	loc  *linkEntry
+	root string
 	// 已知的缺失的节点的哈希
 	missing []string // missing tree node hashes
 	// 用于标记在同步链接树
-	link    bool     // true if this sync is for the link tree
+	link bool // true if this sync is for the link tree
 	// 记录已经同步的节点个数
-	leaves  int      // counter of synced leaves
+	leaves int // counter of synced leaves
 }
 
 func newSubtreeSync(c *Client, loc *linkEntry, root string, link bool) *subtreeSync {
@@ -255,7 +280,12 @@ func (ts *subtreeSync) done() bool {
 	return len(ts.missing) == 0
 }
 
+// 解析整棵树上的所有节点,查询的结果保存到dest中
 func (ts *subtreeSync) resolveAll(dest map[string]entry) error {
+	// 不断从missing里面获取缺失的节点的哈希进行查询
+	// 查询过程中遇到branchEntry会向missing里面继续添加新的记录
+	// 当前节点查询完成就从missing里面移除
+	// 一直循环直到所有missing的节点都查询完成
 	for !ts.done() {
 		hash := ts.missing[0]
 		ctx, cancel := context.WithTimeout(context.Background(), ts.c.cfg.Timeout)
@@ -270,11 +300,16 @@ func (ts *subtreeSync) resolveAll(dest map[string]entry) error {
 	return nil
 }
 
+// 获取输入的哈希对应的记录结果
+// 查询到enrEntry或者linkEntry就增加叶子节点的数目
+// 查询到branchEntry就把里面记录的哈希放到missing里
 func (ts *subtreeSync) resolveNext(ctx context.Context, hash string) (entry, error) {
 	e, err := ts.c.resolveEntry(ctx, ts.loc.domain, hash)
 	if err != nil {
 		return nil, err
 	}
+	// 查询到enrEntry或者linkEntry就增加叶子节点的数目
+	// 查询到branchEntry就把里面记录的哈希放到missing里
 	switch e := e.(type) {
 	case *enrEntry:
 		if ts.link {
@@ -302,7 +337,10 @@ func (lc *linkCache) isReferenced(r string) bool {
 	return len(lc.backrefs[r]) != 0
 }
 
+// 设置lc.backrefs[to][from]=string{}{}
+// 并设置lc.changed为true
 func (lc *linkCache) addLink(from, to string) {
+	// 已经有了直接返回
 	if _, ok := lc.backrefs[to][from]; ok {
 		return
 	}

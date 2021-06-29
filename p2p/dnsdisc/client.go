@@ -48,6 +48,7 @@ type Client struct {
 // Config holds configuration options for the client.
 type Config struct {
 	Timeout         time.Duration      // timeout used for DNS lookups (default 5s)
+	// 每三十分钟重新查询一次域名的根记录
 	RecheckInterval time.Duration      // time between tree root update checks (default 30min)
 	CacheLimit      int                // maximum number of cached records (default 1000)
 	RateLimit       float64            // maximum DNS requests / second (default 3)
