@@ -47,6 +47,8 @@ import (
 // Before sending messages, a handshake must be performed by calling the Handshake method.
 // This type is not generally safe for concurrent use, but reading and writing of messages
 // may happen concurrently after the handshake.
+// Conn代表了基于RLPx协议的网络连接
+// 内部封装了net.Conn对象实现真正的传输层通信
 type Conn struct {
 	dialDest  *ecdsa.PublicKey
 	conn      net.Conn
@@ -54,6 +56,8 @@ type Conn struct {
 	snappy    bool
 }
 
+// cipher.Stream有XORKeyStream(dst,src)对整个src加密写入dst
+// cipher.Block.Encrypt(dst,src)对src的第一个块长度进行加密写入到dst
 type handshakeState struct {
 	enc cipher.Stream
 	dec cipher.Stream
@@ -171,6 +175,7 @@ func (h *handshakeState) readFrame(conn io.Reader) ([]byte, error) {
 //
 // Write returns the written size of the message data. This may be less than or equal to
 // len(data) depending on whether snappy compression is enabled.
+// 返回进行网络传输的数据长度,不使用压缩时就等于data的长度,压缩的话可能小于data的长度
 func (c *Conn) Write(code uint64, data []byte) (uint32, error) {
 	if c.handshake == nil {
 		panic("can't WriteMsg before handshake")
@@ -178,6 +183,7 @@ func (c *Conn) Write(code uint64, data []byte) (uint32, error) {
 	if len(data) > maxUint24 {
 		return 0, errPlainMessageTooLarge
 	}
+	// 对数据进行压缩
 	if c.snappy {
 		data = snappy.Encode(nil, data)
 	}
@@ -187,6 +193,7 @@ func (c *Conn) Write(code uint64, data []byte) (uint32, error) {
 	return wireSize, err
 }
 
+// 将输入的数据封装成帧写入到conn中
 func (h *handshakeState) writeFrame(conn io.Writer, code uint64, data []byte) error {
 	ptype, _ := rlp.EncodeToBytes(code)
 
@@ -229,10 +236,12 @@ func (h *handshakeState) writeFrame(conn io.Writer, code uint64, data []byte) er
 	return err
 }
 
+// 将b的前三个字节放到uint32后24位
 func readInt24(b []byte) uint32 {
 	return uint32(b[2]) | uint32(b[1])<<8 | uint32(b[0])<<16
 }
 
+// 输入时要保证b长度大于等于3,将utin32后24位写入到b[0],b[1],b[2]中
 func putInt24(v uint32, b []byte) {
 	b[0] = byte(v >> 16)
 	b[1] = byte(v >> 8)
@@ -303,6 +312,7 @@ func (c *Conn) Close() error {
 
 // Constants for the handshake.
 const (
+	// frame-size使用了3个字节保存,所以帧长度最多24位
 	maxUint24 = int(^uint32(0) >> 8)
 
 	sskLen = 16                     // ecies.MaxSharedKeyLength(pubKey) / 2
