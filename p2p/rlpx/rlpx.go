@@ -281,6 +281,8 @@ func (c *Conn) Handshake(prv *ecdsa.PrivateKey) (*ecdsa.PublicKey, error) {
 
 // InitWithSecrets injects connection secrets as if a handshake had
 // been performed. This cannot be called after the handshake.
+// 用于模拟握手完成,不执行真正的握手过程,直接需要握手过程共享的秘密保存到Conn中
+// 就是用Secrets对象生成handshakeState对象
 func (c *Conn) InitWithSecrets(sec Secrets) {
 	if c.handshake != nil {
 		panic("can't handshake twice")
@@ -343,6 +345,7 @@ var (
 
 // Secrets represents the connection secrets which are negotiated during the handshake.
 type Secrets struct {
+	// AES和MAC长度都是32字节,作为AES-256算法的密钥
 	AES, MAC              []byte
 	EgressMAC, IngressMAC hash.Hash
 	remote                *ecdsa.PublicKey
