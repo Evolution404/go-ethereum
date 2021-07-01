@@ -59,16 +59,22 @@ type Conn struct {
 // cipher.Stream有XORKeyStream(dst,src)对整个src加密写入dst
 // cipher.Block.Encrypt(dst,src)对src的第一个块长度进行加密写入到dst
 type handshakeState struct {
+	// 用于加密发送的消息的aes ctr模式的流
 	enc cipher.Stream
+	// 用于解密接收的消息的aes ctr模式的流
 	dec cipher.Stream
 
 	macCipher  cipher.Block
+	// 本地向外发送消息使用的MAC
 	egressMAC  hash.Hash
+	// 接收外部消息使用的MAC
 	ingressMAC hash.Hash
 }
 
 // NewConn wraps the given network connection. If dialDest is non-nil, the connection
 // behaves as the initiator during the handshake.
+// dialDest不为nil说明本地是握手的发起方
+// dialDest是nil说明本地是握手的接收方
 func NewConn(conn net.Conn, dialDest *ecdsa.PublicKey) *Conn {
 	return &Conn{
 		dialDest: dialDest,
@@ -84,21 +90,26 @@ func (c *Conn) SetSnappy(snappy bool) {
 }
 
 // SetReadDeadline sets the deadline for all future read operations.
+// 超过指定时间后不能再Read
 func (c *Conn) SetReadDeadline(time time.Time) error {
 	return c.conn.SetReadDeadline(time)
 }
 
 // SetWriteDeadline sets the deadline for all future write operations.
+// 超过指定时间后不能再Write
 func (c *Conn) SetWriteDeadline(time time.Time) error {
 	return c.conn.SetWriteDeadline(time)
 }
 
 // SetDeadline sets the deadline for all future read and write operations.
+// 超过指定时间后不能再Read和Write
 func (c *Conn) SetDeadline(time time.Time) error {
 	return c.conn.SetDeadline(time)
 }
 
 // Read reads a message from the connection.
+// 通过网络读取一个消息,获取code和消息内的数据
+// 从链路中读取一个帧,返回code和真实的数据,以及通过链路传输的数据的长度
 func (c *Conn) Read() (code uint64, data []byte, wireSize int, err error) {
 	if c.handshake == nil {
 		panic("can't ReadMsg before handshake")
@@ -108,13 +119,16 @@ func (c *Conn) Read() (code uint64, data []byte, wireSize int, err error) {
 	if err != nil {
 		return 0, nil, 0, err
 	}
+	// 帧数据是code和data两个部分
 	code, data, err = rlp.SplitUint64(frame)
 	if err != nil {
 		return 0, nil, 0, fmt.Errorf("invalid message code: %v", err)
 	}
+	// 代表通过网络传输的数据
 	wireSize = len(data)
 
 	// If snappy is enabled, verify and decompress message.
+	// 如果启用了压缩,就将获取的数据进行解压
 	if c.snappy {
 		var actualSize int
 		actualSize, err = snappy.DecodedLen(data)
@@ -129,27 +143,34 @@ func (c *Conn) Read() (code uint64, data []byte, wireSize int, err error) {
 	return code, data, wireSize, err
 }
 
+// 读取一个帧内的数据
 func (h *handshakeState) readFrame(conn io.Reader) ([]byte, error) {
 	// read the header
+	// 读取头部信息, header-data和header-mac各16字节
 	headbuf := make([]byte, 32)
 	if _, err := io.ReadFull(conn, headbuf); err != nil {
 		return nil, err
 	}
 
 	// verify header mac
+	// 通过headbuf的前16字节计算出来后16字节的MAC,然后校验MAC是否与读取到的匹配
 	shouldMAC := updateMAC(h.ingressMAC, h.macCipher, headbuf[:16])
 	if !hmac.Equal(shouldMAC, headbuf[16:]) {
 		return nil, errors.New("bad header MAC")
 	}
+	// 对header-data解密
 	h.dec.XORKeyStream(headbuf[:16], headbuf[:16]) // first half is now decrypted
+	// 或者帧内数据长度
 	fsize := readInt24(headbuf)
 	// ignore protocol type for now
 
 	// read the frame content
+	// rsize代表帧内数据填充为16的整数倍后的长度
 	var rsize = fsize // frame size rounded up to 16 byte boundary
 	if padding := fsize % 16; padding > 0 {
 		rsize += 16 - padding
 	}
+	// 读取frame-data
 	framebuf := make([]byte, rsize)
 	if _, err := io.ReadFull(conn, framebuf); err != nil {
 		return nil, err
@@ -158,16 +179,21 @@ func (h *handshakeState) readFrame(conn io.Reader) ([]byte, error) {
 	// read and validate frame MAC. we can re-use headbuf for that.
 	h.ingressMAC.Write(framebuf)
 	fmacseed := h.ingressMAC.Sum(nil)
+	// 将收到的frame-mac保存到headbuf前16字节
 	if _, err := io.ReadFull(conn, headbuf[:16]); err != nil {
 		return nil, err
 	}
+	// 本地计算出来的MAC叫shouldMAC
 	shouldMAC = updateMAC(h.ingressMAC, h.macCipher, fmacseed)
+	// 判断是否匹配
 	if !hmac.Equal(shouldMAC, headbuf[:16]) {
 		return nil, errors.New("bad frame MAC")
 	}
 
 	// decrypt frame content
+	// 解密帧内数据
 	h.dec.XORKeyStream(framebuf, framebuf)
+	// 返回的数据去掉后面的填充
 	return framebuf[:fsize], nil
 }
 
@@ -175,6 +201,7 @@ func (h *handshakeState) readFrame(conn io.Reader) ([]byte, error) {
 //
 // Write returns the written size of the message data. This may be less than or equal to
 // len(data) depending on whether snappy compression is enabled.
+// 通过网络发送一个消息,指定code和数据
 // 返回进行网络传输的数据长度,不使用压缩时就等于data的长度,压缩的话可能小于data的长度
 func (c *Conn) Write(code uint64, data []byte) (uint32, error) {
 	if c.handshake == nil {
@@ -194,11 +221,18 @@ func (c *Conn) Write(code uint64, data []byte) (uint32, error) {
 }
 
 // 将输入的数据封装成帧写入到conn中
+// 帧分为四个部分,这四个部分长度都是16字节的整数倍,对于header和frame-data都是不足16字节进行补零
+// frame = header-ciphertext(16字节) || header-mac(16字节) || frame-data-ciphertext || frame-mac(16字节)
+// header = frame-size(3字节) || header-data(现在使用zeroHeader,填充了3字节) || header-padding
 func (h *handshakeState) writeFrame(conn io.Writer, code uint64, data []byte) error {
 	ptype, _ := rlp.EncodeToBytes(code)
 
 	// write header
+	// headbuf的结构,总长度32字节
+	// 前16字节: fsize(3字节) || zeroHeader(3字节) || 10字节的全零
+	// 后16字节: MAC
 	headbuf := make([]byte, 32)
+	// frame-size代表帧中真正的数据的长度,就是参数中的code和data的总长度
 	fsize := len(ptype) + len(data)
 	if fsize > maxUint24 {
 		return errPlainMessageTooLarge
@@ -209,12 +243,15 @@ func (h *handshakeState) writeFrame(conn io.Writer, code uint64, data []byte) er
 
 	// write header MAC
 	copy(headbuf[16:], updateMAC(h.egressMAC, h.macCipher, headbuf[:16]))
+	// 将前32字节传输出去,就是header-ciphertext和header-mac这两个部分
 	if _, err := conn.Write(headbuf); err != nil {
 		return err
 	}
+	// 接下来处理frame-data和frame-mac
 
 	// write encrypted frame, updating the egress MAC hash with
 	// the data written to conn.
+	// 将frame-data加密并传输出去
 	tee := cipher.StreamWriter{S: h.enc, W: io.MultiWriter(conn, h.egressMAC)}
 	if _, err := tee.Write(ptype); err != nil {
 		return err
@@ -222,6 +259,7 @@ func (h *handshakeState) writeFrame(conn io.Writer, code uint64, data []byte) er
 	if _, err := tee.Write(data); err != nil {
 		return err
 	}
+	// 将已经写入的frame-data补零到16字节的整数倍
 	if padding := fsize % 16; padding > 0 {
 		if _, err := tee.Write(zero16[:16-padding]); err != nil {
 			return err
@@ -230,6 +268,7 @@ func (h *handshakeState) writeFrame(conn io.Writer, code uint64, data []byte) er
 
 	// write frame MAC. egress MAC hash is up to date because
 	// frame content was written to it as well.
+	// 计算frame-mac并通过网络传输
 	fmacseed := h.egressMAC.Sum(nil)
 	mac := updateMAC(h.egressMAC, h.macCipher, fmacseed)
 	_, err := conn.Write(mac)
@@ -250,6 +289,7 @@ func putInt24(v uint32, b []byte) {
 
 // updateMAC reseeds the given hash with encrypted seed.
 // it returns the first 16 bytes of the hash sum after seeding.
+// 用于生成MAC,包括header-mac和frame-mac
 func updateMAC(mac hash.Hash, block cipher.Block, seed []byte) []byte {
 	aesbuf := make([]byte, aes.BlockSize)
 	block.Encrypt(aesbuf, mac.Sum(nil))
@@ -262,6 +302,8 @@ func updateMAC(mac hash.Hash, block cipher.Block, seed []byte) []byte {
 
 // Handshake performs the handshake. This must be called before any data is written
 // or read from the connection.
+// 执行两个节点间的握手,调用NewConn后就应该执行Handshake
+// 在执行Handshake之前不能进行任何数据传输
 func (c *Conn) Handshake(prv *ecdsa.PrivateKey) (*ecdsa.PublicKey, error) {
 	var (
 		sec Secrets
@@ -297,6 +339,7 @@ func (c *Conn) InitWithSecrets(sec Secrets) {
 	}
 	// we use an all-zeroes IV for AES because the key used
 	// for encryption is ephemeral.
+	// 使用的IV是16字节的全零数组,因为每次通信的密钥都不同所以IV可以一样
 	iv := make([]byte, encc.BlockSize())
 	c.handshake = &handshakeState{
 		enc:        cipher.NewCTR(encc, iv),
