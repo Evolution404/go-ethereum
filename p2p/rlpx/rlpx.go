@@ -50,6 +50,7 @@ import (
 // Conn代表了基于RLPx协议的网络连接
 // 内部封装了net.Conn对象实现真正的传输层通信
 type Conn struct {
+	// diaDest代表远程节点的公钥
 	dialDest  *ecdsa.PublicKey
 	conn      net.Conn
 	handshake *handshakeState
@@ -64,9 +65,9 @@ type handshakeState struct {
 	// 用于解密接收的消息的aes ctr模式的流
 	dec cipher.Stream
 
-	macCipher  cipher.Block
+	macCipher cipher.Block
 	// 本地向外发送消息使用的MAC
-	egressMAC  hash.Hash
+	egressMAC hash.Hash
 	// 接收外部消息使用的MAC
 	ingressMAC hash.Hash
 }
@@ -317,6 +318,7 @@ func (c *Conn) Handshake(prv *ecdsa.PrivateKey) (*ecdsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 设置c.handshake
 	c.InitWithSecrets(sec)
 	return sec.remote, err
 }
@@ -368,6 +370,7 @@ const (
 	authMsgLen  = sigLen + shaLen + pubLen + shaLen + 1
 	authRespLen = pubLen + shaLen + 1
 
+	// eciesOverhead代表明文通过ecies.Encrypt加密后长度增加了多少
 	eciesOverhead = 65 /* pubkey */ + 16 /* IV */ + 32 /* MAC */
 
 	encAuthMsgLen  = authMsgLen + eciesOverhead  // size of encrypted pre-EIP-8 initiator handshake
@@ -395,22 +398,43 @@ type Secrets struct {
 }
 
 // encHandshake contains the state of the encryption handshake.
+// 代表握手过程的状态
 type encHandshake struct {
-	initiator            bool
-	remote               *ecies.PublicKey  // remote-pubk
-	initNonce, respNonce []byte            // nonce
-	randomPrivKey        *ecies.PrivateKey // ecdhe-random
-	remoteRandomPub      *ecies.PublicKey  // ecdhe-random-pubk
+	// 标记本地是连接的发起方还是接收方
+	initiator bool
+	// remote代表远程节点的公钥
+	//   发送方通过Conn.diaDest在initiatorEncHandshake设置remote
+	//   接收方在receiverEncHandshake根据收到的authMsg解析出来remote
+	remote *ecies.PublicKey // remote-pubk
+	// initNonce: 发起方在makeAuthMsg中生成,接收方在handleAuthMsg中解析出来
+	// respNonce: 发起方在handleAuthResp中解析出来,接收方在makeAuthResp中生成
+	initNonce, respNonce []byte // nonce
+	// 握手过程中双方都成一对随机的公私钥
+	// 本地保存自己随机生成的私钥,通过握手能得到远程节点随机生成的公钥
+	randomPrivKey   *ecies.PrivateKey // ecdhe-random
+	remoteRandomPub *ecies.PublicKey  // ecdhe-random-pubk
 }
 
 // RLPx v4 handshake auth (defined in EIP-8).
+// 握手过程中总共发送两条消息,分别是发起方发送authMsg和接收方接收后回复authResp
+// 发起方调用initiatorEncHandshake处理握手
+//   内部调用了makeAuthMsg发送消息,然后调用handleAuthResp处理接收方的回复
+// 接收方调用receiverEncHandshake处理握手
+//   内部调用了handleAuthMsg处理发起方的消息,然后调用makeAuthResp回复发起方
+
 type authMsgV4 struct {
 	gotPlain bool // whether read packet had plain format.
 
-	Signature       [sigLen]byte
+	// 双方的静态公私钥可以推导出共享秘密token
+	// 使用发送方生成的随机私钥对 Nonce与token 的异或结果进行签名
+	// 接收方有Nonce和token可以推导出发送方的随机公钥
+	Signature [sigLen]byte
+	// 发送方的静态公钥
 	InitiatorPubkey [pubLen]byte
-	Nonce           [shaLen]byte
-	Version         uint
+	// 发送authMsg生成的随机数
+	Nonce [shaLen]byte
+	// 当前一定是4
+	Version uint
 
 	// Ignore additional fields (forward-compatibility)
 	Rest []rlp.RawValue `rlp:"tail"`
@@ -418,8 +442,11 @@ type authMsgV4 struct {
 
 // RLPx v4 handshake response (defined in EIP-8).
 type authRespV4 struct {
+	// 接收方生成的随机公钥
 	RandomPubkey [pubLen]byte
+	// 接收方生成的随机Nonce
 	Nonce        [shaLen]byte
+	// 当前一定是4
 	Version      uint
 
 	// Ignore additional fields (forward-compatibility)
@@ -431,16 +458,19 @@ type authRespV4 struct {
 //
 // prv is the local client's private key.
 func receiverEncHandshake(conn io.ReadWriter, prv *ecdsa.PrivateKey) (s Secrets, err error) {
+	// 从网络字节流中解析出来authMsg对象,authPacket代表authMsg的rlp编码
 	authMsg := new(authMsgV4)
 	authPacket, err := readHandshakeMsg(authMsg, encAuthMsgLen, prv, conn)
 	if err != nil {
 		return s, err
 	}
+	// 处理接收到的authMsg
 	h := new(encHandshake)
 	if err := h.handleAuthMsg(authMsg, prv); err != nil {
 		return s, err
 	}
 
+	// 接收方收到authMsg后开始发送authResp
 	authRespMsg, err := h.makeAuthResp()
 	if err != nil {
 		return s, err
@@ -449,17 +479,22 @@ func receiverEncHandshake(conn io.ReadWriter, prv *ecdsa.PrivateKey) (s Secrets,
 	if authMsg.gotPlain {
 		authRespPacket, err = authRespMsg.sealPlain(h)
 	} else {
+		// 将构造的authResp对象编码成字节流,使用接收方的静态公钥进行加密
 		authRespPacket, err = sealEIP8(authRespMsg, h)
 	}
 	if err != nil {
 		return s, err
 	}
+	// 将数据发送给发送方
 	if _, err = conn.Write(authRespPacket); err != nil {
 		return s, err
 	}
+	// 接收方已经能构造出来接下来通信使用的Secrets对象了
 	return h.secrets(authPacket, authRespPacket)
 }
 
+// 接收方处理发送方发送的authMsg包
+// 接收方通过authMsg包可以得知发送方的静态公钥,随机私钥,随机Nonce
 func (h *encHandshake) handleAuthMsg(msg *authMsgV4, prv *ecdsa.PrivateKey) error {
 	// Import the remote identity.
 	rpub, err := importPublicKey(msg.InitiatorPubkey[:])
@@ -471,6 +506,7 @@ func (h *encHandshake) handleAuthMsg(msg *authMsgV4, prv *ecdsa.PrivateKey) erro
 
 	// Generate random keypair for ECDH.
 	// If a private key is already set, use it instead of generating one (for testing).
+	// 生成接收方的随机私钥
 	if h.randomPrivKey == nil {
 		h.randomPrivKey, err = ecies.GenerateKey(rand.Reader, crypto.S256(), nil)
 		if err != nil {
@@ -479,11 +515,15 @@ func (h *encHandshake) handleAuthMsg(msg *authMsgV4, prv *ecdsa.PrivateKey) erro
 	}
 
 	// Check the signature.
+	// 校验authMsg里的签名是否正确
+	// 首先生成共享秘密token
 	token, err := h.staticSharedSecret(prv)
 	if err != nil {
 		return err
 	}
+	// token与nonce异或
 	signedMsg := xor(token, h.initNonce)
+	// 使用signedMsg和签名恢复出来发送方生成的随机公钥
 	remoteRandomPub, err := crypto.Ecrecover(signedMsg, msg.Signature[:])
 	if err != nil {
 		return err
@@ -494,6 +534,7 @@ func (h *encHandshake) handleAuthMsg(msg *authMsgV4, prv *ecdsa.PrivateKey) erro
 
 // secrets is called after the handshake is completed.
 // It extracts the connection secrets from the handshake values.
+// 利用握手过程中发送的两个数据包构建租出Secrets对象
 func (h *encHandshake) secrets(auth, authResp []byte) (Secrets, error) {
 	ecdheSecret, err := h.randomPrivKey.GenerateShared(h.remoteRandomPub, sskLen, sskLen)
 	if err != nil {
@@ -516,6 +557,7 @@ func (h *encHandshake) secrets(auth, authResp []byte) (Secrets, error) {
 	mac2 := sha3.NewLegacyKeccak256()
 	mac2.Write(xor(s.MAC, h.initNonce))
 	mac2.Write(authResp)
+	// 发送方和接收方的egress和ingress正好相反
 	if h.initiator {
 		s.EgressMAC, s.IngressMAC = mac1, mac2
 	} else {
@@ -535,17 +577,23 @@ func (h *encHandshake) staticSharedSecret(prv *ecdsa.PrivateKey) ([]byte, error)
 // it should be called on the dialing side of the connection.
 //
 // prv is the local client's private key.
+// 连接发起方处理握手,发起方握手过程分两步
+// 首先构造authMsg发送给对方,然后接收对方的authRespMsg
+// 通过中这两个数据包调用secrets构造Secrets对象
 func initiatorEncHandshake(conn io.ReadWriter, prv *ecdsa.PrivateKey, remote *ecdsa.PublicKey) (s Secrets, err error) {
 	h := &encHandshake{initiator: true, remote: ecies.ImportECDSAPublic(remote)}
+	// 构造authMsg对象
 	authMsg, err := h.makeAuthMsg(prv)
 	if err != nil {
 		return s, err
 	}
+	// 对authMsg对象进行编码
 	authPacket, err := sealEIP8(authMsg, h)
 	if err != nil {
 		return s, err
 	}
 
+	// 将数据发送出去
 	if _, err = conn.Write(authPacket); err != nil {
 		return s, err
 	}
@@ -562,30 +610,38 @@ func initiatorEncHandshake(conn io.ReadWriter, prv *ecdsa.PrivateKey, remote *ec
 }
 
 // makeAuthMsg creates the initiator handshake message.
+// 创建消息发起方的握手信息
+// 发起方生成了initNonce
 func (h *encHandshake) makeAuthMsg(prv *ecdsa.PrivateKey) (*authMsgV4, error) {
 	// Generate random initiator nonce.
+	// 生成随机的initNonce
 	h.initNonce = make([]byte, shaLen)
 	_, err := rand.Read(h.initNonce)
 	if err != nil {
 		return nil, err
 	}
 	// Generate random keypair to for ECDH.
+	// 生成临时随机私钥
 	h.randomPrivKey, err = ecies.GenerateKey(rand.Reader, crypto.S256(), nil)
 	if err != nil {
 		return nil, err
 	}
 
 	// Sign known message: static-shared-secret ^ nonce
+	// 利用本地的静态私钥和对方的静态公钥计算双方共享的秘密token
 	token, err := h.staticSharedSecret(prv)
 	if err != nil {
 		return nil, err
 	}
+	// 将共享秘密token与生成的随机数异或,得到signed
 	signed := xor(token, h.initNonce)
+	// 使用本地的随机私钥对signed签名
 	signature, err := crypto.Sign(signed, h.randomPrivKey.ExportECDSA())
 	if err != nil {
 		return nil, err
 	}
 
+	// 构造authMsg
 	msg := new(authMsgV4)
 	copy(msg.Signature[:], signature)
 	copy(msg.InitiatorPubkey[:], crypto.FromECDSAPub(&prv.PublicKey)[1:])
@@ -600,6 +656,8 @@ func (h *encHandshake) handleAuthResp(msg *authRespV4) (err error) {
 	return err
 }
 
+// 构造authRespV4对象
+// 生成随机的Nonce,利用handleAuthMsg生成的随机私钥导出公钥保存的msg中
 func (h *encHandshake) makeAuthResp() (msg *authRespV4, err error) {
 	// Generate random nonce.
 	h.respNonce = make([]byte, shaLen)
@@ -638,6 +696,10 @@ func (msg *authRespV4) decodePlain(input []byte) {
 
 var padSpace = make([]byte, 300)
 
+// 将authMsgV4或者authRespV4对象编码成字节流
+// 首先将msg进行rlp编码,然后使用远程节点的静态公钥进行加密
+// 最后的字节流为 prefix || ciphertext
+// prefix是后面密文的长度,密文长度比原始的rlp编码长了113字节
 func sealEIP8(msg interface{}, h *encHandshake) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	if err := rlp.Encode(buf, msg); err != nil {
@@ -645,6 +707,8 @@ func sealEIP8(msg interface{}, h *encHandshake) ([]byte, error) {
 	}
 	// pad with random amount of data. the amount needs to be at least 100 bytes to make
 	// the message distinguishable from pre-EIP-8 handshakes.
+	// pad的长度必须大于100字节,才能与eip-8之前的握手包进行区分
+	// pad的长度是[100,300)的随机数
 	pad := padSpace[:mrand.Intn(len(padSpace)-100)+100]
 	buf.Write(pad)
 	prefix := make([]byte, 2)
@@ -658,8 +722,14 @@ type plainDecoder interface {
 	decodePlain([]byte)
 }
 
+// 从r中读取一个握手过程中的消息,对读取到的数据进行解密,返回消息的rlp编码,rlp解码的对象保存在参数msg中
+// 调用的地方有两处:
+//   1. 发起方发送authMsg后,用于接收authResp
+//   2. 接收方接收authMsg的时候
+// prv是用来解密数据包的本地私钥,因为远程发送过来的时候加密使用的是本地公钥
 func readHandshakeMsg(msg plainDecoder, plainSize int, prv *ecdsa.PrivateKey, r io.Reader) ([]byte, error) {
 	buf := make([]byte, plainSize)
+	// 读取数据到buf中
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return buf, err
 	}
@@ -670,6 +740,7 @@ func readHandshakeMsg(msg plainDecoder, plainSize int, prv *ecdsa.PrivateKey, r 
 		return buf, nil
 	}
 	// Could be EIP-8 format, try that.
+	// 前两字节是后面密文的长度
 	prefix := buf[:2]
 	size := binary.BigEndian.Uint16(prefix)
 	if size < uint16(plainSize) {
@@ -690,6 +761,7 @@ func readHandshakeMsg(msg plainDecoder, plainSize int, prv *ecdsa.PrivateKey, r 
 }
 
 // importPublicKey unmarshals 512 bit public keys.
+// 通过字节数组恢复出来公钥
 func importPublicKey(pubKey []byte) (*ecies.PublicKey, error) {
 	var pubKey65 []byte
 	switch len(pubKey) {
@@ -709,6 +781,7 @@ func importPublicKey(pubKey []byte) (*ecies.PublicKey, error) {
 	return ecies.ImportECDSAPublic(pub), nil
 }
 
+// 编码公钥到字节数组
 func exportPubkey(pub *ecies.PublicKey) []byte {
 	if pub == nil {
 		panic("nil pubkey")
@@ -716,6 +789,7 @@ func exportPubkey(pub *ecies.PublicKey) []byte {
 	return elliptic.Marshal(pub.Curve, pub.X, pub.Y)[1:]
 }
 
+// 计算one与other异或的结果,返回结果的长度是one的长度
 func xor(one, other []byte) (xor []byte) {
 	xor = make([]byte, len(one))
 	for i := 0; i < len(one); i++ {
