@@ -50,10 +50,13 @@ type rlpxTransport struct {
 	conn     *rlpx.Conn
 }
 
+// 创建本质是rlpxTransport对象的transport对象
 func newRLPX(conn net.Conn, dialDest *ecdsa.PublicKey) transport {
 	return &rlpxTransport{conn: rlpx.NewConn(conn, dialDest)}
 }
 
+// 通过rlpxTransport.conn.Read获取网络中的数据
+// 构造Msg对象并返回
 func (t *rlpxTransport) ReadMsg() (Msg, error) {
 	t.rmu.Lock()
 	defer t.rmu.Unlock()
@@ -73,6 +76,7 @@ func (t *rlpxTransport) ReadMsg() (Msg, error) {
 	return msg, err
 }
 
+// 通过rlpxTransport.conn.Write将消息发送出去
 func (t *rlpxTransport) WriteMsg(msg Msg) error {
 	t.wmu.Lock()
 	defer t.wmu.Unlock()
@@ -100,6 +104,7 @@ func (t *rlpxTransport) WriteMsg(msg Msg) error {
 	return nil
 }
 
+// 关闭rlpxTransport.conn,在关闭之前如果网络通信正常的话会通知对方节点关闭的原因
 func (t *rlpxTransport) close(err error) {
 	t.wmu.Lock()
 	defer t.wmu.Unlock()
@@ -114,6 +119,7 @@ func (t *rlpxTransport) close(err error) {
 				// Connection supports write deadline.
 				t.wbuf.Reset()
 				rlp.Encode(&t.wbuf, []DiscReason{r})
+				// 向远程节点发送关闭的原因
 				t.conn.Write(discMsg, t.wbuf.Bytes())
 			}
 		}
@@ -121,18 +127,22 @@ func (t *rlpxTransport) close(err error) {
 	t.conn.Close()
 }
 
+// 执行加密握手
 func (t *rlpxTransport) doEncHandshake(prv *ecdsa.PrivateKey) (*ecdsa.PublicKey, error) {
 	t.conn.SetDeadline(time.Now().Add(handshakeTimeout))
 	return t.conn.Handshake(prv)
 }
 
+// 执行协议握手,交换双方的协议版本等信息
 func (t *rlpxTransport) doProtoHandshake(our *protoHandshake) (their *protoHandshake, err error) {
 	// Writing our handshake happens concurrently, we prefer
 	// returning the handshake read error. If the remote side
 	// disconnects us early with a valid reason, we should return it
 	// as the error so it can be tracked elsewhere.
 	werr := make(chan error, 1)
+	// 首先本地向远端发送本地的协议相关信息
 	go func() { werr <- Send(t, handshakeMsg, our) }()
+	// 接收远端返回的协议信息
 	if their, err = readProtocolHandshake(t); err != nil {
 		<-werr // make sure the write terminates too
 		return nil, err
@@ -146,6 +156,7 @@ func (t *rlpxTransport) doProtoHandshake(our *protoHandshake) (their *protoHands
 	return their, nil
 }
 
+// 读取一个消息并解析为protoHandshake对象
 func readProtocolHandshake(rw MsgReader) (*protoHandshake, error) {
 	msg, err := rw.ReadMsg()
 	if err != nil {
@@ -160,16 +171,20 @@ func readProtocolHandshake(rw MsgReader) (*protoHandshake, error) {
 		// We can't return the reason directly, though, because it is echoed
 		// back otherwise. Wrap it in a string instead.
 		var reason [1]DiscReason
+		// 将接收到的错误信息解码到reason中
 		rlp.Decode(msg.Payload, &reason)
 		return nil, reason[0]
 	}
+	// 需要接收到一个Code是handshakeMsg的消息
 	if msg.Code != handshakeMsg {
 		return nil, fmt.Errorf("expected handshake, got %x", msg.Code)
 	}
 	var hs protoHandshake
+	// 将接收到的消息解码到protoHandshake对象中
 	if err := msg.Decode(&hs); err != nil {
 		return nil, err
 	}
+	// ID必须长度是64字节,还不能全零
 	if len(hs.ID) != 64 || !bitutil.TestBytes(hs.ID) {
 		return nil, DiscInvalidIdentity
 	}

@@ -61,6 +61,7 @@ const (
 	frameReadTimeout = 30 * time.Second
 
 	// Maximum amount of time allowed for writing a complete message.
+	// 发送消息的超时时间是20秒
 	frameWriteTimeout = 20 * time.Second
 )
 
@@ -183,6 +184,7 @@ type Server struct {
 	ntab      *discover.UDPv4
 	DiscV5    *discover.UDPv5
 	discmix   *enode.FairMix
+	// 用来执行addStatic,removeStatic,peerAdded,peerRemoved
 	dialsched *dialScheduler
 
 	// Channels into the run loop.
@@ -218,19 +220,34 @@ const (
 
 // conn wraps a network connection with information gathered
 // during the two handshakes.
+// 对net.Conn对象的封装,增加了在握手过程中收集的信息
 type conn struct {
 	fd net.Conn
 	transport
 	node  *enode.Node
+	// int32的末尾四位作为标记位,用来标记是否设置了指定的flag
 	flags connFlag
 	cont  chan error // The run loop uses cont to signal errors to SetupConn.
 	caps  []Cap      // valid after the protocol handshake
 	name  string     // valid after the protocol handshake
 }
 
+// 实际使用中只有一个transport->rlpxTransport
+// 两个节点建立网络连接之后,需要执行握手. 握手包括两个步骤:加密握手和协议握手
+// 加密握手的目的是交换接下来通信的对称加密的密钥
+// 协议握手是为了交换一些协议相关的信息,例如协议的版本号,高于某个版本号才执行压缩
+// 发起方和接收方都分别连续调用doEncHandshake和doProtoHandshake两个函数
+// 两个握手过程,双方各自都发送了两个数据包
+// 发起方首先发送authMsg,接收等待接收验证authMsg后发送authACK,此时接收方加密握手完成
+// 发起方收到接收方发送的authACK后验证通过,加密握手过程也完成
+// 双方加密握手完成后都立刻发送protoHandshake包,然后等待对方的protoHandshake包
+// 双方都收到协议信息后所有握手过程完成
 type transport interface {
 	// The two handshakes.
+	// 建立连接后首先进行加密握手,然后进行协议握手
+	// 分别就是doEncHandshake,doProtoHandshake
 	doEncHandshake(prv *ecdsa.PrivateKey) (*ecdsa.PublicKey, error)
+	// 将输入的protoHandshake对象发送给远程节点,然后返回接收到的远程节点的protoHandshake对象
 	doProtoHandshake(our *protoHandshake) (*protoHandshake, error)
 	// The MsgReadWriter can only be used after the encryption
 	// handshake has completed. The code uses conn.id to track this
@@ -271,11 +288,14 @@ func (f connFlag) String() string {
 	return s
 }
 
+// 判断是否设置了指定的标记
+// 直接将保存的flag与输入的flag按位与,结果不为零说明设置了输入的flag
 func (c *conn) is(f connFlag) bool {
 	flags := connFlag(atomic.LoadInt32((*int32)(&c.flags)))
 	return flags&f != 0
 }
 
+// 输入f代表要操作的flag,val为true代表将flag置为1,val为false代表将flag置为0
 func (c *conn) set(f connFlag, val bool) {
 	for {
 		oldFlags := connFlag(atomic.LoadInt32((*int32)(&c.flags)))
@@ -918,6 +938,8 @@ func (srv *Server) checkInboundConn(remoteIP net.IP) error {
 // SetupConn runs the handshakes and attempts to add the connection
 // as a peer. It returns when the connection has been added as a peer
 // or the handshakes have failed.
+// SetupConn在传入的net.Conn连接上执行握手过程
+// 如果握手成功将新增一个对等节点,否则返回错误
 func (srv *Server) SetupConn(fd net.Conn, flags connFlag, dialDest *enode.Node) error {
 	c := &conn{fd: fd, flags: flags, cont: make(chan error)}
 	if dialDest == nil {

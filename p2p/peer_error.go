@@ -36,6 +36,8 @@ type peerError struct {
 	message string
 }
 
+// code是错误类型,有errInvalidMsgCode,errInvalidMsg
+// format和v是在message后面增加一个格式化字符串
 func newPeerError(code int, format string, v ...interface{}) *peerError {
 	desc, ok := errorToString[code]
 	if !ok {
@@ -54,6 +56,7 @@ func (pe *peerError) Error() string {
 
 var errProtocolReturned = errors.New("protocol returned")
 
+// 断开连接的原因 Disconnect Reason
 type DiscReason uint
 
 const (
@@ -95,10 +98,12 @@ func (d DiscReason) String() string {
 	return discReasonToString[d]
 }
 
+// 实现error接口
 func (d DiscReason) Error() string {
 	return d.String()
 }
 
+// 将其他错误转换成DiscReason
 func discReasonForError(err error) DiscReason {
 	if reason, ok := err.(DiscReason); ok {
 		return reason

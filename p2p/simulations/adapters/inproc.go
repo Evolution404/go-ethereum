@@ -36,9 +36,13 @@ import (
 
 // SimAdapter is a NodeAdapter which creates in-memory simulation nodes and
 // connects them using net.Pipe
+// 用来创建使用net.Pipe进行通信的仿真节点
+// 实现了p2p.NodeDialer,adapters.NodeAdapter,adapters.RPCDialer接口
 type SimAdapter struct {
+	// 用来创建net.Conn对象的函数
 	pipe       func() (net.Conn, net.Conn, error)
 	mtx        sync.RWMutex
+	// 保存这个Adapter已经创建的节点
 	nodes      map[enode.ID]*SimNode
 	lifecycles LifecycleConstructors
 }
@@ -47,6 +51,7 @@ type SimAdapter struct {
 // simulation nodes running any of the given services (the services to run on a
 // particular node are passed to the NewNode function in the NodeConfig)
 // the adapter uses a net.Pipe for in-memory simulated network connections
+// 输入多个生命周期函数,创建SimAdapter
 func NewSimAdapter(services LifecycleConstructors) *SimAdapter {
 	return &SimAdapter{
 		pipe:       pipes.NetPipe,
@@ -61,6 +66,7 @@ func (s *SimAdapter) Name() string {
 }
 
 // NewNode returns a new SimNode using the given config
+// SimAdapter对象使用给定的节点配置创建一个内存型节点
 func (s *SimAdapter) NewNode(config *NodeConfig) (Node, error) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
@@ -113,12 +119,14 @@ func (s *SimAdapter) NewNode(config *NodeConfig) (Node, error) {
 		adapter: s,
 		running: make(map[string]node.Lifecycle),
 	}
+	// 往SimAdapter里保存新创建的节点
 	s.nodes[id] = simNode
 	return simNode, nil
 }
 
 // Dial implements the p2p.NodeDialer interface by connecting to the node using
 // an in-memory net.Pipe
+// 实现p2p.NodeDialer接口
 func (s *SimAdapter) Dial(ctx context.Context, dest *enode.Node) (conn net.Conn, err error) {
 	node, ok := s.GetNode(dest.ID())
 	if !ok {
@@ -151,6 +159,7 @@ func (s *SimAdapter) DialRPC(id enode.ID) (*rpc.Client, error) {
 }
 
 // GetNode returns the node with the given ID if it exists
+// 查找SimAdapter.nodes[id]
 func (s *SimAdapter) GetNode(id enode.ID) (*SimNode, bool) {
 	s.mtx.RLock()
 	defer s.mtx.RUnlock()

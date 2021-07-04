@@ -50,6 +50,7 @@ const (
 
 // NodeDialer is used to connect to nodes in the network, typically by using
 // an underlying net.Dialer but also using net.Pipe in tests.
+// 用来创建与另一个节点的连接
 type NodeDialer interface {
 	Dial(context.Context, *enode.Node) (net.Conn, error)
 }
@@ -94,14 +95,19 @@ var (
 type dialScheduler struct {
 	dialConfig
 	setupFunc   dialSetupFunc
+	// stop函数中用来等待readNodes和loop函数结束
 	wg          sync.WaitGroup
 	cancel      context.CancelFunc
 	ctx         context.Context
 	nodesIn     chan *enode.Node
 	doneCh      chan *dialTask
+	// 添加一个静态节点 addStatic中使用
 	addStaticCh chan *enode.Node
+	// 删除一个静态节点 removeStatic中使用
 	remStaticCh chan *enode.Node
+	// 添加一个节点 peerAdded中使用
 	addPeerCh   chan *conn
+	// 删除一个节点 peerRemoved中使用
 	remPeerCh   chan *conn
 
 	// Everything below here belongs to loop and

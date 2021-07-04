@@ -50,6 +50,7 @@ const (
 
 const (
 	// devp2p message codes
+	// 执行协议握手的时候发送的消息
 	handshakeMsg = 0x00
 	discMsg      = 0x01
 	pingMsg      = 0x02
@@ -91,6 +92,8 @@ const (
 
 // PeerEvent is an event emitted when peers are either added or dropped from
 // a p2p.Server or when a message is sent or received on a peer connection
+// PeerEvent总共有四种,分别是增加或者移除节点,以及接收或发送消息
+// PeerEventTypeAdd,PeerEventTypeDrop,PeerEventTypeMsgSend,PeerEventTypeMsgRecv
 type PeerEvent struct {
 	Type          PeerEventType `json:"type"`
 	Peer          enode.ID      `json:"peer"`
@@ -139,6 +142,7 @@ func (p *Peer) Node() *enode.Node {
 }
 
 // Name returns an abbreviated form of the name
+// 节点名称超过20个字节后面使用省略号缩写
 func (p *Peer) Name() string {
 	s := p.rw.name
 	if len(s) > 20 {
@@ -227,6 +231,7 @@ func (p *Peer) run() (remoteRequested bool, err error) {
 		readErr    = make(chan error, 1)
 		reason     DiscReason // sent to the peer
 	)
+	// run中执行了readLoop和pingLoop两个循环
 	p.wg.Add(2)
 	go p.readLoop(readErr)
 	go p.pingLoop()
@@ -270,6 +275,7 @@ loop:
 	return remoteRequested, err
 }
 
+// 在run函数中调用
 func (p *Peer) pingLoop() {
 	ping := time.NewTimer(pingInterval)
 	defer p.wg.Done()
@@ -288,6 +294,9 @@ func (p *Peer) pingLoop() {
 	}
 }
 
+// 持续从rw中读取消息,读取到的消息调用Peer.handle
+// 一旦发生错误,将错误发送到参数errc管道中,并结束该函数
+// 在run函数中调用
 func (p *Peer) readLoop(errc chan<- error) {
 	defer p.wg.Done()
 	for {
