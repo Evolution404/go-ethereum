@@ -118,6 +118,7 @@ type Config struct {
 
 	// Trusted nodes are used as pre-configured connections which are always
 	// allowed to connect, even above the peer limit.
+	// 在TrustedNodes中的节点不受到连接节点个数的限制
 	TrustedNodes []*enode.Node
 
 	// Connectivity can be restricted to certain IP networks.
@@ -159,6 +160,7 @@ type Config struct {
 
 	// If EnableMsgEvents is set then the server will emit PeerEvents
 	// whenever a message is sent to or received from a peer
+	// 用来控制订阅的管道是否收到节点发送和接收消息的通知
 	EnableMsgEvents bool
 
 	// Logger is a custom logger to use with the p2p.Server.
@@ -230,7 +232,9 @@ type connFlag int32
 const (
 	dynDialedConn connFlag = 1 << iota
 	staticDialedConn
+	// 这个连接是别的节点连接本地节点
 	inboundConn
+	// 这个连接的对端是在TrustedNodes中
 	trustedConn
 )
 
@@ -240,6 +244,7 @@ const (
 type conn struct {
 	fd net.Conn
 	transport
+	// 保存这个连接的远程节点
 	node  *enode.Node
 	// int32的末尾四位作为标记位,用来标记是否设置了指定的flag
 	flags connFlag
@@ -407,6 +412,7 @@ func (srv *Server) RemoveTrustedPeer(node *enode.Node) {
 }
 
 // SubscribePeers subscribes the given channel to peer events
+// 订阅节点事件,每当有新节点添加或者删除的时候输入的管道会接收到通知
 func (srv *Server) SubscribeEvents(ch chan *PeerEvent) event.Subscription {
 	return srv.peerFeed.Subscribe(ch)
 }
@@ -760,7 +766,9 @@ func (srv *Server) run() {
 	defer srv.dialsched.stop()
 
 	var (
+		// 用来保存所有的节点
 		peers        = make(map[enode.ID]*Peer)
+		// 统计本地接收的来自远程节点的连接个数
 		inboundCount = 0
 		trusted      = make(map[enode.ID]bool, len(srv.TrustedNodes))
 	)
@@ -800,20 +808,26 @@ running:
 			op(peers)
 			srv.peerOpDone <- struct{}{}
 
+		// 完成了加密握手过程的连接
 		case c := <-srv.checkpointPostHandshake:
 			// A connection has passed the encryption handshake so
 			// the remote identity is known (but hasn't been verified yet).
+			// 如果是TrustedNodes,设置标记位
 			if trusted[c.node.ID()] {
 				// Ensure that the trusted flag is set before checking against MaxPeers.
 				c.flags |= trustedConn
 			}
 			// TODO: track in-progress inbound node IDs (pre-Peer) to avoid dialing them.
+			// 完成加密握手后进行一些基本的检测
 			c.cont <- srv.postHandshakeChecks(peers, inboundCount, c)
 
+		// setupConn中完成了加密握手和协议握手,可以添加新的节点了
 		case c := <-srv.checkpointAddPeer:
 			// At this point the connection is past the protocol handshake.
 			// Its capabilities are known and the remote identity is verified.
 			err := srv.addPeerChecks(peers, inboundCount, c)
+			// 所有的检测都完成了
+			// 开始真正添加一个节点
 			if err == nil {
 				// The handshakes are done and it passed all checks.
 				p := srv.launchPeer(c)
@@ -861,14 +875,20 @@ running:
 	}
 }
 
+// 两个节点建立了网络连接,还完成了加密握手或者协议握手过程,检查一下这个连接是否可行
+// 比如是否连接个数超过限制,之前是不是建立过连接,是不是与自己建立连接
 func (srv *Server) postHandshakeChecks(peers map[enode.ID]*Peer, inboundCount int, c *conn) error {
 	switch {
+	// 不是trustedConn,而且连接个数达到了限制,返回错误
 	case !c.is(trustedConn) && len(peers) >= srv.MaxPeers:
 		return DiscTooManyPeers
+	// 外部主动发起的连接个数超过了限制
 	case !c.is(trustedConn) && c.is(inboundConn) && inboundCount >= srv.maxInboundConns():
 		return DiscTooManyPeers
+	// 与这个节点的连接已经建立了
 	case peers[c.node.ID()] != nil:
 		return DiscAlreadyConnected
+	// 建立的连接是自己
 	case c.node.ID() == srv.localnode.ID():
 		return DiscSelf
 	default:
@@ -876,6 +896,7 @@ func (srv *Server) postHandshakeChecks(peers map[enode.ID]*Peer, inboundCount in
 	}
 }
 
+// 检查远程节点是否有与本地兼容的子协议,还有连接个数的一些限制
 func (srv *Server) addPeerChecks(peers map[enode.ID]*Peer, inboundCount int, c *conn) error {
 	// Drop connections with no matching protocols.
 	if len(srv.Protocols) > 0 && countMatchingProtocols(srv.Protocols, c.caps) == 0 {
@@ -889,7 +910,7 @@ func (srv *Server) addPeerChecks(peers map[enode.ID]*Peer, inboundCount int, c *
 // listenLoop runs in its own goroutine and accepts
 // inbound connections.
 // 在单独的协程里运行listenLoop
-// 监听并处理外部发起的请求
+// 监听并处理外部发起的请求,
 func (srv *Server) listenLoop() {
 	srv.log.Debug("TCP listener up", "addr", srv.listener.Addr())
 
@@ -900,7 +921,8 @@ func (srv *Server) listenLoop() {
 		tokens = srv.MaxPendingPeers
 	}
 	// slots用来限制接收到的连接个数
-	// 接收到的连接会调用SetupConn进入协程处理
+	// 接收到的连接会调用SetupConn进入协程处理,SetupConn一直到两个节点完成握手过程才会结束
+	// 所以slots的缓存个数,就代表了正在执行握手的过程的连接个数,代表了等待连接的节点的个数
 	// 每次进入协程将消耗slots中的一个缓存,协程结束的时候会返回一个
 	// 这样在下面的for循环开始,一旦SetupConn协程个数超过限制就会阻塞住
 	slots := make(chan struct{}, tokens)
@@ -1021,6 +1043,7 @@ func (srv *Server) SetupConn(fd net.Conn, flags connFlag, dialDest *enode.Node) 
 	return err
 }
 
+// 执行加密握手和协议握手
 func (srv *Server) setupConn(c *conn, flags connFlag, dialDest *enode.Node) error {
 	// Prevent leftover pending conns from entering the handshake.
 	srv.lock.Lock()
@@ -1053,6 +1076,7 @@ func (srv *Server) setupConn(c *conn, flags connFlag, dialDest *enode.Node) erro
 		c.node = nodeFromConn(remotePubkey, c.fd)
 	}
 	clog := srv.log.New("id", c.node.ID(), "addr", c.fd.RemoteAddr(), "conn", c.flags)
+	// 完成加密握手过程,
 	err = srv.checkpoint(c, srv.checkpointPostHandshake)
 	if err != nil {
 		clog.Trace("Rejected peer", "err", err)
@@ -1060,6 +1084,7 @@ func (srv *Server) setupConn(c *conn, flags connFlag, dialDest *enode.Node) erro
 	}
 
 	// Run the capability negotiation handshake.
+	// 开始执行协议握手过程
 	phs, err := c.doProtoHandshake(srv.ourHandshake)
 	if err != nil {
 		clog.Trace("Failed p2p handshake", "err", err)
@@ -1070,6 +1095,7 @@ func (srv *Server) setupConn(c *conn, flags connFlag, dialDest *enode.Node) erro
 		return DiscUnexpectedIdentity
 	}
 	c.caps, c.name = phs.Caps, phs.Name
+	// 两个握手过程都执行完成,通知run函数添加新的对等节点
 	err = srv.checkpoint(c, srv.checkpointAddPeer)
 	if err != nil {
 		clog.Trace("Rejected peer", "err", err)
@@ -1091,17 +1117,24 @@ func nodeFromConn(pubkey *ecdsa.PublicKey, conn net.Conn) *enode.Node {
 
 // checkpoint sends the conn to run, which performs the
 // post-handshake checks for the stage (posthandshake, addpeer).
+// 将conn对象发送到输入的管道中,run函数接收conn对象,然后返回run函数处理的错误结果
 func (srv *Server) checkpoint(c *conn, stage chan<- *conn) error {
 	select {
 	case stage <- c:
 	case <-srv.quit:
 		return errServerStopped
 	}
+	// 将conn对象发送出去后,会在run函数内接收
+	// run函数处理完成,会将错误对象发送到c.cont管道中
+	// 接收错误结果并返回
 	return <-c.cont
 }
 
+// 创建并启动一个Peer
 func (srv *Server) launchPeer(c *conn) *Peer {
 	p := newPeer(srv.log, c, srv.Protocols)
+	// 如果Server对象设置了EnableMsgEvents
+	// 那么每个创建的Peer对象都会在Peer.events中保存Server.peerFeed
 	if srv.EnableMsgEvents {
 		// If message events are enabled, pass the peerFeed
 		// to the peer.
@@ -1112,6 +1145,7 @@ func (srv *Server) launchPeer(c *conn) *Peer {
 }
 
 // runPeer runs in its own goroutine for each peer.
+// 针对每个Peer,都在运行一个协程中运行runPeer函数
 func (srv *Server) runPeer(p *Peer) {
 	if srv.newPeerHook != nil {
 		srv.newPeerHook(p)
