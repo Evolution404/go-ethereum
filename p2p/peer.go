@@ -61,6 +61,7 @@ const (
 type protoHandshake struct {
 	Version    uint64
 	Name       string
+	// 保存本地或者远程节点支持的所有协议的名称和版本
 	Caps       []Cap
 	ListenPort uint64
 	ID         []byte // secp256k1 public key
@@ -109,6 +110,7 @@ type PeerEvent struct {
 type Peer struct {
 	rw      *conn
 	// 协议名称->protoRW对象的映射
+	// 保存了本地与这个Peer之间现在正在运行的子协议
 	running map[string]*protoRW
 	log     log.Logger
 	created mclock.AbsTime
@@ -119,10 +121,12 @@ type Peer struct {
 	disc     chan DiscReason
 
 	// events receives message send / receive events if set
+	// events不为nil的时候,每次接收和发送消息都会通过这个Feed对象发送通知
 	events *event.Feed
 }
 
 // NewPeer returns a peer for testing purposes.
+// 只用在测试中
 func NewPeer(id enode.ID, name string, caps []Cap) *Peer {
 	pipe, _ := net.Pipe()
 	node := enode.SignNull(new(enr.Record), id)
@@ -208,7 +212,9 @@ func (p *Peer) Inbound() bool {
 	return p.rw.is(inboundConn)
 }
 
+// 真实环境中创建Peer对象的方法,在launchPeer中调用
 func newPeer(log log.Logger, conn *conn, protocols []Protocol) *Peer {
+	// 对比本地和远程节点支持的协议名称和版本,得到两者共同支持的协议对象
 	protomap := matchProtocols(protocols, conn.caps, conn)
 	p := &Peer{
 		rw:       conn,
@@ -363,7 +369,10 @@ func countMatchingProtocols(protocols []Protocol, caps []Cap) int {
 }
 
 // matchProtocols creates structures for matching named subprotocols.
+// 比对本地支持的协议和远程支持的协议,获得两者同时支持的协议
+// protocols是本地的子协议,caps是远程节点支持的协议
 func matchProtocols(protocols []Protocol, caps []Cap, rw MsgReadWriter) map[string]*protoRW {
+	// 对远程节点支持的协议进行排序
 	sort.Sort(capsByNameAndVersion(caps))
 	offset := baseProtocolLength
 	result := make(map[string]*protoRW)
@@ -371,12 +380,15 @@ func matchProtocols(protocols []Protocol, caps []Cap, rw MsgReadWriter) map[stri
 outer:
 	for _, cap := range caps {
 		for _, proto := range protocols {
+			// 找到两者共同支持的协议了
 			if proto.Name == cap.Name && proto.Version == cap.Version {
 				// If an old protocol version matched, revert it
+				// 这个协议双方都支持某些旧版本,更新使用最新版本
 				if old := result[cap.Name]; old != nil {
 					offset -= old.Length
 				}
 				// Assign the new match
+				// 保存共同支持的协议
 				result[cap.Name] = &protoRW{Protocol: proto, offset: offset, in: make(chan Msg), w: rw}
 				offset += proto.Length
 
@@ -395,6 +407,7 @@ func (p *Peer) startProtocols(writeStart <-chan struct{}, writeErr chan<- error)
 		proto.wstart = writeStart
 		proto.werr = writeErr
 		var rw MsgReadWriter = proto
+		// 如果events不是nil,就将原来的rw用msgEventer封装,增加发送通知的功能
 		if p.events != nil {
 			rw = newMsgEventer(rw, p.events, p.ID(), proto.Name, p.Info().Network.RemoteAddress, p.Info().Network.LocalAddress)
 		}

@@ -210,7 +210,9 @@ type Server struct {
 	peerOp                  chan peerOpFunc
 	peerOpDone              chan struct{}
 	delpeer                 chan peerDrop
+	// 执行完成加密握手后的连接被发送到这个管道
 	checkpointPostHandshake chan *conn
+	// 执行完成加密握手和协议握手的连接被发送到这个管道
 	checkpointAddPeer       chan *conn
 
 	// State of run loop and listenLoop.
@@ -249,6 +251,8 @@ type conn struct {
 	// int32的末尾四位作为标记位,用来标记是否设置了指定的flag
 	flags connFlag
 	cont  chan error // The run loop uses cont to signal errors to SetupConn.
+	// 保存了对方节点所支持的协议名称和版本
+	// 由协议握手过程中对方发送的protoHandshake包中得知
 	caps  []Cap      // valid after the protocol handshake
 	name  string     // valid after the protocol handshake
 }
@@ -550,6 +554,7 @@ func (srv *Server) setupLocalNode() error {
 	pubkey := crypto.FromECDSAPub(&srv.PrivateKey.PublicKey)
 	// 构造协议握手使用的protoHandshake对象
 	srv.ourHandshake = &protoHandshake{Version: baseProtocolVersion, Name: srv.Name, ID: pubkey[1:]}
+	// 本地的Caps就是所有支持的协议的名称和版本
 	for _, p := range srv.Protocols {
 		srv.ourHandshake.Caps = append(srv.ourHandshake.Caps, p.cap())
 	}
