@@ -54,6 +54,8 @@ const (
 	defaultDialRatio       = 3
 
 	// This time limits inbound connection attempts per source IP.
+	// 30秒内接收到同一个ip建立的连接,本地将拒绝连接
+	// 局域网ip不受此限制
 	inboundThrottleTime = 30 * time.Second
 
 	// Maximum time allowed for reading a complete message.
@@ -68,6 +70,9 @@ const (
 var errServerStopped = errors.New("server stopped")
 
 // Config holds Server options.
+// 必须指定的字段
+// PrivateKey
+// MaxPeers 必须指定大于零的整数
 type Config struct {
 	// This field must be set to a valid secp256k1 private key.
 	PrivateKey *ecdsa.PrivateKey `toml:"-"`
@@ -118,6 +123,7 @@ type Config struct {
 	// Connectivity can be restricted to certain IP networks.
 	// If this option is set to a non-nil value, only hosts which match one of the
 	// IP networks contained in the list are considered.
+	// 来自指定子网的ip将拒绝连接
 	NetRestrict *netutil.Netlist `toml:",omitempty"`
 
 	// NodeDatabase is the path to the database containing the previously seen
@@ -140,6 +146,8 @@ type Config struct {
 	// If set to a non-nil value, the given NAT port mapper
 	// is used to make the listening port available to the
 	// Internet.
+	// 不是nil,也不是nat.ExtIP的情况下
+	// 例如设置为nat.Any,Server.Start会阻塞一会,探测节点的ip
 	NAT nat.Interface `toml:",omitempty"`
 
 	// If Dialer is set to a non-nil value, the given Dialer
@@ -166,11 +174,16 @@ type Server struct {
 
 	// Hooks for testing. These are useful because we can inhibit
 	// the whole protocol stack.
+	// newTransport正常情况就是newRLPX
 	newTransport func(net.Conn, *ecdsa.PublicKey) transport
 	newPeerHook  func(*Peer)
+	// listenFunc正常情况就是net.Listen
 	listenFunc   func(network, addr string) (net.Listener, error)
 
+	// 保护运行状态时的一些数据
 	lock    sync.Mutex // protects running
+	// 用来代表该对象是否是运行状态
+	// Start方法中修改为true, Stop方法中修改为false
 	running bool
 
 	listener     net.Listener
@@ -188,6 +201,7 @@ type Server struct {
 	dialsched *dialScheduler
 
 	// Channels into the run loop.
+	// 在run函数中需要使用的管道
 	quit                    chan struct{}
 	addtrusted              chan *enode.Node
 	removetrusted           chan *enode.Node
@@ -198,6 +212,8 @@ type Server struct {
 	checkpointAddPeer       chan *conn
 
 	// State of run loop and listenLoop.
+	// 所有接收到的连接的对端ip都会保存在这里30秒
+	// 用来限制非局域网的ip的连接次数,30s内接收到同一个ip的连接不进行处理
 	inboundHistory expHeap
 }
 
@@ -461,26 +477,34 @@ func (srv *Server) Start() (err error) {
 	}
 	srv.running = true
 	srv.log = srv.Config.Logger
+	// 日志默认使用log.Root
 	if srv.log == nil {
 		srv.log = log.Root()
 	}
 	if srv.clock == nil {
 		srv.clock = mclock.System{}
 	}
+	// 既不监听本地端口,也不向外拨号
+	// 这个节点根本没有用
 	if srv.NoDial && srv.ListenAddr == "" {
 		srv.log.Warn("P2P server will be useless, neither dialing nor listening")
 	}
 
 	// static fields
+	// 调用者必须指定p2p节点的私钥
 	if srv.PrivateKey == nil {
 		return errors.New("Server.PrivateKey must be set to a non-nil key")
 	}
+	// 这里newTransport不是nil的情况,是在测试时出现
+	// 正常使用p2p模块,newTransport字段在调用Start时一定是nil
 	if srv.newTransport == nil {
 		srv.newTransport = newRLPX
 	}
+	// listenFunc不为nil的情况也是出现在测试时
 	if srv.listenFunc == nil {
 		srv.listenFunc = net.Listen
 	}
+	// 初始化在run函数中使用的这八个管道
 	srv.quit = make(chan struct{})
 	srv.delpeer = make(chan peerDrop)
 	srv.checkpointPostHandshake = make(chan *conn)
@@ -490,9 +514,12 @@ func (srv *Server) Start() (err error) {
 	srv.peerOp = make(chan peerOpFunc)
 	srv.peerOpDone = make(chan struct{})
 
+	// 设置srv.ourHandshake,srv.localnode和srv.nodedb
 	if err := srv.setupLocalNode(); err != nil {
 		return err
 	}
+	// 网络中的节点同时负责向别的节点发起连接,也负责接收别的节点的连接
+	// 下面的setupListening用来调度别的节点向本地发起的连接
 	if srv.ListenAddr != "" {
 		if err := srv.setupListening(); err != nil {
 			return err
@@ -501,16 +528,21 @@ func (srv *Server) Start() (err error) {
 	if err := srv.setupDiscovery(); err != nil {
 		return err
 	}
+	// 这里的setupDialScheduler用来调度向其他节点发起连接
 	srv.setupDialScheduler()
 
+	// run函数执行完成,会执行loopWG.Done()
 	srv.loopWG.Add(1)
 	go srv.run()
 	return nil
 }
 
+// 设置了srv.ourHandshake,srv.localnode和srv.nodedb三个字段
 func (srv *Server) setupLocalNode() error {
 	// Create the devp2p handshake.
+	// 获得节点公钥的字节数组
 	pubkey := crypto.FromECDSAPub(&srv.PrivateKey.PublicKey)
+	// 构造协议握手使用的protoHandshake对象
 	srv.ourHandshake = &protoHandshake{Version: baseProtocolVersion, Name: srv.Name, ID: pubkey[1:]}
 	for _, p := range srv.Protocols {
 		srv.ourHandshake.Caps = append(srv.ourHandshake.Caps, p.cap())
@@ -531,6 +563,9 @@ func (srv *Server) setupLocalNode() error {
 			srv.localnode.Set(e)
 		}
 	}
+	// 判断NAT类型
+	// ExtIP直接指定节点的ip为该ip
+	// 不是nil的其他情况,调用srv.NAT.ExternalIP,探测节点的外部ip
 	switch srv.NAT.(type) {
 	case nil:
 		// No NAT interface, do nothing.
@@ -675,13 +710,16 @@ func (srv *Server) maxDialedConns() (limit int) {
 	return limit
 }
 
+// 设置srv.listener,srv.ListenAddr,并更新localnode的TCP字段
 func (srv *Server) setupListening() error {
 	// Launch the listener.
+	// ListenAddr不会为空字符串,Start函数在调用之前进行了判断
 	listener, err := srv.listenFunc("tcp", srv.ListenAddr)
 	if err != nil {
 		return err
 	}
 	srv.listener = listener
+	// 重新获得真正监听的地址
 	srv.ListenAddr = listener.Addr().String()
 
 	// Update the local node record and map the TCP listening port if NAT is configured.
@@ -696,7 +734,10 @@ func (srv *Server) setupListening() error {
 		}
 	}
 
+	// listenLoop中会调用loopWG.Done()
 	srv.loopWG.Add(1)
+	// listenFunc创建了listener
+	// 在listenLoop里使用listener监听外部的请求
 	go srv.listenLoop()
 	return nil
 }
@@ -847,23 +888,33 @@ func (srv *Server) addPeerChecks(peers map[enode.ID]*Peer, inboundCount int, c *
 
 // listenLoop runs in its own goroutine and accepts
 // inbound connections.
+// 在单独的协程里运行listenLoop
+// 监听并处理外部发起的请求
 func (srv *Server) listenLoop() {
 	srv.log.Debug("TCP listener up", "addr", srv.listener.Addr())
 
 	// The slots channel limits accepts of new connections.
+	// 等待建立连接的节点的最大个数
 	tokens := defaultMaxPendingPeers
 	if srv.MaxPendingPeers > 0 {
 		tokens = srv.MaxPendingPeers
 	}
+	// slots用来限制接收到的连接个数
+	// 接收到的连接会调用SetupConn进入协程处理
+	// 每次进入协程将消耗slots中的一个缓存,协程结束的时候会返回一个
+	// 这样在下面的for循环开始,一旦SetupConn协程个数超过限制就会阻塞住
 	slots := make(chan struct{}, tokens)
+	// 初始就将管道填满
 	for i := 0; i < tokens; i++ {
 		slots <- struct{}{}
 	}
 
 	// Wait for slots to be returned on exit. This ensures all connection goroutines
 	// are down before listenLoop returns.
+	// 对应于setupListening中调用的loopWG.Add(1)
 	defer srv.loopWG.Done()
 	defer func() {
+		// 在listenLoop结束前清空slots
 		for i := 0; i < cap(slots); i++ {
 			<-slots
 		}
@@ -871,6 +922,7 @@ func (srv *Server) listenLoop() {
 
 	for {
 		// Wait for a free slot before accepting.
+		// 如果缓存被消耗完,这里会阻塞住,直到SetupConn执行完返还
 		<-slots
 
 		var (
@@ -879,12 +931,16 @@ func (srv *Server) listenLoop() {
 			lastLog time.Time
 		)
 		for {
+			// 监听到一个连接fd
 			fd, err = srv.listener.Accept()
+			// 处理错误
 			if netutil.IsTemporaryError(err) {
+				// 临时错误的日志最多一秒一次
 				if time.Since(lastLog) > 1*time.Second {
 					srv.log.Debug("Temporary read error", "err", err)
 					lastLog = time.Now()
 				}
+				// 发生了临时错误,等待一小会,再尝试看看还有没有临时错误
 				time.Sleep(time.Millisecond * 200)
 				continue
 			} else if err != nil {
@@ -892,16 +948,21 @@ func (srv *Server) listenLoop() {
 				slots <- struct{}{}
 				return
 			}
+			// 没有发生错误,结束监听循环
+			// 开始处理接收到的连接fd
 			break
 		}
 
 		remoteIP := netutil.AddrIP(fd.RemoteAddr())
+		// 检查对端ip是否有问题
 		if err := srv.checkInboundConn(remoteIP); err != nil {
 			srv.log.Debug("Rejected inbound connection", "addr", fd.RemoteAddr(), "err", err)
+			// 对端ip有问题,关闭这个连接
 			fd.Close()
 			slots <- struct{}{}
 			continue
 		}
+		// 远程节点不是nil的话,加入到度量中,并打印日志
 		if remoteIP != nil {
 			var addr *net.TCPAddr
 			if tcp, ok := fd.RemoteAddr().(*net.TCPAddr); ok {
@@ -911,12 +972,17 @@ func (srv *Server) listenLoop() {
 			srv.log.Trace("Accepted connection", "addr", fd.RemoteAddr())
 		}
 		go func() {
+			// 本地是连接的接收方,所以SetupConn的dialDest传入nil
 			srv.SetupConn(fd, inboundConn, nil)
 			slots <- struct{}{}
 		}()
 	}
 }
 
+// 判断建立连接的远程ip是不是有问题,有问题返回的错误不为nil
+// 可能出现的问题:
+//   对端ip可能在预先定义的限制ip中
+//   对端ip在30s内重复发起连接
 func (srv *Server) checkInboundConn(remoteIP net.IP) error {
 	if remoteIP == nil {
 		return nil

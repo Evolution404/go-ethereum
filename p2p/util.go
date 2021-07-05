@@ -32,16 +32,19 @@ type expItem struct {
 }
 
 // nextExpiry returns the next expiry time.
+// 获得过期时间距离现在最近的元素
 func (h *expHeap) nextExpiry() mclock.AbsTime {
 	return (*h)[0].exp
 }
 
 // add adds an item and sets its expiry time.
+// 元素类型是字符串,添加一个字符串到记录中,指定过期时间
 func (h *expHeap) add(item string, exp mclock.AbsTime) {
 	heap.Push(h, expItem{item, exp})
 }
 
 // contains checks whether an item is present.
+// 判断指定的字符串是否被保存了
 func (h expHeap) contains(item string) bool {
 	for _, v := range h {
 		if v.item == item {
@@ -52,6 +55,7 @@ func (h expHeap) contains(item string) bool {
 }
 
 // expire removes items with expiry time before 'now'.
+// 输入一个时间,将过期时间在指定时间之前的元素都删除
 func (h *expHeap) expire(now mclock.AbsTime, onExp func(string)) {
 	for h.Len() > 0 && h.nextExpiry() < now {
 		item := heap.Pop(h)

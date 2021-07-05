@@ -108,6 +108,7 @@ type PeerEvent struct {
 // Peer represents a connected remote node.
 type Peer struct {
 	rw      *conn
+	// 协议名称->protoRW对象的映射
 	running map[string]*protoRW
 	log     log.Logger
 	created mclock.AbsTime
@@ -165,6 +166,7 @@ func (p *Peer) Caps() []Cap {
 // RunningCap returns true if the peer is actively connected using any of the
 // enumerated versions of a specific protocol, meaning that at least one of the
 // versions is supported by both this node and the peer p.
+// 输入协议名称和多个协议版本
 func (p *Peer) RunningCap(protocol string, versions []uint) bool {
 	if proto, ok := p.running[protocol]; ok {
 		for _, ver := range versions {
@@ -422,12 +424,17 @@ func (p *Peer) getProto(code uint64) (*protoRW, error) {
 	return nil, newPeerError(errInvalidMsgCode, "%d", code)
 }
 
+// 外部的创建的Protocol对象会进一步封装为protoRW对象,额外实现了MsgReadWriter接口
 type protoRW struct {
 	Protocol
 	in     chan Msg        // receives read messages
 	closed <-chan struct{} // receives when peer is shutting down
 	wstart <-chan struct{} // receives when write may start
 	werr   chan<- error    // for write results
+	// 由于Protocol对象的消息码都是从0开始,为了避免在发送消息时重复
+	// 在内部将不同的子协议进行排序,计算他们各自消息码的相对于0的偏移量
+	// 每个子协议真实发送的消息码是 [proto.offset,proto.offset+proto.Length)
+	// 在接收方减去offset后,再暴露给使用者
 	offset uint64
 	w      MsgWriter
 }
