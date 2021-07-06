@@ -137,6 +137,7 @@ func (s *SimAdapter) Dial(ctx context.Context, dest *enode.Node) (conn net.Conn,
 		return nil, fmt.Errorf("node not running: %s", dest.ID())
 	}
 	// SimAdapter.pipe is net.Pipe (NewSimAdapter)
+	// 在这里创建一对连接,其中一个返回给拨号方,另一个通过SetupConn通知到被拨号的节点
 	pipe1, pipe2, err := s.pipe()
 	if err != nil {
 		return nil, err

@@ -36,10 +36,15 @@ const (
 )
 
 var (
+	// 外部向本地发起的连接个数
 	ingressConnectMeter = metrics.NewRegisteredMeter("p2p/serves", nil)
+	// 从网络中接收到的字节数,在Read中读取到的字节数
 	ingressTrafficMeter = metrics.NewRegisteredMeter(ingressMeterName, nil)
+	// 本地主动发起的连接个数
 	egressConnectMeter  = metrics.NewRegisteredMeter("p2p/dials", nil)
+	// 往网络中发送的字节数,在Write中发送的字节数
 	egressTrafficMeter  = metrics.NewRegisteredMeter(egressMeterName, nil)
+	// 记录当前建立连接的节点个数
 	activePeerGauge     = metrics.NewRegisteredGauge("p2p/peers", nil)
 )
 
@@ -52,6 +57,8 @@ type meteredConn struct {
 // newMeteredConn creates a new metered connection, bumps the ingress or egress
 // connection meter and also increases the metered peer count. If the metrics
 // system is disabled, function returns the original connection.
+// ingress为true代表从外部接收到的连接
+// ingress为false代表从本地向外部发送的连接
 func newMeteredConn(conn net.Conn, ingress bool, addr *net.TCPAddr) net.Conn {
 	// Short circuit if metrics are disabled
 	if !metrics.Enabled {
@@ -69,6 +76,7 @@ func newMeteredConn(conn net.Conn, ingress bool, addr *net.TCPAddr) net.Conn {
 
 // Read delegates a network read to the underlying connection, bumping the common
 // and the peer ingress traffic meters along the way.
+// 读取数据的时候记录读取了多少字节
 func (c *meteredConn) Read(b []byte) (n int, err error) {
 	n, err = c.Conn.Read(b)
 	ingressTrafficMeter.Mark(int64(n))
@@ -77,6 +85,7 @@ func (c *meteredConn) Read(b []byte) (n int, err error) {
 
 // Write delegates a network write to the underlying connection, bumping the common
 // and the peer egress traffic meters along the way.
+// 发送数据的时候记录发送了多少字节
 func (c *meteredConn) Write(b []byte) (n int, err error) {
 	n, err = c.Conn.Write(b)
 	egressTrafficMeter.Mark(int64(n))
@@ -85,6 +94,7 @@ func (c *meteredConn) Write(b []byte) (n int, err error) {
 
 // Close delegates a close operation to the underlying connection, unregisters
 // the peer from the traffic registries and emits close event.
+// 关闭连接后让记录连接个数的计数器减一
 func (c *meteredConn) Close() error {
 	err := c.Conn.Close()
 	if err == nil {

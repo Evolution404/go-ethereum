@@ -40,7 +40,9 @@ const (
 	dialHistoryExpiration = inboundThrottleTime + 5*time.Second
 
 	// Config for the "Looking for peers" message.
+	// 打印拨号日志最快的频率是10秒一次
 	dialStatsLogInterval = 10 * time.Second // printed at most this often
+	// 有大于等于三个节点连接成功,就不再打印拨号日志
 	dialStatsPeerLimit   = 3                // but not if more than this many dialed peers
 
 	// Endpoint resolution is throttled with bounded backoff.
@@ -51,6 +53,10 @@ const (
 // NodeDialer is used to connect to nodes in the network, typically by using
 // an underlying net.Dialer but also using net.Pipe in tests.
 // 用来创建与另一个节点的连接
+// 这个接口被tcpDialer和SimAdapter实现
+// 这个Dial方法传入的参数是Context和enode.Node
+// 是对下面这个函数的封装,network一般直接指定为tcp,address由enode.Node解析出来
+// func (d *Dialer) DialContext(ctx context.Context, network, address string) (Conn, error) {
 type NodeDialer interface {
 	Dial(context.Context, *enode.Node) (net.Conn, error)
 }
@@ -60,6 +66,7 @@ type nodeResolver interface {
 }
 
 // tcpDialer implements NodeDialer using real TCP connections.
+// 实现了NodeDialer接口
 type tcpDialer struct {
 	d *net.Dialer
 }
@@ -68,6 +75,7 @@ func (t tcpDialer) Dial(ctx context.Context, dest *enode.Node) (net.Conn, error)
 	return t.d.DialContext(ctx, "tcp", nodeAddr(dest).String())
 }
 
+// 将enode.Node对象转化为net.Addr
 func nodeAddr(n *enode.Node) net.Addr {
 	return &net.TCPAddr{IP: n.IP(), Port: n.TCP()}
 }
@@ -92,6 +100,9 @@ var (
 //    continuously reads candidate nodes from its input iterator and attempts
 //    to create peer connections to nodes arriving through the iterator.
 //
+// 有两种情况建立新的连接
+// 对于预定义的static nodes,将会不断尝试进行连接
+// 从节点发现过程中得到的新节点,将会从迭代器中读取,然后建立连接
 type dialScheduler struct {
 	dialConfig
 	setupFunc   dialSetupFunc
@@ -100,6 +111,7 @@ type dialScheduler struct {
 	cancel      context.CancelFunc
 	ctx         context.Context
 	nodesIn     chan *enode.Node
+	// dialTask运行完run函数后就发送到doneCh中
 	doneCh      chan *dialTask
 	// 添加一个静态节点 addStatic中使用
 	addStaticCh chan *enode.Node
@@ -129,7 +141,9 @@ type dialScheduler struct {
 	historyTimerTime mclock.AbsTime
 
 	// for logStats
+	// 记录上次在logStats函数中打印了日志的时间
 	lastStatsLog     mclock.AbsTime
+	// 记录上次打印之后doneCh中接受了多少次结果
 	doneSinceLastLog int
 }
 
@@ -147,6 +161,7 @@ type dialConfig struct {
 	rand           *mrand.Rand
 }
 
+// 为输入的配置增加默认选项
 func (cfg dialConfig) withDefaults() dialConfig {
 	if cfg.maxActiveDials == 0 {
 		cfg.maxActiveDials = defaultMaxPendingPeers
@@ -181,6 +196,7 @@ func newDialScheduler(config dialConfig, it enode.Iterator, setupFunc dialSetupF
 		remPeerCh:   make(chan *conn),
 	}
 	d.lastStatsLog = d.clock.Now()
+	// 初始化d.ctx和d.cancel
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	// 阻塞住readNodes和loop函数
 	d.wg.Add(2)
@@ -246,6 +262,7 @@ loop:
 			nodesCh = nil
 		}
 		d.rearmHistoryTimer(historyExp)
+		// 打印日志
 		d.logStats()
 
 		select {
@@ -338,8 +355,10 @@ func (d *dialScheduler) readNodes(it enode.Iterator) {
 // logStats prints dialer statistics to the log. The message is suppressed when enough
 // peers are connected because users should only see it while their client is starting up
 // or comes back online.
+// 打印当前dialer的一些统计信息,找不到节点一直循环打印的Looking fro peers就是在这里
 func (d *dialScheduler) logStats() {
 	now := d.clock.Now()
+	// 判断是否过于频繁
 	if d.lastStatsLog.Add(dialStatsLogInterval) > now {
 		return
 	}
@@ -465,12 +484,14 @@ func (d *dialScheduler) startDial(task *dialTask) {
 	d.dialing[task.dest.ID()] = task
 	go func() {
 		task.run(d)
+		// 执行完的dialTask对象发送到doneCh中
 		d.doneCh <- task
 	}()
 }
 
 // A dialTask generated for each node that is dialed.
 type dialTask struct {
+	// 初始化的时候使用-1,还不知道在staticPool中的位置
 	staticPoolIndex int
 	flags           connFlag
 	// These fields are private to the task and should not be
@@ -542,6 +563,7 @@ func (t *dialTask) resolve(d *dialScheduler) bool {
 }
 
 // dial performs the actual connection attempt.
+// 真正的执行拨号的过程,创建与远程节点的连接
 func (t *dialTask) dial(d *dialScheduler, dest *enode.Node) error {
 	fd, err := d.dialer.Dial(d.ctx, t.dest)
 	if err != nil {
@@ -549,6 +571,7 @@ func (t *dialTask) dial(d *dialScheduler, dest *enode.Node) error {
 		return &dialError{err}
 	}
 	mfd := newMeteredConn(fd, false, &net.TCPAddr{IP: dest.IP(), Port: dest.TCP()})
+	// 拨号完成后执行setupFunc
 	return d.setupFunc(mfd, t.flags, dest)
 }
 
