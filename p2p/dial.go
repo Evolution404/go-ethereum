@@ -182,6 +182,7 @@ func newDialScheduler(config dialConfig, it enode.Iterator, setupFunc dialSetupF
 	}
 	d.lastStatsLog = d.clock.Now()
 	d.ctx, d.cancel = context.WithCancel(context.Background())
+	// 阻塞住readNodes和loop函数
 	d.wg.Add(2)
 	go d.readNodes(it)
 	go d.loop(it)
@@ -195,6 +196,7 @@ func (d *dialScheduler) stop() {
 }
 
 // addStatic adds a static dial candidate.
+// 添加静态节点,实际上就是向addStaticCh发送通知
 func (d *dialScheduler) addStatic(n *enode.Node) {
 	select {
 	case d.addStaticCh <- n:

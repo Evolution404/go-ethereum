@@ -31,7 +31,7 @@ func nanotime() int64
 type AbsTime int64
 
 // Now returns the current absolute monotonic time.
-// 获取当前系统启动的时间
+// 获取当前系统启动到现在的绝对时间
 func Now() AbsTime {
 	return AbsTime(nanotime())
 }

@@ -42,11 +42,13 @@ import (
 )
 
 const (
+	// 默认拨号的超时时间是15秒
 	defaultDialTimeout = 15 * time.Second
 
 	// This is the fairness knob for the discovery mixer. When looking for peers, we'll
 	// wait this long for a single source of candidates before moving on and trying other
 	// sources.
+	// 节点发现过程中的超时时间
 	discmixTimeout = 5 * time.Second
 
 	// Connectivity defaults.
@@ -491,6 +493,7 @@ func (srv *Server) Start() (err error) {
 	if srv.log == nil {
 		srv.log = log.Root()
 	}
+	// 默认使用系统时钟
 	if srv.clock == nil {
 		srv.clock = mclock.System{}
 	}
@@ -598,6 +601,7 @@ func (srv *Server) setupLocalNode() error {
 	return nil
 }
 
+// 启动节点发现
 func (srv *Server) setupDiscovery() error {
 	srv.discmix = enode.NewFairMix(discmixTimeout)
 
@@ -696,7 +700,9 @@ func (srv *Server) setupDialScheduler() {
 	if config.dialer == nil {
 		config.dialer = tcpDialer{&net.Dialer{Timeout: defaultDialTimeout}}
 	}
+	// 创建并启动了dialScheduler,在后台协程中不断循环拨号
 	srv.dialsched = newDialScheduler(config, srv.discmix, srv.SetupConn)
+	// 添加静态节点作为启动时使用
 	for _, n := range srv.StaticNodes {
 		srv.dialsched.addStatic(n)
 	}

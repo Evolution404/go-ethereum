@@ -40,11 +40,14 @@ var (
 
 const (
 	baseProtocolVersion    = 5
+	// 在真实传输过程中,16之前的消息码被预先分配给预定义的类型
+	// 例如handshakeMsg,discMsg,pingMsg,pongMsg
 	baseProtocolLength     = uint64(16)
 	baseProtocolMaxMsgSize = 2 * 1024
 
 	snappyProtocolVersion = 5
 
+	// 每15秒本地ping一下对面的节点
 	pingInterval = 15 * time.Second
 )
 
@@ -52,6 +55,7 @@ const (
 	// devp2p message codes
 	// 执行协议握手的时候发送的消息
 	handshakeMsg = 0x00
+	// 这个消息代表断开连接
 	discMsg      = 0x01
 	pingMsg      = 0x02
 	pongMsg      = 0x03
@@ -110,7 +114,7 @@ type PeerEvent struct {
 type Peer struct {
 	rw      *conn
 	// 协议名称->protoRW对象的映射
-	// 保存了本地与这个Peer之间现在正在运行的子协议
+	// 保存了本地与这个Peer之间同时支持的子协议
 	running map[string]*protoRW
 	log     log.Logger
 	created mclock.AbsTime
@@ -170,7 +174,7 @@ func (p *Peer) Caps() []Cap {
 // RunningCap returns true if the peer is actively connected using any of the
 // enumerated versions of a specific protocol, meaning that at least one of the
 // versions is supported by both this node and the peer p.
-// 输入协议名称和多个协议版本
+// 判断这个对等节点是否支持运行输入的协议
 func (p *Peer) RunningCap(protocol string, versions []uint) bool {
 	if proto, ok := p.running[protocol]; ok {
 		for _, ver := range versions {
@@ -221,6 +225,7 @@ func newPeer(log log.Logger, conn *conn, protocols []Protocol) *Peer {
 		running:  protomap,
 		created:  mclock.Now(),
 		disc:     make(chan DiscReason),
+		// 所有正在运行的子协议还有pingLoop会向这个管道输入错误
 		protoErr: make(chan error, len(protomap)+1), // protocols + pingLoop
 		closed:   make(chan struct{}),
 		log:      log.New("id", conn.node.ID(), "conn", conn.flags),
@@ -236,12 +241,14 @@ func (p *Peer) run() (remoteRequested bool, err error) {
 	var (
 		writeStart = make(chan struct{}, 1)
 		writeErr   = make(chan error, 1)
+		// readLoop中发生的错误发送到这里
 		readErr    = make(chan error, 1)
 		reason     DiscReason // sent to the peer
 	)
 	// run中执行了readLoop和pingLoop两个循环
 	p.wg.Add(2)
 	go p.readLoop(readErr)
+	// pingLoop中发生的错误发送到protoErr中
 	go p.pingLoop()
 
 	// Start all protocol handlers.
@@ -249,6 +256,7 @@ func (p *Peer) run() (remoteRequested bool, err error) {
 	p.startProtocols(writeStart, writeErr)
 
 	// Wait for an error or disconnect.
+	// 在这里阻塞住,等待以下的任何一个管道发生了错误,将错误保存到err中
 loop:
 	for {
 		select {
@@ -321,11 +329,16 @@ func (p *Peer) readLoop(errc chan<- error) {
 	}
 }
 
+// 处理接收到的消息
 func (p *Peer) handle(msg Msg) error {
+	// 首先判断消息码是不是在baseProtocolLength之前,如果是说明是预定义消息
+	// 不然的话是用户实现的子协议,使用子协议进行处理
 	switch {
+	// 收到ping,回复pong
 	case msg.Code == pingMsg:
 		msg.Discard()
 		go SendItems(p.rw, pongMsg)
+	// 收到断开连接的消息,返回错误保存了断开连接的原因
 	case msg.Code == discMsg:
 		var reason [1]DiscReason
 		// This is the last message. We don't need to discard or
@@ -337,15 +350,19 @@ func (p *Peer) handle(msg Msg) error {
 		return msg.Discard()
 	default:
 		// it's a subprotocol message
+		// 寻找处理这条消息的子协议
 		proto, err := p.getProto(msg.Code)
 		if err != nil {
 			return fmt.Errorf("msg code out of range: %v", msg.Code)
 		}
 		if metrics.Enabled {
 			m := fmt.Sprintf("%s/%s/%d/%#02x", ingressMeterName, proto.Name, proto.Version, msg.Code-proto.offset)
+			// 统计总共通过网络传输的多少字节的流量
 			metrics.GetOrRegisterMeter(m, nil).Mark(int64(msg.meterSize))
+			// 统计接收了远程多少包
 			metrics.GetOrRegisterMeter(m+"/packets", nil).Mark(1)
 		}
+		// 将数据发送给对应的协议处理
 		select {
 		case proto.in <- msg:
 			return nil
@@ -399,6 +416,7 @@ outer:
 	return result
 }
 
+// 启动运行所有子协议
 func (p *Peer) startProtocols(writeStart <-chan struct{}, writeErr chan<- error) {
 	p.wg.Add(len(p.running))
 	for _, proto := range p.running {
@@ -412,6 +430,7 @@ func (p *Peer) startProtocols(writeStart <-chan struct{}, writeErr chan<- error)
 			rw = newMsgEventer(rw, p.events, p.ID(), proto.Name, p.Info().Network.RemoteAddress, p.Info().Network.LocalAddress)
 		}
 		p.log.Trace(fmt.Sprintf("Starting protocol %s/%d", proto.Name, proto.Version))
+		// 在协程里运行每个子协议
 		go func() {
 			defer p.wg.Done()
 			err := proto.Run(p, rw)
@@ -428,18 +447,22 @@ func (p *Peer) startProtocols(writeStart <-chan struct{}, writeErr chan<- error)
 
 // getProto finds the protocol responsible for handling
 // the given message code.
+// 输入消息码,判断使用哪个子协议进行处理
 func (p *Peer) getProto(code uint64) (*protoRW, error) {
+	// 遍历所有支持的协议,在[offset,offset+Length)之间的就是支持的协议
 	for _, proto := range p.running {
 		if code >= proto.offset && code < proto.offset+proto.Length {
 			return proto, nil
 		}
 	}
+	// 找不到返回错误
 	return nil, newPeerError(errInvalidMsgCode, "%d", code)
 }
 
 // 外部的创建的Protocol对象会进一步封装为protoRW对象,额外实现了MsgReadWriter接口
 type protoRW struct {
 	Protocol
+	// 在handle函数中收到的消息将会发送到这个管道
 	in     chan Msg        // receives read messages
 	closed <-chan struct{} // receives when peer is shutting down
 	wstart <-chan struct{} // receives when write may start
