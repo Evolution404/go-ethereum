@@ -454,6 +454,8 @@ func (d *dialScheduler) checkDial(n *enode.Node) error {
 }
 
 // startStaticDials starts n static dial tasks.
+// 从staticPool中随机出来n个dialTask,对他们调用startDial
+// 这些dialTask会从staticPool中移除
 func (d *dialScheduler) startStaticDials(n int) (started int) {
 	for started = 0; started < n && len(d.staticPool) > 0; started++ {
 		idx := d.rand.Intn(len(d.staticPool))
