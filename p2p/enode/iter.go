@@ -52,11 +52,13 @@ func ReadNodes(it Iterator, n int) []*Node {
 }
 
 // IterNodes makes an iterator which runs through the given nodes once.
+// 生成一个在输入的这些节点中遍历的迭代器,迭代到结尾就结束
 func IterNodes(nodes []*Node) Iterator {
 	return &sliceIter{nodes: nodes, index: -1}
 }
 
 // CycleNodes makes an iterator which cycles through the given nodes indefinitely.
+// 生成一个在输入的这些节点中遍历的迭代器,迭代到结尾就重新从头开始,可以无限迭代
 func CycleNodes(nodes []*Node) Iterator {
 	return &sliceIter{nodes: nodes, index: -1, cycle: true}
 }

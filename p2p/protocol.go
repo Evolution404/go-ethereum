@@ -61,6 +61,7 @@ type Protocol struct {
 	// DialCandidates, if non-nil, is a way to tell Server about protocol-specific nodes
 	// that should be dialed. The server continuously reads nodes from the iterator and
 	// attempts to create connections to them.
+	// 用于为不同的协议指定不同的节点
 	DialCandidates enode.Iterator
 
 	// Attributes contains protocol specific information for the node record.

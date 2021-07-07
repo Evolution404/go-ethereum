@@ -200,6 +200,9 @@ type Server struct {
 	localnode *enode.LocalNode
 	ntab      *discover.UDPv4
 	DiscV5    *discover.UDPv5
+	// 聚合所有的节点来源,用来迭代节点
+	// 比如各个子协议中自己定义的Protocol.DialCandidates
+	// 以及本地执行节点发现获得的节点
 	discmix   *enode.FairMix
 	// 用来执行addStatic,removeStatic,peerAdded,peerRemoved
 	dialsched *dialScheduler
@@ -234,7 +237,11 @@ type peerDrop struct {
 type connFlag int32
 
 const (
+	// 以下是各种连接的类型
+
+	// 代表与动态节点建立的连接,动态节点指通过节点发现获得的节点
 	dynDialedConn connFlag = 1 << iota
+	// 代表与静态节点建立的连接,静态节点指在Server.Config中明确指定的节点
 	staticDialedConn
 	// 这个连接是别的节点连接本地节点
 	inboundConn
@@ -295,6 +302,8 @@ func (c *conn) String() string {
 	return s
 }
 
+// 将连接标识转换成字符串
+// trusted-dyndial-staticdial-inbound 这种格式,包含哪些位显示哪几个
 func (f connFlag) String() string {
 	s := ""
 	if f&trustedConn != 0 {
@@ -366,6 +375,7 @@ func (srv *Server) PeerCount() int {
 // AddPeer adds the given node to the static node set. When there is room in the peer set,
 // the server will connect to the node. If the connection fails for any reason, the server
 // will attempt to reconnect the peer.
+// 添加静态节点
 func (srv *Server) AddPeer(node *enode.Node) {
 	srv.dialsched.addStatic(node)
 }
@@ -606,6 +616,7 @@ func (srv *Server) setupDiscovery() error {
 	srv.discmix = enode.NewFairMix(discmixTimeout)
 
 	// Add protocol-specific discovery sources.
+	// 扫描各个协议自已定义的节点来源,添加到全局的节点来源中
 	added := make(map[string]bool)
 	for _, proto := range srv.Protocols {
 		if proto.DialCandidates != nil && !added[proto.Name] {
@@ -615,10 +626,12 @@ func (srv *Server) setupDiscovery() error {
 	}
 
 	// Don't listen on UDP endpoint if DHT is disabled.
+	// 如果没有启用节点发现,到这里就结束,只使用上面各个协议定义的节点来源
 	if srv.NoDiscovery && !srv.DiscoveryV5 {
 		return nil
 	}
 
+	// 接下来创建udp的连接对象,用于运行节点发现协议
 	addr, err := net.ResolveUDPAddr("udp", srv.ListenAddr)
 	if err != nil {
 		return err
@@ -655,11 +668,13 @@ func (srv *Server) setupDiscovery() error {
 			Unhandled:   unhandled,
 			Log:         srv.log,
 		}
+		// 启动本地的节点发现协议
 		ntab, err := discover.ListenV4(conn, srv.localnode, cfg)
 		if err != nil {
 			return err
 		}
 		srv.ntab = ntab
+		// 本地节点发现也生成一个随机迭代器,加入到节点来源中
 		srv.discmix.AddSource(ntab.RandomNodes())
 	}
 

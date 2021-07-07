@@ -105,6 +105,7 @@ var (
 // 从节点发现过程中得到的新节点,将会从迭代器中读取,然后建立连接
 type dialScheduler struct {
 	dialConfig
+	// 在dial函数结束位置调用,生成的连接对象需要经过setupFunc处理
 	setupFunc   dialSetupFunc
 	// stop函数中用来等待readNodes和loop函数结束
 	wg          sync.WaitGroup
@@ -126,13 +127,17 @@ type dialScheduler struct {
 	// should only be accessed by code on the loop goroutine.
 	dialing   map[enode.ID]*dialTask // active tasks
 	peers     map[enode.ID]connFlag  // all connected peers
+	// 记录当前连接成功的节点个数
 	dialPeers int                    // current number of dialed peers
 
 	// The static map tracks all static dial tasks. The subset of usable static dial tasks
 	// (i.e. those passing checkDial) is kept in staticPool. The scheduler prefers
 	// launching random static tasks from the pool over launching dynamic dials from the
 	// iterator.
+	// 保存了所有的静态节点,静态节点通过Server.AddPeer添加
 	static     map[enode.ID]*dialTask
+	// 保存了所有没有被连接的静态节点
+	// 通过AddPeer添加的节点默认加入到staticPool中,如果该节点成功升级为Peer或者调用了RemovePeer就从staticPool中移除
 	staticPool []*dialTask
 
 	// The dial history keeps recently dialed nodes. Members of history are not dialed.
@@ -173,6 +178,8 @@ func (cfg dialConfig) withDefaults() dialConfig {
 		cfg.clock = mclock.System{}
 	}
 	if cfg.rand == nil {
+		// 先使用crand生成随机种子,在用这个随机种子生成随机数
+		// 因为crand效率低,但是不需要种子就能生成不重复随机数,所以用它生成随机种子
 		seedb := make([]byte, 8)
 		crand.Read(seedb)
 		seed := int64(binary.BigEndian.Uint64(seedb))
@@ -200,6 +207,7 @@ func newDialScheduler(config dialConfig, it enode.Iterator, setupFunc dialSetupF
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	// 阻塞住readNodes和loop函数
 	d.wg.Add(2)
+	// 从迭代器中不断读取节点,发送到ndoesIn管道
 	go d.readNodes(it)
 	go d.loop(it)
 	return d
@@ -229,6 +237,7 @@ func (d *dialScheduler) removeStatic(n *enode.Node) {
 }
 
 // peerAdded updates the peer set.
+// 当一个节点完成了加密握手和协议握手,那就在这里通知dialScheduler
 func (d *dialScheduler) peerAdded(c *conn) {
 	select {
 	case d.addPeerCh <- c:
@@ -285,6 +294,7 @@ loop:
 			}
 			id := c.node.ID()
 			d.peers[id] = c.flags
+			// 这个节点如果在staticPool中,连接成功之后从里面移除
 			// Remove from static pool because the node is now connected.
 			task := d.static[id]
 			if task != nil && task.staticPoolIndex >= 0 {
@@ -299,6 +309,8 @@ loop:
 			delete(d.peers, c.node.ID())
 			d.updateStaticPool(c.node.ID())
 
+		// 通过Server.AddPeer添加的节点被发送到这里
+		// 首先加入到d.static中,然后如果还没有和这个节点建立连接就加入到staticPool中
 		case node := <-d.addStaticCh:
 			id := node.ID()
 			_, exists := d.static[id]
@@ -308,6 +320,7 @@ loop:
 			}
 			task := newDialTask(node, staticDialedConn)
 			d.static[id] = task
+			// 可以被拨号的加入到staticPool中
 			if d.checkDial(node) == nil {
 				d.addToStaticPool(task)
 			}
@@ -341,6 +354,7 @@ loop:
 
 // readNodes runs in its own goroutine and delivers nodes from
 // the input iterator to the nodesIn channel.
+// readNodes在newDialScheduler中调用,执行在一个单独的协程中,不断循环从迭代器中读取节点
 func (d *dialScheduler) readNodes(it enode.Iterator) {
 	defer d.wg.Done()
 
@@ -355,7 +369,7 @@ func (d *dialScheduler) readNodes(it enode.Iterator) {
 // logStats prints dialer statistics to the log. The message is suppressed when enough
 // peers are connected because users should only see it while their client is starting up
 // or comes back online.
-// 打印当前dialer的一些统计信息,找不到节点一直循环打印的Looking fro peers就是在这里
+// 打印当前dialer的一些统计信息,找不到节点一直循环打印的Looking for peers就是在这里
 func (d *dialScheduler) logStats() {
 	now := d.clock.Now()
 	// 判断是否过于频繁
@@ -412,6 +426,8 @@ func (d *dialScheduler) freeDialSlots() int {
 }
 
 // checkDial returns an error if node n should not be dialed.
+// 检查这个节点能不能被拨号
+// 已经在拨号的,已经连接的,在限制ip段的,刚刚拨号过的这里都返回错误
 func (d *dialScheduler) checkDial(n *enode.Node) error {
 	if n.ID() == d.self {
 		return errSelf
@@ -449,6 +465,8 @@ func (d *dialScheduler) startStaticDials(n int) (started int) {
 }
 
 // updateStaticPool attempts to move the given static dial back into staticPool.
+// 这个节点当前能被拨号的话就添加到staticPool中
+// 没有被checkDial的一些要求限制,而且当前不在staticPool中
 func (d *dialScheduler) updateStaticPool(id enode.ID) {
 	task, ok := d.static[id]
 	if ok && task.staticPoolIndex < 0 && d.checkDial(task.dest) == nil {
@@ -456,16 +474,22 @@ func (d *dialScheduler) updateStaticPool(id enode.ID) {
 	}
 }
 
+// 将指定的dialTask加入到staticPool中
 func (d *dialScheduler) addToStaticPool(task *dialTask) {
+	// 一个dialTask只能往staticPool中添加一次
 	if task.staticPoolIndex >= 0 {
 		panic("attempt to add task to staticPool twice")
 	}
 	d.staticPool = append(d.staticPool, task)
+	// 保存这个任务的下标
 	task.staticPoolIndex = len(d.staticPool) - 1
 }
 
 // removeFromStaticPool removes the task at idx from staticPool. It does that by moving the
 // current last element of the pool to idx and then shortening the pool by one.
+// 从staticPool中删除指定下标的任务
+// 被删除的任务的staticPoolIndex恢复为-1
+// 删除过程就是将末尾元素移动到删除位置,然后修改原来末尾元素的下标即可
 func (d *dialScheduler) removeFromStaticPool(idx int) {
 	task := d.staticPool[idx]
 	end := len(d.staticPool) - 1
@@ -490,6 +514,8 @@ func (d *dialScheduler) startDial(task *dialTask) {
 }
 
 // A dialTask generated for each node that is dialed.
+// 每次要对其他节点拨号前都生成一个dialTask对象
+// 记录要拨号的目标,连接的标识以及在staticPool中的下标
 type dialTask struct {
 	// 初始化的时候使用-1,还不知道在staticPool中的位置
 	staticPoolIndex int
@@ -501,6 +527,7 @@ type dialTask struct {
 	resolveDelay time.Duration
 }
 
+// 创建dialTask对象
 func newDialTask(dest *enode.Node, flags connFlag) *dialTask {
 	return &dialTask{dest: dest, flags: flags, staticPoolIndex: -1}
 }
@@ -566,10 +593,12 @@ func (t *dialTask) resolve(d *dialScheduler) bool {
 // 真正的执行拨号的过程,创建与远程节点的连接
 func (t *dialTask) dial(d *dialScheduler, dest *enode.Node) error {
 	fd, err := d.dialer.Dial(d.ctx, t.dest)
+	// 拨号生成的错误被封装成dialError
 	if err != nil {
 		d.log.Trace("Dial error", "id", t.dest.ID(), "addr", nodeAddr(t.dest), "conn", t.flags, "err", cleanupDialErr(err))
 		return &dialError{err}
 	}
+	// 将拨号成功获得的连接对象封装metrics记录
 	mfd := newMeteredConn(fd, false, &net.TCPAddr{IP: dest.IP(), Port: dest.TCP()})
 	// 拨号完成后执行setupFunc
 	return d.setupFunc(mfd, t.flags, dest)
