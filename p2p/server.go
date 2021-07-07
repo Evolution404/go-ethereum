@@ -811,6 +811,8 @@ running:
 			// The server was stopped. Run the cleanup logic.
 			break running
 
+		// 在trusted变量中记录被信任的节点
+		// 如果这个节点已经连接上了,更新Peer.rw的flag
 		case n := <-srv.addtrusted:
 			// This channel is used by AddTrustedPeer to add a node
 			// to the trusted node set.
@@ -820,6 +822,8 @@ running:
 				p.rw.set(trustedConn, true)
 			}
 
+		// 在trusted变量中设置这个节点为false
+		// 如果这个节点已经连接上了,清除连接的flag中trustedConn标记
 		case n := <-srv.removetrusted:
 			// This channel is used by RemoveTrustedPeer to remove a node
 			// from the trusted node set.
@@ -1052,8 +1056,12 @@ func (srv *Server) checkInboundConn(remoteIP net.IP) error {
 // SetupConn runs the handshakes and attempts to add the connection
 // as a peer. It returns when the connection has been added as a peer
 // or the handshakes have failed.
-// SetupConn在传入的net.Conn连接上执行握手过程
+// SetupConn在传入的net.Conn连接上执行握手过程,生成的所有net.Conn对象都会进入这里处理
 // 如果握手成功将新增一个对等节点,否则返回错误
+// 调用的时机有两个分别是
+//   在listenLoop中本地监听到了来自远程发起的连接
+//   本地对外部节点拨号成功获得了net.Conn对象,在dialTask.dial中调用
+// 这是一个公开方法,外部如果建立了网络连接,也可以通过这个方法在该连接上执行握手过程,如果成功将添加一个Peer
 func (srv *Server) SetupConn(fd net.Conn, flags connFlag, dialDest *enode.Node) error {
 	c := &conn{fd: fd, flags: flags, cont: make(chan error)}
 	if dialDest == nil {

@@ -37,6 +37,7 @@ const (
 	// This is the amount of time spent waiting in between redialing a certain node. The
 	// limit is a bit higher than inboundThrottleTime to prevent failing dials in small
 	// private networks.
+	// 重新连接一个节点的时间间隔必须超过35秒
 	dialHistoryExpiration = inboundThrottleTime + 5*time.Second
 
 	// Config for the "Looking for peers" message.
@@ -46,7 +47,9 @@ const (
 	dialStatsPeerLimit   = 3                // but not if more than this many dialed peers
 
 	// Endpoint resolution is throttled with bounded backoff.
+	// 第一次解析和第二次解析的时间间隔初始为10s
 	initialResolveDelay = 60 * time.Second
+	// 针对一个节点两次调用Resolve之间的时间间隔最大是一小时
 	maxResolveDelay     = time.Hour
 )
 
@@ -111,6 +114,7 @@ type dialScheduler struct {
 	wg          sync.WaitGroup
 	cancel      context.CancelFunc
 	ctx         context.Context
+	// 协程readNodes中将会把节点发送到这里
 	nodesIn     chan *enode.Node
 	// dialTask运行完run函数后就发送到doneCh中
 	doneCh      chan *dialTask
@@ -141,8 +145,11 @@ type dialScheduler struct {
 	staticPool []*dialTask
 
 	// The dial history keeps recently dialed nodes. Members of history are not dialed.
+	// 在startDial中往history新增记录
 	history          expHeap
+	// 下一个过期元素的计时器,下一个元素过期的时间触发
 	historyTimer     mclock.Timer
+	// 记录historyTimer的触发时间,也就是下一个元素的过期时间
 	historyTimerTime mclock.AbsTime
 
 	// for logStats
@@ -157,6 +164,7 @@ type dialSetupFunc func(net.Conn, connFlag, *enode.Node) error
 type dialConfig struct {
 	self           enode.ID         // our own ID
 	maxDialPeers   int              // maximum number of dialed peers
+	// 同时拨号的节点最大个数,默认50个
 	maxActiveDials int              // maximum number of active dials
 	netRestrict    *netutil.Netlist // IP whitelist, disabled if nil
 	resolver       nodeResolver
@@ -257,6 +265,7 @@ func (d *dialScheduler) peerRemoved(c *conn) {
 func (d *dialScheduler) loop(it enode.Iterator) {
 	var (
 		nodesCh    chan *enode.Node
+		// 当history中任意一个节点到期了,这里会收到通知
 		historyExp = make(chan struct{}, 1)
 	)
 
@@ -264,7 +273,9 @@ loop:
 	for {
 		// Launch new dials if slots are available.
 		slots := d.freeDialSlots()
+		// 首先尝试启动静态节点
 		slots -= d.startStaticDials(slots)
+		// 如果静态节点没有消耗完slots,那么再从节点发现的迭代器中获取节点
 		if slots > 0 {
 			nodesCh = d.nodesIn
 		} else {
@@ -282,9 +293,11 @@ loop:
 				d.startDial(newDialTask(node, dynDialedConn))
 			}
 
+		// 拨号完成的节点,从dialing中删除
 		case task := <-d.doneCh:
 			id := task.dest.ID()
 			delete(d.dialing, id)
+			// 针对静态节点,如果没有拨号成功重新加入到staticPool中
 			d.updateStaticPool(id)
 			d.doneSinceLastLog++
 
@@ -385,24 +398,34 @@ func (d *dialScheduler) logStats() {
 
 // rearmHistoryTimer configures d.historyTimer to fire when the
 // next item in d.history expires.
+// 更新historyTimerTime为history中下一个过期元素的过期时间
+// 当下一个元素到期时间达到后,向参数管道ch中发送通知
 func (d *dialScheduler) rearmHistoryTimer(ch chan struct{}) {
 	if len(d.history) == 0 || d.historyTimerTime == d.history.nextExpiry() {
 		return
 	}
+	// 需要处理下一个即将过期的元素了,将之前的计时器停止
 	d.stopHistoryTimer(ch)
 	d.historyTimerTime = d.history.nextExpiry()
 	timeout := time.Duration(d.historyTimerTime - d.clock.Now())
+	// 设置定时器,当到达下一个元素的到期时间后,向管道ch中发送通知
 	d.historyTimer = d.clock.AfterFunc(timeout, func() { ch <- struct{}{} })
 }
 
 // stopHistoryTimer stops the timer and drains the channel it sends on.
+// 停止historyTimer计时器
 func (d *dialScheduler) stopHistoryTimer(ch chan struct{}) {
+	// 这里Stop返回false,说明定时器到期了或者之前被停止过了
+	// 但是其他会停止这个定时器地方只有expireHistory,调用Stop后立刻清空historyTimer为nil,这里要求不是nil
+	// 所以一定不是定时器被停止了,只能是过期了还没有被loop处理
+	// 所以清除掉它的缓存
 	if d.historyTimer != nil && !d.historyTimer.Stop() {
 		<-ch
 	}
 }
 
 // expireHistory removes expired items from d.history.
+// 停止计时器historyTimer,对history执行过期操作,删除过期的元素
 func (d *dialScheduler) expireHistory() {
 	d.historyTimer.Stop()
 	d.historyTimer = nil
@@ -416,11 +439,16 @@ func (d *dialScheduler) expireHistory() {
 
 // freeDialSlots returns the number of free dial slots. The result can be negative
 // when peers are connected while their task is still running.
+// 获取还需要对多少个节点进行拨号
 func (d *dialScheduler) freeDialSlots() int {
+	// maxDialPeers-dialPeers代表当前还缺少多少节点到达同时连接的节点上限
+	// 这里的slots代表接下来会去拨号多少个节点
+	// 需要乘2是因为拨号的节点基本不可能都成功建立连接,所以设置冗余量
 	slots := (d.maxDialPeers - d.dialPeers) * 2
 	if slots > d.maxActiveDials {
 		slots = d.maxActiveDials
 	}
+	// 再减去正在进行的拨号过程,就代表还需要进行多少拨号过程
 	free := slots - len(d.dialing)
 	return free
 }
@@ -503,9 +531,13 @@ func (d *dialScheduler) removeFromStaticPool(idx int) {
 }
 
 // startDial runs the given dial task in a separate goroutine.
+// 启动一个拨号过程
+// 更新history,将这个任务加入dialing
+// 然后在单独的协程内启动tart.run, 当run结束后将task发送到doneCh
 func (d *dialScheduler) startDial(task *dialTask) {
 	d.log.Trace("Starting p2p dial", "id", task.dest.ID(), "ip", task.dest.IP(), "flag", task.flags)
 	hkey := string(task.dest.ID().Bytes())
+	// 将节点加入history中,并设置超时时间
 	d.history.add(hkey, d.clock.Now().Add(dialHistoryExpiration))
 	d.dialing[task.dest.ID()] = task
 	go func() {
@@ -525,7 +557,9 @@ type dialTask struct {
 	// These fields are private to the task and should not be
 	// accessed by dialScheduler while the task is running.
 	dest         *enode.Node
+	// 记录上次解析这个节点的时间
 	lastResolved mclock.AbsTime
+	// 两次解析之间的最小间隔
 	resolveDelay time.Duration
 }
 
@@ -538,7 +572,9 @@ type dialError struct {
 	error
 }
 
+// 建立与对应节点的连接
 func (t *dialTask) run(d *dialScheduler) {
+	// 需要解析对应节点的ip,但是解析失败,这个直接返回
 	if t.needResolve() && !t.resolve(d) {
 		return
 	}
@@ -554,6 +590,8 @@ func (t *dialTask) run(d *dialScheduler) {
 	}
 }
 
+// 针对静态节点的连接,还不知道节点的ip,这时候需要通过节点发现查询一下它的ip
+// 这种情况出现在用户指定了静态节点,但是没有指定它的ip
 func (t *dialTask) needResolve() bool {
 	return t.flags&staticDialedConn != 0 && t.dest.IP() == nil
 }
@@ -564,10 +602,12 @@ func (t *dialTask) needResolve() bool {
 // Resolve operations are throttled with backoff to avoid flooding the
 // discovery network with useless queries for nodes that don't exist.
 // The backoff delay resets when the node is found.
+// 通过节点发现查询节点的记录,解析出来节点的ip
 func (t *dialTask) resolve(d *dialScheduler) bool {
 	if d.resolver == nil {
 		return false
 	}
+	// 第一次调用resolve,设置初始时间间隔
 	if t.resolveDelay == 0 {
 		t.resolveDelay = initialResolveDelay
 	}
@@ -576,6 +616,7 @@ func (t *dialTask) resolve(d *dialScheduler) bool {
 	}
 	resolved := d.resolver.Resolve(t.dest)
 	t.lastResolved = d.clock.Now()
+	// 解析失败,解析时间间隔翻倍,上限是maxResolveDelay
 	if resolved == nil {
 		t.resolveDelay *= 2
 		if t.resolveDelay > maxResolveDelay {
@@ -585,7 +626,9 @@ func (t *dialTask) resolve(d *dialScheduler) bool {
 		return false
 	}
 	// The node was found.
+	// 解析成功了,更新时间间隔为10s
 	t.resolveDelay = initialResolveDelay
+	// 更新dest
 	t.dest = resolved
 	d.log.Debug("Resolved node", "id", t.dest.ID(), "addr", &net.TCPAddr{IP: t.dest.IP(), Port: t.dest.TCP()})
 	return true
