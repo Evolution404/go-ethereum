@@ -59,6 +59,7 @@ func SignV4(r *enr.Record, privkey *ecdsa.PrivateKey) error {
 	if err != nil {
 		return err
 	}
+	// 去掉签名末尾的v,转换成64字节格式
 	sig = sig[:len(sig)-1] // remove v
 	if err = cpy.SetSig(V4ID{}, sig); err == nil {
 		*r = cpy
@@ -66,6 +67,8 @@ func SignV4(r *enr.Record, privkey *ecdsa.PrivateKey) error {
 	return err
 }
 
+// 验证enr.Record对象的签名
+// 用于实现IdentityScheme接口
 func (V4ID) Verify(r *enr.Record, sig []byte) error {
 	// 从Record中加载公钥,并且长度必须是33字节
 	var entry s256raw
@@ -83,8 +86,10 @@ func (V4ID) Verify(r *enr.Record, sig []byte) error {
 	return nil
 }
 
+// 输入enr.Record对象计算出节点的id
 // 节点地址就是公钥的X,Y拼在一起变成64字节的buf
 // 然后对buf求哈希得到32字节的id
+// 该函数用来实现IdentityScheme接口
 func (V4ID) NodeAddr(r *enr.Record) []byte {
 	var pubkey Secp256k1
 	// 解析出来原始的公钥,未经压缩的

@@ -93,6 +93,7 @@ type Record struct {
 	seq       uint64 // sequence number
 	// 这里签名只保存了r和s,总共长度应该是64字节
 	signature []byte // the signature
+	// 保存记录的完整rlp编码
 	raw       []byte // RLP encoded record
 	pairs     []pair // sorted list of all key/value pairs
 }
@@ -197,6 +198,8 @@ func (r *Record) Signature() []byte {
 // EncodeRLP implements rlp.Encoder. Encoding fails if
 // the record is unsigned.
 // 对Record的rlp编码就是写入保存的raw
+// 在SetSig函数中signature和raw字段被同时设置
+// 所以signature不是nil,raw里就保存了rlp编码
 func (r Record) EncodeRLP(w io.Writer) error {
 	if r.signature == nil {
 		return errEncodeUnsigned
@@ -305,6 +308,8 @@ func (r *Record) VerifySignature(s IdentityScheme) error {
 // and signature.
 //
 // SetSig panics when either the scheme or the signature (but not both) are nil.
+// SetSig的IdentityScheme和sig可以同时为nil,但是不能只有一个为nil
+// 输入的同时为nil可以清除签名信息
 func (r *Record) SetSig(s IdentityScheme, sig []byte) error {
 	switch {
 	// Prevent storing invalid data.
@@ -313,6 +318,7 @@ func (r *Record) SetSig(s IdentityScheme, sig []byte) error {
 	case s != nil && sig == nil:
 		panic("enr: invalid call to SetSig with nil signature but non-nil scheme")
 	// Verify if we have a scheme.
+	// 这种情况是两者都不是nil
 	case s != nil:
 		if err := s.Verify(r, sig); err != nil {
 			return err
@@ -323,6 +329,7 @@ func (r *Record) SetSig(s IdentityScheme, sig []byte) error {
 		}
 		r.signature, r.raw = sig, raw
 	// Reset otherwise.
+	// 两者都为nil
 	default:
 		r.signature, r.raw = nil, nil
 	}
@@ -331,6 +338,7 @@ func (r *Record) SetSig(s IdentityScheme, sig []byte) error {
 
 // AppendElements appends the sequence number and entries to the given slice.
 // 将seq和其他所有键值对拼接到输入的list后面
+// 这个函数如果输入nil,其实就是将Record对象转换成了一个数组,接下来一般是进行rlp编码
 func (r *Record) AppendElements(list []interface{}) []interface{} {
 	list = append(list, r.seq)
 	for _, p := range r.pairs {

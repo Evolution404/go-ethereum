@@ -35,7 +35,7 @@ type Entry interface {
 	ENRKey() string
 }
 
-// 通用的Entry类型,用来表示没有特殊定义的
+// 通用的Entry类型,用来表示没有特殊定义的用户自己指定的键值对
 type generic struct {
 	key   string
 	value interface{}
