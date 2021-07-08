@@ -67,7 +67,10 @@ func MustParse(rawurl string) *Node {
 // 输入的格式可能是:
 //   enode://xxx
 //   enr:xxx
+// 创建两种类型的节点真实函数是New和NewV4
+// 分别用来创建enr类型和enode类型
 func Parse(validSchemes enr.IdentityScheme, input string) (*Node, error) {
+	// 区分两种类型的链接
 	if strings.HasPrefix(input, "enode://") {
 		return ParseV4(input)
 	}
@@ -97,6 +100,7 @@ func (n *Node) Seq() uint64 {
 }
 
 // Incomplete returns true for nodes with no IP address.
+// 如果节点没有ip地址这个就返回true
 func (n *Node) Incomplete() bool {
 	return n.IP() == nil
 }
@@ -170,10 +174,13 @@ func (n *Node) ValidateComplete() error {
 }
 
 // String returns the text representation of the record.
+// 将节点对象还原成原来的链接
 func (n *Node) String() string {
+	// 判断两种类型
 	if isNewV4(n) {
 		return n.URLv4() // backwards-compatibility glue for NewV4 nodes
 	}
+	// enr类型
 	enc, _ := rlp.EncodeToBytes(&n.r) // always succeeds because record is valid
 	b64 := base64.RawURLEncoding.EncodeToString(enc)
 	return "enr:" + b64

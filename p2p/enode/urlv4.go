@@ -69,6 +69,12 @@ func MustParseV4(rawurl string) *Node {
 // and UDP discovery port 30301.
 //
 //    enode://<hex node id>@10.3.58.6:30303?discport=30301
+// 解析V4版本的链接,有两种类型,不完整版和完整版
+// 不完整版的格式如下
+//   enode://<hex node id>
+//   <hex node id>
+// 完整版的格式包括了ip以及端口号,例如
+//   enode://<hex node id>@10.3.58.6:30303?discport=30301
 func ParseV4(rawurl string) (*Node, error) {
 	if m := incompleteNodeURL.FindStringSubmatch(rawurl); m != nil {
 		id, err := parsePubkey(m[1])
@@ -82,6 +88,8 @@ func ParseV4(rawurl string) (*Node, error) {
 
 // NewV4 creates a node from discovery v4 node information. The record
 // contained in the node has a zero-length signature.
+// 创建一个v4版本的节点对象
+// 需要提供节点的公钥,ip,tcp和udp端口
 func NewV4(pubkey *ecdsa.PublicKey, ip net.IP, tcp, udp int) *Node {
 	var r enr.Record
 	if len(ip) > 0 {
@@ -94,6 +102,7 @@ func NewV4(pubkey *ecdsa.PublicKey, ip net.IP, tcp, udp int) *Node {
 		r.Set(enr.TCP(tcp))
 	}
 	signV4Compat(&r, pubkey)
+	// 这里本质还是调用了New方法
 	n, err := New(v4CompatID{}, &r)
 	if err != nil {
 		panic(err)
@@ -102,24 +111,34 @@ func NewV4(pubkey *ecdsa.PublicKey, ip net.IP, tcp, udp int) *Node {
 }
 
 // isNewV4 returns true for nodes created by NewV4.
+// 判断是不是NewV4创建的节点
 func isNewV4(n *Node) bool {
 	var k s256raw
 	return n.r.IdentityScheme() == "" && n.r.Load(&k) == nil && len(n.r.Signature()) == 0
 }
 
+// 对enode链接进行解析,格式如下
+// enode://xxx@ip:port?discport=port
+// 假设u为url.URL对象,则它有
+// u.Scheme为"enode"
+// u.User为"xxx"
+// u.Hostname()为ip
 func parseComplete(rawurl string) (*Node, error) {
 	var (
 		id               *ecdsa.PublicKey
 		tcpPort, udpPort uint64
 	)
+	// 使用url.Parse对链接进行解析
 	u, err := url.Parse(rawurl)
 	if err != nil {
 		return nil, err
 	}
+	// 必须以enode开头
 	if u.Scheme != "enode" {
 		return nil, errors.New("invalid URL scheme, want \"enode\"")
 	}
 	// Parse the Node ID from the user portion.
+	// 这个User字段保存了节点的公钥
 	if u.User == nil {
 		return nil, errors.New("does not contain node ID")
 	}
@@ -127,7 +146,10 @@ func parseComplete(rawurl string) (*Node, error) {
 		return nil, fmt.Errorf("invalid public key (%v)", err)
 	}
 	// Parse the IP address.
+	// Hostname可能是保存了ip也可能保存的域名
 	ip := net.ParseIP(u.Hostname())
+	// 解析失败,可能是保存了域名,也可能是格式错误
+	// 不能确定是哪种情况,执行dns解析试试
 	if ip == nil {
 		ips, err := lookupIPFunc(u.Hostname())
 		if err != nil {
@@ -140,32 +162,40 @@ func parseComplete(rawurl string) (*Node, error) {
 		ip = ipv4
 	}
 	// Parse the port numbers.
+	// 解析tcp端口
 	if tcpPort, err = strconv.ParseUint(u.Port(), 10, 16); err != nil {
 		return nil, errors.New("invalid port")
 	}
+	// 默认udp端口与tcp端口一致
 	udpPort = tcpPort
 	qv := u.Query()
+	// 根据链接中discport参数确定udp端口
 	if qv.Get("discport") != "" {
 		udpPort, err = strconv.ParseUint(qv.Get("discport"), 10, 16)
 		if err != nil {
 			return nil, errors.New("invalid discport in query")
 		}
 	}
+	// 创建enode.Node对象
 	return NewV4(id, ip, int(tcpPort), int(udpPort)), nil
 }
 
 // parsePubkey parses a hex-encoded secp256k1 public key.
+// 输入长度是128的hex字符串,转化为ecdsa.PublicKey对象
 func parsePubkey(in string) (*ecdsa.PublicKey, error) {
+	// 转换为64字节的字节数组
 	b, err := hex.DecodeString(in)
 	if err != nil {
 		return nil, err
 	} else if len(b) != 64 {
 		return nil, fmt.Errorf("wrong length, want %d hex chars", 128)
 	}
+	// 加上公钥的一字节固定前缀
 	b = append([]byte{0x4}, b...)
 	return crypto.UnmarshalPubkey(b)
 }
 
+// 构造enode链接
 func (n *Node) URLv4() string {
 	var (
 		scheme enr.ID
@@ -195,6 +225,8 @@ func (n *Node) URLv4() string {
 }
 
 // PubkeyToIDV4 derives the v4 node address from the given public key.
+// 从ecda.PublicKey对象转换成64字节的公钥字节数组,然后取一次哈希
+// 这个格式其实是省略了第一个字节前缀04,然后计算哈希的结果
 func PubkeyToIDV4(key *ecdsa.PublicKey) ID {
 	e := make([]byte, 64)
 	math.ReadBits(key.X, e[:len(e)/2])
