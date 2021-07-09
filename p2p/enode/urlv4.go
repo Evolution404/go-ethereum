@@ -32,6 +32,10 @@ import (
 )
 
 var (
+	// (?i)代表不区分大小写
+	// 正则表达式后面包括了两个分组
+	// (?:enode://)? 用来匹配链接前缀,里面的?:代表这个分组不被捕获,也就是FindStringSubmatch返回的数组中不包括这个分组的匹配
+  // ([0-9a-f]+)   用来匹配节点的公钥
 	incompleteNodeURL = regexp.MustCompile("(?i)^(?:enode://)?([0-9a-f]+)$")
 	lookupIPFunc      = net.LookupIP
 )
@@ -76,6 +80,8 @@ func MustParseV4(rawurl string) *Node {
 // 完整版的格式包括了ip以及端口号,例如
 //   enode://<hex node id>@10.3.58.6:30303?discport=30301
 func ParseV4(rawurl string) (*Node, error) {
+	// 返回结果是一个数组
+	// 数组中的第一个元素是正则表达式的匹配结果,后面的依次是各个分组匹配到的结果
 	if m := incompleteNodeURL.FindStringSubmatch(rawurl); m != nil {
 		id, err := parsePubkey(m[1])
 		if err != nil {

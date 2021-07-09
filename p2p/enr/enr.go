@@ -61,6 +61,7 @@ var (
 // deriving node addresses.
 // IdentityScheme对象可以验证记录签名的有效性
 // 还能够通过记录计算出地址
+// 实现这个接口的有V4ID,v4CompatID,NullID
 type IdentityScheme interface {
 	Verify(r *Record, sig []byte) error
 	NodeAddr(r *Record) []byte
@@ -89,13 +90,15 @@ func (m SchemeMap) NodeAddr(r *Record) []byte {
 }
 
 // Record represents a node record. The zero value is an empty record.
+// Record对象了包括三个部分,seq代表记录的序号,pairs记录里的各个键值对,signature记录的签名
+// 其中signature最后生成,在设置好序号和所有键值对后再进行签名
 type Record struct {
-	seq       uint64 // sequence number
+	seq uint64 // sequence number
 	// 这里签名只保存了r和s,总共长度应该是64字节
 	signature []byte // the signature
 	// 保存记录的完整rlp编码
-	raw       []byte // RLP encoded record
-	pairs     []pair // sorted list of all key/value pairs
+	raw   []byte // RLP encoded record
+	pairs []pair // sorted list of all key/value pairs
 }
 
 // pair is a key/value pair in a record.
@@ -148,6 +151,7 @@ func (r *Record) Set(e Entry) {
 	if err != nil {
 		panic(fmt.Errorf("enr: can't encode %s: %v", e.ENRKey(), err))
 	}
+	// 每次增加新的键值对,原来的签名和缓存的rlp编码都失效没有意义了
 	r.invalidate()
 
 	pairs := make([]pair, len(r.pairs))
@@ -201,6 +205,7 @@ func (r *Record) Signature() []byte {
 // 在SetSig函数中signature和raw字段被同时设置
 // 所以signature不是nil,raw里就保存了rlp编码
 func (r Record) EncodeRLP(w io.Writer) error {
+	// 还没有生成签名的记录不能生成rlp编码
 	if r.signature == nil {
 		return errEncodeUnsigned
 	}
@@ -309,7 +314,7 @@ func (r *Record) VerifySignature(s IdentityScheme) error {
 //
 // SetSig panics when either the scheme or the signature (but not both) are nil.
 // SetSig的IdentityScheme和sig可以同时为nil,但是不能只有一个为nil
-// 输入的同时为nil可以清除签名信息
+// 输入同时为nil可以清除签名信息
 func (r *Record) SetSig(s IdentityScheme, sig []byte) error {
 	switch {
 	// Prevent storing invalid data.

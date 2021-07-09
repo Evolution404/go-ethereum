@@ -41,11 +41,15 @@ const (
 // LocalNode produces the signed node record of a local node, i.e. a node run in the
 // current process. Setting ENR entries via the Set method updates the record. A new version
 // of the record is signed on demand when the Node method is called.
+// LocalNode对象用于生成本地节点经过签名的Record对象
 type LocalNode struct {
 	// 保存当前的Node对象
 	cur atomic.Value // holds a non-nil node pointer while the record is up-to-date.
 	id  ID
 	key *ecdsa.PrivateKey
+	// 用于记录本地节点的Seq,每次更新了记录就会自增Seq
+	// db中记录了id->Seq的键值对
+	// 使用相同的私钥就有相同的公钥就能计算相同的id,通过这种方式恢复Seq
 	db  *DB
 
 	// everything below is protected by a lock

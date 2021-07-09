@@ -24,6 +24,8 @@ import (
 // Iterator represents a sequence of nodes. The Next method moves to the next node in the
 // sequence. It returns false when the sequence has ended or the iterator is closed. Close
 // may be called concurrently with Next and Node, and interrupts Next if it is blocked.
+// 节点的迭代器对象,包含Next,Node,Close方法
+// 这个文件实现了sliceIter,filterIter,FairMix
 type Iterator interface {
 	Next() bool  // moves to next node
 	Node() *Node // returns current node
@@ -33,11 +35,16 @@ type Iterator interface {
 // ReadNodes reads at most n nodes from the given iterator. The return value contains no
 // duplicates and no nil values. To prevent looping indefinitely for small repeating node
 // sequences, this function calls Next at most n times.
+// 从迭代器中读取最多n个节点返回,返回的节点不存在重复节点也没有nil
+// 这个函数最多调用迭代器的Next函数n次
 func ReadNodes(it Iterator, n int) []*Node {
+	// 节点id=>节点对象的映射,使用节点id来去重
+	// seen记录所有遍历到的节点
 	seen := make(map[ID]*Node, n)
 	for i := 0; i < n && it.Next(); i++ {
 		// Remove duplicates, keeping the node with higher seq.
 		node := it.Node()
+		// 如果有重复的节点,以Seq高者为准
 		prevNode, ok := seen[node.ID()]
 		if ok && prevNode.Seq() > node.Seq() {
 			continue
@@ -111,7 +118,7 @@ func (it *sliceIter) Close() {
 
 // Filter wraps an iterator such that Next only returns nodes for which
 // the 'check' function returns true.
-// 只迭代满足check函数的节点
+// 对已有的迭代器进行封装,只迭代满足check函数的节点
 func Filter(it Iterator, check func(*Node) bool) Iterator {
 	return &filterIter{it, check}
 }
@@ -183,6 +190,7 @@ func NewFairMix(timeout time.Duration) *FairMix {
 }
 
 // AddSource adds a source of nodes.
+// AddSource就是在FairMix.sources数组中添加一项,并且启动这个来源的协程
 func (m *FairMix) AddSource(it Iterator) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -209,7 +217,9 @@ func (m *FairMix) Close() {
 	for _, s := range m.sources {
 		s.it.Close()
 	}
+	// 关闭closed管道通知runSource协程结束
 	close(m.closed)
+	// 等待所有runSource协程结束
 	m.wg.Wait()
 	close(m.fromAny)
 	m.sources = nil
@@ -217,6 +227,8 @@ func (m *FairMix) Close() {
 }
 
 // Next returns a node from a random source.
+// 迭代下一个节点
+// 默认从下一个来源中读取节点,如果下一个来源等待时间超时那么就从所有来源中读取一个
 func (m *FairMix) Next() bool {
 	m.cur = nil
 
@@ -294,8 +306,11 @@ func (m *FairMix) deleteSource(s *mixSource) {
 
 // runSource reads a single source in a loop.
 // 不断循环从输入的来源中读取下一个节点,写入到next或者fromAny管道中
+// closed用来通知关闭
 func (m *FairMix) runSource(closed chan struct{}, s *mixSource) {
+	// AddSource调用了wg.Add
 	defer m.wg.Done()
+	// runSource函数结束,也就是这个来源的迭代器耗尽的时候关闭这个来源的next管道
 	defer close(s.next)
 	for s.it.Next() {
 		n := s.it.Node()

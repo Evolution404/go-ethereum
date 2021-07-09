@@ -56,7 +56,11 @@ func (g *generic) DecodeRLP(s *rlp.Stream) error {
 // WithEntry wraps any value with a key name. It can be used to set and load arbitrary values
 // in a record. The value v must be supported by rlp. To use WithEntry with Load, the value
 // must be a pointer.
-// 构造一个通用的Entry对象
+// 构造一个通用的Entry对象,用于用户设置自定义的键值对,例如:
+// r := enr.Record{}
+// r.Set(enr.WithEntry("myentry","hello"))  // 设置键值对 "myentry":"hello"
+// var m string
+// r.Load(enr.WithEntry("myentry",&m))      // 重新加载myentry对应的值到m中,这里要使用m的指针
 func WithEntry(k string, v interface{}) Entry {
 	return &generic{key: k, value: v}
 }

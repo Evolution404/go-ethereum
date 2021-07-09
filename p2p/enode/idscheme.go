@@ -29,6 +29,7 @@ import (
 )
 
 // List of known secure identity schemes.
+// 包括了所有目前已知的节点标识模型
 var ValidSchemes = enr.SchemeMap{
 	"v4": V4ID{},
 }
@@ -43,6 +44,7 @@ type V4ID struct{}
 
 // SignV4 signs a record using the v4 scheme.
 // 使用输入的私钥对记录r签名
+// 这个函数为Record对象增加了id,secp256k1键值对,然后调用了Record.SetSig
 func SignV4(r *enr.Record, privkey *ecdsa.PrivateKey) error {
 	// Copy r to avoid modifying it if signing fails.
 	cpy := *r
@@ -71,6 +73,7 @@ func SignV4(r *enr.Record, privkey *ecdsa.PrivateKey) error {
 // 用于实现IdentityScheme接口
 func (V4ID) Verify(r *enr.Record, sig []byte) error {
 	// 从Record中加载公钥,并且长度必须是33字节
+	// 这里不使用Secp256k1类型,是为了避免接下来VerifySignature函数之前将公钥对象再进行一次转换成字节数组
 	var entry s256raw
 	if err := r.Load(&entry); err != nil {
 		return err
@@ -104,12 +107,15 @@ func (V4ID) NodeAddr(r *enr.Record) []byte {
 }
 
 // Secp256k1 is the "secp256k1" key, which holds a public key.
+// 代表键值对中的公钥键值对
+// 公钥在记录中是以压缩格式保存,从EncodeRLP函数中可以看出
 type Secp256k1 ecdsa.PublicKey
 
 func (v Secp256k1) ENRKey() string { return "secp256k1" }
 
 // EncodeRLP implements rlp.Encoder.
 func (v Secp256k1) EncodeRLP(w io.Writer) error {
+	// 保存压缩格式公钥
 	return rlp.Encode(w, crypto.CompressPubkey((*ecdsa.PublicKey)(&v)))
 }
 
@@ -119,6 +125,7 @@ func (v *Secp256k1) DecodeRLP(s *rlp.Stream) error {
 	if err != nil {
 		return err
 	}
+	// 解压公钥
 	pk, err := crypto.DecompressPubkey(buf)
 	if err != nil {
 		return err
@@ -128,12 +135,16 @@ func (v *Secp256k1) DecodeRLP(s *rlp.Stream) error {
 }
 
 // s256raw is an unparsed secp256k1 public key entry.
+// 代表公钥的原始字节数组,在V4ID.Verify函数中使用
+// 避免使用Secp256k1解码出来的是公钥对象还要再转换成字节数组
+// 因为crypto.VerifySignature输入的公钥是字节数组
 type s256raw []byte
 
 func (s256raw) ENRKey() string { return "secp256k1" }
 
 // v4CompatID is a weaker and insecure version of the "v4" scheme which only checks for the
 // presence of a secp256k1 public key, but doesn't verify the signature.
+// 不执行签名,只检查记录中是否有公钥
 type v4CompatID struct {
 	V4ID
 }
@@ -152,6 +163,7 @@ func signV4Compat(r *enr.Record, pubkey *ecdsa.PublicKey) {
 
 // NullID is the "null" ENR identity scheme. This scheme stores the node
 // ID in the record without any signature.
+// 不进行签名,节点的地址就是SignNull传入的id
 type NullID struct{}
 
 func (NullID) Verify(r *enr.Record, sig []byte) error {
