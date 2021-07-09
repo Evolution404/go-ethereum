@@ -179,9 +179,11 @@ type (
 
 // offlineState is a special state that is assumed to be set before a node is loaded from
 // the database and after it is shut down.
+// offlineState是一个特殊的状态,代表节点从数据库加载之前或者停止以后的状态
 const offlineState = bitMask(1)
 
 // NewFlag creates a new node state flag
+// 在Setup.flags中新增一个flagDefinition对象,其中persistent为false
 func (s *Setup) NewFlag(name string) Flags {
 	if s.flags == nil {
 		s.flags = []flagDefinition{{name: "offline"}}
@@ -192,6 +194,7 @@ func (s *Setup) NewFlag(name string) Flags {
 }
 
 // NewPersistentFlag creates a new persistent node state flag
+// 在Setup.flags中新增一个flagDefinition对象,其中persistent为true
 func (s *Setup) NewPersistentFlag(name string) Flags {
 	if s.flags == nil {
 		s.flags = []flagDefinition{{name: "offline"}}
@@ -207,6 +210,7 @@ func (s *Setup) OfflineFlag() Flags {
 }
 
 // NewField creates a new node state field
+// 在Setup.fields中新增一个fieldDefinition对象,其中encode和decode为nil
 func (s *Setup) NewField(name string, ftype reflect.Type) Field {
 	f := Field{index: len(s.fields), setup: s}
 	s.fields = append(s.fields, fieldDefinition{
@@ -217,6 +221,7 @@ func (s *Setup) NewField(name string, ftype reflect.Type) Field {
 }
 
 // NewPersistentField creates a new persistent node field
+// 在Setup.fields中新增一个fieldDefinition对象,参数中指定了其中的encode和decode
 func (s *Setup) NewPersistentField(name string, ftype reflect.Type, encode func(interface{}) ([]byte, error), decode func([]byte) (interface{}, error)) Field {
 	f := Field{index: len(s.fields), setup: s}
 	s.fields = append(s.fields, fieldDefinition{

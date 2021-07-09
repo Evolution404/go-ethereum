@@ -59,6 +59,7 @@ const (
 	// 超过24小时没有发现的节点就从数据库删除
 	dbNodeExpiration = 24 * time.Hour // Time after which an unseen node should be dropped.
 	dbCleanupCycle   = time.Hour      // Time period for running the expiration task.
+	// nodedb的版本
 	dbVersion        = 9
 )
 
@@ -72,7 +73,9 @@ var zeroIP = make(net.IP, 16)
 // them for QoS purposes.
 type DB struct {
 	lvl    *leveldb.DB   // Interface to the database itself
+	// expirer函数运行在协程中,这个runner在ensureExpirer函数用于确保expirer只启动一次
 	runner sync.Once     // Ensures we can start at most one expirer
+	// expirer函数在后台一直运行,quit管道用于通知expirer函数结束
 	quit   chan struct{} // Channel to signal the expiring thread to stop
 }
 
@@ -180,13 +183,14 @@ func nodeItemKey(id ID, ip net.IP, field string) []byte {
 // 将NodeItemKey里的各个元素切分开
 // key里面保存的ip是ip16,但是解析出来的ip会区分出来ipv4或者ipv6
 func splitNodeItemKey(key []byte) (id ID, ip net.IP, field string) {
+	// 切分key,调用之后key是id后面剩余的部分
 	id, key = splitNodeKey(key)
 	// Skip discover root.
 	// 如果剩余的部分只有"v4"那就结束
 	if string(key) == dbDiscoverRoot {
 		return id, nil, ""
 	}
-	// 跳过"v4"读取下面的部分
+	// 跳过"v4:",加一是还有一个冒号,读取下面的部分
 	key = key[len(dbDiscoverRoot)+1:]
 	// Split out the IP.
 	ip = key[:16]
@@ -222,7 +226,7 @@ func localItemKey(id ID, field string) []byte {
 }
 
 // fetchInt64 retrieves an integer associated with a particular key.
-// 输入key将对应的值解析为int64
+// 获取数据库中key对应的int64值
 func (db *DB) fetchInt64(key []byte) int64 {
 	blob, err := db.lvl.Get(key, nil)
 	if err != nil {
@@ -244,6 +248,7 @@ func (db *DB) storeInt64(key []byte, n int64) error {
 }
 
 // fetchUint64 retrieves an integer associated with a particular key.
+// 获取key对应的uint64值
 func (db *DB) fetchUint64(key []byte) uint64 {
 	blob, err := db.lvl.Get(key, nil)
 	if err != nil {
@@ -254,6 +259,7 @@ func (db *DB) fetchUint64(key []byte) uint64 {
 }
 
 // storeUint64 stores an integer in the given key.
+// 设置key对应的值为指定uint64
 func (db *DB) storeUint64(key []byte, n uint64) error {
 	blob := make([]byte, binary.MaxVarintLen64)
 	blob = blob[:binary.PutUvarint(blob, n)]
@@ -271,6 +277,7 @@ func (db *DB) Node(id ID) *Node {
 }
 
 // 输入节点id和节点rlp编码解析出来Node对象
+// 创建一个Node对象,需要设置r和id
 func mustDecodeNode(id, data []byte) *Node {
 	node := new(Node)
 	if err := rlp.DecodeBytes(data, &node.r); err != nil {
@@ -282,6 +289,11 @@ func mustDecodeNode(id, data []byte) *Node {
 }
 
 // UpdateNode inserts - potentially overwriting - a node into the peer database.
+// 将输入的节点保存到数据库中
+// 输入的节点的Seq要大于数据库中存在的
+// 每个节点在数据库中占用两个字段
+//   nodeKey(node.ID())用来保存节点的rlp编码
+//   nodeItemKey(node.ID(),zeroIP,dbNodeSeq)保存节点的Seq
 func (db *DB) UpdateNode(node *Node) error {
 	// 更新的节点的seq一定要大于现有的
 	if node.Seq() < db.NodeSeq(node.ID()) {
@@ -321,6 +333,7 @@ func (db *DB) DeleteNode(id ID) {
 	deleteRange(db.lvl, nodeKey(id))
 }
 
+// 删除所有key的前缀是prefix的键值对
 func deleteRange(db *leveldb.DB, prefix []byte) {
 	it := db.NewIterator(util.BytesPrefix(prefix), nil)
 	defer it.Release()
@@ -361,6 +374,7 @@ func (db *DB) expirer() {
 // expireNodes iterates over the database and deletes all nodes that have not
 // been seen (i.e. received a pong from) for some time.
 func (db *DB) expireNodes() {
+	// 生成一个遍历所有节点信息的迭代器
 	it := db.lvl.NewIterator(util.BytesPrefix([]byte(dbNodePrefix)), nil)
 	defer it.Release()
 	if !it.Next() {
@@ -370,9 +384,11 @@ func (db *DB) expireNodes() {
 	var (
 		threshold    = time.Now().Add(-dbNodeExpiration).Unix()
 		youngestPong int64
+		// atEnd用来标记迭代器是不是还有下一个元素,没有元素了就为true
 		atEnd        = false
 	)
 	for !atEnd {
+		// 找到记录节点回复pong的时间
 		// 判断节点上一次pong的时间,超过24小时就删除节点
 		id, ip, field := splitNodeItemKey(it.Key())
 		if field == dbNodePong {
@@ -380,6 +396,7 @@ func (db *DB) expireNodes() {
 			if time > youngestPong {
 				youngestPong = time
 			}
+			// 上一次pong的时间距今超过24小时
 			if time < threshold {
 				// Last pong from this IP older than threshold, remove fields belonging to it.
 				deleteRange(db.lvl, nodeItemKey(id, ip, ""))
@@ -402,6 +419,7 @@ func (db *DB) expireNodes() {
 // LastPingReceived retrieves the time of the last ping packet received from
 // a remote node.
 // 获取指定节点的lastping时间
+// 也就是上次接收到来自这个节点ping包的时间
 func (db *DB) LastPingReceived(id ID, ip net.IP) time.Time {
 	if ip = ip.To16(); ip == nil {
 		return time.Time{}
@@ -411,6 +429,7 @@ func (db *DB) LastPingReceived(id ID, ip net.IP) time.Time {
 
 // UpdateLastPingReceived updates the last time we tried contacting a remote node.
 // 更新指定节点的lastping时间
+// 更新上次接收到来自这个节点ping包的时间为指定的时间
 func (db *DB) UpdateLastPingReceived(id ID, ip net.IP, instance time.Time) error {
 	if ip = ip.To16(); ip == nil {
 		return errInvalidIP
@@ -420,6 +439,8 @@ func (db *DB) UpdateLastPingReceived(id ID, ip net.IP, instance time.Time) error
 
 // LastPongReceived retrieves the time of the last successful pong from remote node.
 // 获取指定节点lastpong的时间
+// 调用过LastPongReceived后,就会在后台启动删除过期节点的协程
+// 过期节点就是超过一小时没有收到pong包的节点
 func (db *DB) LastPongReceived(id ID, ip net.IP) time.Time {
 	if ip = ip.To16(); ip == nil {
 		return time.Time{}
@@ -490,6 +511,7 @@ func (db *DB) storeLocalSeq(id ID, n uint64) {
 // for bootstrapping.
 // 从数据库中随机出来最多n个节点
 // 随机出来的节点距离上次响应时间都不超过maxAge
+// 这个函数用于启动的时候获取初始的节点
 func (db *DB) QuerySeeds(n int, maxAge time.Duration) []*Node {
 	var (
 		now   = time.Now()
@@ -501,6 +523,7 @@ func (db *DB) QuerySeeds(n int, maxAge time.Duration) []*Node {
 	defer it.Release()
 
 seek:
+  // seeks用来记录这个循环运行的次数,为了避免运行过久这个循环最多运行n*5次
 	for seeks := 0; len(nodes) < n && seeks < n*5; seeks++ {
 		// Seek to a random entry. The first byte is incremented by a
 		// random amount each time in order to increase the likelihood
@@ -540,6 +563,7 @@ func nextNode(it iterator.Iterator) *Node {
 	for end := false; !end; end = !it.Next() {
 		id, rest := splitNodeKey(it.Key())
 		// 跳过所有这个节点相关的key,只关心nodeKey
+		// 查找到这个节点保存的rlp编码
 		if string(rest) != dbDiscoverRoot {
 			continue
 		}
