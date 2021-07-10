@@ -162,6 +162,7 @@ func TestSetField(t *testing.T) {
 	if field == nil {
 		t.Fatalf("Field should be set after setting states")
 	}
+	// fields[0]是字符串类型,123是数字不能接收
 	if err := ns.SetField(testNode(1), fields[0], 123); err == nil {
 		t.Fatalf("Invalid field should be rejected")
 	}
@@ -212,27 +213,36 @@ func TestSetState(t *testing.T) {
 			return
 		}
 	}
+	// 从空设置了flags[0]
 	ns.SetState(testNode(1), flags[0], Flags{}, 0)
 	check(Flags{}, flags[0], true)
 
+	// 从flags[0],变成了flags[0],flags[1]
 	ns.SetState(testNode(1), flags[1], Flags{}, 0)
 	check(flags[0], flags[0].Or(flags[1]), true)
 
+	// 只订阅了flags[0]和flags[1],所以这个设置不会调用回调
 	ns.SetState(testNode(1), flags[2], Flags{}, 0)
 	check(Flags{}, Flags{}, false)
 
+	// 从flags[0],flags[1]变成了flags[1]
 	ns.SetState(testNode(1), Flags{}, flags[0], 0)
 	check(flags[0].Or(flags[1]), flags[1], true)
 
+	// 从flags[1]变成了空
 	ns.SetState(testNode(1), Flags{}, flags[1], 0)
 	check(flags[1], Flags{}, true)
 
+	// 从空变成flags[2],但是没订阅所以还是空
 	ns.SetState(testNode(1), Flags{}, flags[2], 0)
 	check(Flags{}, Flags{}, false)
 
+	// 从空变成flags[0]和flags[1]
 	ns.SetState(testNode(1), flags[0].Or(flags[1]), Flags{}, time.Second)
 	check(Flags{}, flags[0].Or(flags[1]), true)
+	// 过了一秒后超时了, flags[0]和flags[1]都被重置
 	clock.Run(time.Second)
+	// 由于超时,从flags[0]和flags[1]变为空
 	check(flags[0].Or(flags[1]), Flags{}, true)
 }
 
