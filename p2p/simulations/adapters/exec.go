@@ -133,6 +133,7 @@ func (e *ExecAdapter) NewNode(config *NodeConfig) (Node, error) {
 
 // ExecNode starts a simulation node by exec'ing the current binary and
 // running the configured services
+// 由ExecAdapter.NewNode创建的节点就是ExecNode对象
 type ExecNode struct {
 	ID     enode.ID
 	Dir    string

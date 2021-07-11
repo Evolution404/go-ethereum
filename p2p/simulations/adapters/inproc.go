@@ -171,6 +171,9 @@ func (s *SimAdapter) GetNode(id enode.ID) (*SimNode, bool) {
 // SimNode is an in-memory simulation node which connects to other nodes using
 // net.Pipe (see SimAdapter.Dial), running devp2p protocols directly over that
 // pipe
+// 由SimAdapter.NewNode创建的节点就是SimNode对象
+// SimNode实现了adapters.Node接口,但是还额外实现了几个函数
+// Close,Node,Server,Service,ServiceMap,Services,SubscribeEvents
 type SimNode struct {
 	lock         sync.RWMutex
 	ID           enode.ID

@@ -101,11 +101,14 @@ func newPingPongService(id enode.ID) *pingPongService {
 	}
 }
 
+// 定义一个协议对象
 func (p *pingPongService) Protocols() []p2p.Protocol {
 	return []p2p.Protocol{{
 		Name:     "ping-pong",
 		Version:  1,
+		// 这个协议中有两种消息 pingMsgCode和pongMsgCode
 		Length:   2,
+		// 指定协议的启动函数
 		Run:      p.Run,
 		NodeInfo: p.Info,
 	}}
@@ -121,6 +124,7 @@ func (p *pingPongService) Stop() error {
 	return nil
 }
 
+// 用来获取收到了多少条信息
 func (p *pingPongService) Info() interface{} {
 	return struct {
 		Received int64 `json:"received"`

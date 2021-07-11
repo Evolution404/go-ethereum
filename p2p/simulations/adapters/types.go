@@ -44,6 +44,7 @@ import (
 // * DockerNode - A Docker container node
 //
 // Node代表在仿真网络中由NodeAdapter创建的节点对象
+// 该接口由SimNode和ExecNode实现
 // SimNode 内存中的节点
 // ExecNode 使用子进程的节点
 type Node interface {
@@ -83,7 +84,7 @@ type NodeAdapter interface {
 
 // NodeConfig is the configuration used to start a node in a simulation
 // network
-// 仿真网络中节点的配置选项
+// 仿真网络中节点的配置选项,在NodeAdapter.NewNode函数中需要传入NodeConfig对象
 type NodeConfig struct {
 	// ID is the node's ID which is used to identify the node in the
 	// simulation network
@@ -291,7 +292,7 @@ type LifecycleConstructors map[string]LifecycleConstructor
 
 // lifecycleConstructorFuncs is a map of registered services which are used to boot devp2p
 // nodes
-// RegisterLifecycles函数中用来保存注册的生命周期函数
+// 保存Exec或者Docker类型的节点注册的服务,该变量在RegisterLifecycles函数中设置
 var lifecycleConstructorFuncs = make(LifecycleConstructors)
 
 // RegisterLifecycles registers the given Services which can then be used to
@@ -299,7 +300,8 @@ var lifecycleConstructorFuncs = make(LifecycleConstructors)
 //
 // It should be called in an init function so that it has the opportunity to
 // execute the services before main() is called.
-// 注册多个生命周期函数
+// 为Exec或者Docker类型注册多个服务,这里注册的服务不对Sim类型生效
+// Sim类型注册服务在创建适配器的时候进行,adapters.NewSimAdapter(services)
 func RegisterLifecycles(lifecycles LifecycleConstructors) {
 	for name, f := range lifecycles {
 		if _, exists := lifecycleConstructorFuncs[name]; exists {
