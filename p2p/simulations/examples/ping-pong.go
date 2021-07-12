@@ -144,6 +144,7 @@ func (p *pingPongService) Run(peer *p2p.Peer, rw p2p.MsgReadWriter) error {
 	log := p.log.New("peer.id", peer.ID())
 
 	errC := make(chan error)
+	// 每十秒向对等节点发送PING包
 	go func() {
 		for range time.Tick(10 * time.Second) {
 			log.Info("sending ping")
@@ -153,6 +154,7 @@ func (p *pingPongService) Run(peer *p2p.Peer, rw p2p.MsgReadWriter) error {
 			}
 		}
 	}()
+	// 不断接收其他节点发送的PING包,并回复PONG包
 	go func() {
 		for {
 			msg, err := rw.ReadMsg()
@@ -173,5 +175,6 @@ func (p *pingPongService) Run(peer *p2p.Peer, rw p2p.MsgReadWriter) error {
 			}
 		}
 	}()
+	// 一直阻塞到发生错误
 	return <-errC
 }

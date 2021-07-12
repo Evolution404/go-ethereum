@@ -86,6 +86,7 @@ func (s *SimAdapter) NewNode(config *NodeConfig) (Node, error) {
 	if len(config.Lifecycles) == 0 {
 		return nil, errors.New("node must have at least one service")
 	}
+	// 确保这个节点使用的服务在SimAdapter中已经注册了
 	for _, service := range config.Lifecycles {
 		if _, exists := s.lifecycles[service]; !exists {
 			return nil, fmt.Errorf("unknown node service %q", service)

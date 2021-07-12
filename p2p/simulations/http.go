@@ -40,6 +40,7 @@ import (
 
 // DefaultClient is the default simulation API client which expects the API
 // to be running at http://localhost:8888
+// 仿真网络的默认客户端,默认去连接http://localhost:8888
 var DefaultClient = NewClient("http://localhost:8888")
 
 // Client is a client for the simulation HTTP API which supports creating
@@ -271,12 +272,16 @@ type Server struct {
 }
 
 // NewServer returns a new simulation API server
+// 创建一个simulations.Server对象
+// 并注册了各种方法的路由
 func NewServer(network *Network) *Server {
 	s := &Server{
+		// 新建一个路由对象
 		router:  httprouter.New(),
 		network: network,
 	}
 
+	// 设置路由的路径
 	s.OPTIONS("/", s.Options)
 	s.GET("/", s.GetNetwork)
 	s.POST("/start", s.StartNetwork)
@@ -692,6 +697,7 @@ func (s *Server) OPTIONS(path string, handle http.HandlerFunc) {
 }
 
 // JSON sends "data" as a JSON HTTP response
+// 将data编码成json字符串,然后发送给客户端
 func (s *Server) JSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

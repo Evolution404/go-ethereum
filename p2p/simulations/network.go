@@ -37,6 +37,8 @@ import (
 var DialBanTimeout = 200 * time.Millisecond
 
 // NetworkConfig defines configuration options for starting a Network
+// NetworkConfig指定了启动一个仿真网络需要配置
+// 包括这个网络的ID,以及网络中的节点使用的默认服务
 type NetworkConfig struct {
 	ID             string `json:"id"`
 	DefaultService string `json:"default_service,omitempty"`
@@ -50,25 +52,34 @@ type NetworkConfig struct {
 //
 // The Network emits events when nodes are started and stopped, when they are
 // connected and disconnected, and also when messages are sent between nodes.
+// Network对象代表一个仿真网络,包括了一组仿真节点和这些节点间建立的连接
 type Network struct {
 	NetworkConfig
 
+	// 保存网络中的所有节点
 	Nodes   []*Node `json:"nodes"`
+	// 用来通过节点id获取Node对象
 	nodeMap map[enode.ID]int
 
 	// Maps a node property string to node indexes of all nodes that hold this property
+	// key是属性的名称,value是所有需要持有这个属性的节点在Nodes数组的下标
 	propertyMap map[string][]int
 
+	// 保存网络中所有连接
 	Conns   []*Conn `json:"conns"`
+	// 用来通过连接的唯一字符串获取Conn对象
 	connMap map[string]int
 
 	nodeAdapter adapters.NodeAdapter
+	// 当节点启动,停止,建立连接,断开连接,发送消息,接收消息都会触发事件
 	events      event.Feed
 	lock        sync.RWMutex
 	quitc       chan struct{}
 }
 
 // NewNetwork returns a Network which uses the given NodeAdapter and NetworkConfig
+// 新建一个仿真网络需要NodeAdapter和NetworkConfig
+// NodeAdapter用来指定如何在网络中创建节点,NetworkConfig指定了该仿真网络的一些配置
 func NewNetwork(nodeAdapter adapters.NodeAdapter, conf *NetworkConfig) *Network {
 	return &Network{
 		NetworkConfig: *conf,
@@ -81,16 +92,19 @@ func NewNetwork(nodeAdapter adapters.NodeAdapter, conf *NetworkConfig) *Network 
 }
 
 // Events returns the output event feed of the Network.
+// 外部通过这个方法订阅网络中发生的事件
 func (net *Network) Events() *event.Feed {
 	return &net.events
 }
 
 // NewNodeWithConfig adds a new node to the network with the given config,
 // returning an error if a node with the same ID or name already exists
+// 指定节点的配置信息,在仿真网络中创建一个新的节点
 func (net *Network) NewNodeWithConfig(conf *adapters.NodeConfig) (*Node, error) {
 	net.lock.Lock()
 	defer net.lock.Unlock()
 
+	// 设置默认的Reachable函数
 	if conf.Reachable == nil {
 		conf.Reachable = func(otherID enode.ID) bool {
 			_, err := net.InitConn(conf.ID, otherID)
@@ -102,6 +116,8 @@ func (net *Network) NewNodeWithConfig(conf *adapters.NodeConfig) (*Node, error) 
 	}
 
 	// check the node doesn't already exist
+	// 判断节点是否已经存在于网络中,先根据ID查,再根据Name查
+	// 如果节点已经存在,将返回错误
 	if node := net.getNode(conf.ID); node != nil {
 		return nil, fmt.Errorf("node with ID %q already exists", conf.ID)
 	}
@@ -110,23 +126,28 @@ func (net *Network) NewNodeWithConfig(conf *adapters.NodeConfig) (*Node, error) 
 	}
 
 	// if no services are configured, use the default service
+	// 如果一个服务也没有,就使用默认的服务
 	if len(conf.Lifecycles) == 0 {
 		conf.Lifecycles = []string{net.DefaultService}
 	}
 
 	// use the NodeAdapter to create the node
+	// 通过NodeAdapter创建一个adapters.Node对象
 	adapterNode, err := net.nodeAdapter.NewNode(conf)
 	if err != nil {
 		return nil, err
 	}
+	// 将adapters.Node对象封装成simulations.Node对象
 	node := newNode(adapterNode, conf, false)
 	log.Trace("Node created", "id", conf.ID)
 
+	// 将这个新建的Node对象保存到Network对象中
 	nodeIndex := len(net.Nodes)
 	net.nodeMap[conf.ID] = nodeIndex
 	net.Nodes = append(net.Nodes, node)
 
 	// Register any node properties with the network-level propertyMap
+	// 让这个节点使用的所有属性记录下来这个节点的下标
 	for _, property := range conf.Properties {
 		net.propertyMap[property] = append(net.propertyMap[property], nodeIndex)
 	}
@@ -138,16 +159,20 @@ func (net *Network) NewNodeWithConfig(conf *adapters.NodeConfig) (*Node, error) 
 }
 
 // Config returns the network configuration
+// 获取网络的配置信息
 func (net *Network) Config() *NetworkConfig {
 	return &net.NetworkConfig
 }
 
 // StartAll starts all nodes in the network
+// 启动网络中的所有节点
 func (net *Network) StartAll() error {
 	for _, node := range net.Nodes {
+		// 已经启动的跳过
 		if node.Up() {
 			continue
 		}
+		// 没启动的节点执行Start启动
 		if err := net.Start(node.ID()); err != nil {
 			return err
 		}
@@ -156,6 +181,7 @@ func (net *Network) StartAll() error {
 }
 
 // StopAll stops all nodes in the network
+// 停止网络中的所有节点
 func (net *Network) StopAll() error {
 	for _, node := range net.Nodes {
 		if !node.Up() {
@@ -169,6 +195,9 @@ func (net *Network) StopAll() error {
 }
 
 // Start starts the node with the given ID
+// 启动网络中指定id的节点
+// 执行节点的Start方法,并设置节点的Up为true
+// 最后监听针对这个节点的rpc事件,例如增加或减少对等节点,发送或接收到消息
 func (net *Network) Start(id enode.ID) error {
 	return net.startWithSnapshots(id, nil)
 }
@@ -179,6 +208,9 @@ func (net *Network) startWithSnapshots(id enode.ID, snapshots map[string][]byte)
 	net.lock.Lock()
 	defer net.lock.Unlock()
 
+	// 先找到指定的节点
+	// 然后调用node.Start(snapshots)
+	// 然后设置节点的Up为true
 	node := net.getNode(id)
 	if node == nil {
 		return fmt.Errorf("node %v does not exist", id)
@@ -193,6 +225,7 @@ func (net *Network) startWithSnapshots(id enode.ID, snapshots map[string][]byte)
 	}
 	node.SetUp(true)
 	log.Info("Started node", "id", id)
+	// 发送新建节点的事件
 	ev := NewEvent(node)
 	net.events.Send(ev)
 
@@ -202,6 +235,8 @@ func (net *Network) startWithSnapshots(id enode.ID, snapshots map[string][]byte)
 		return fmt.Errorf("error getting rpc client  for node %v: %s", id, err)
 	}
 	events := make(chan *p2p.PeerEvent)
+	// 让这个rpc客户端订阅admin_subscribe事件
+	// 接收到的事件发送到events管道中
 	sub, err := client.Subscribe(context.Background(), "admin", events, "peerEvents")
 	if err != nil {
 		return fmt.Errorf("error getting peer events for node %v: %s", id, err)
@@ -212,11 +247,14 @@ func (net *Network) startWithSnapshots(id enode.ID, snapshots map[string][]byte)
 
 // watchPeerEvents reads peer events from the given channel and emits
 // corresponding network events
+// 处理指定节点的peer events,例如增加或减少对等节点,发送或接收到消息
 func (net *Network) watchPeerEvents(id enode.ID, events chan *p2p.PeerEvent, sub event.Subscription) {
 	defer func() {
+		// 结束的时候取消订阅
 		sub.Unsubscribe()
 
 		// assume the node is now down
+		// 这个函数停止了,假设节点已经停止运行了
 		net.lock.Lock()
 		defer net.lock.Unlock()
 
@@ -261,6 +299,7 @@ func (net *Network) watchPeerEvents(id enode.ID, events chan *p2p.PeerEvent, sub
 }
 
 // Stop stops the node with the given ID
+// 停止仿真网络中的某个节点,其实就是调用节点的Stop方法
 func (net *Network) Stop(id enode.ID) error {
 	// IMPORTANT: node.Stop() must NOT be called under net.lock as
 	// node.Reachable() closure has a reference to the network and
@@ -292,6 +331,7 @@ func (net *Network) Stop(id enode.ID) error {
 	net.lock.Lock()
 	defer net.lock.Unlock()
 
+	// 停止失败,重新设置Up为true
 	if err != nil {
 		node.SetUp(true)
 		return err
@@ -304,6 +344,7 @@ func (net *Network) Stop(id enode.ID) error {
 
 // Connect connects two nodes together by calling the "admin_addPeer" RPC
 // method on the "one" node so that it connects to the "other" node
+// 建立两个节点间的连接,通过调用admin_addPerr这个RPC方法
 func (net *Network) Connect(oneID, otherID enode.ID) error {
 	net.lock.Lock()
 	defer net.lock.Unlock()
@@ -312,6 +353,7 @@ func (net *Network) Connect(oneID, otherID enode.ID) error {
 
 func (net *Network) connect(oneID, otherID enode.ID) error {
 	log.Debug("Connecting nodes with addPeer", "id", oneID, "other", otherID)
+	// 创建Conn对象
 	conn, err := net.initConn(oneID, otherID)
 	if err != nil {
 		return err
@@ -321,13 +363,17 @@ func (net *Network) connect(oneID, otherID enode.ID) error {
 		return err
 	}
 	net.events.Send(ControlEvent(conn))
+	// 使用节点的rpc客户端对象调用admin_addPeer方法
 	return client.Call(nil, "admin_addPeer", string(conn.other.Addr()))
 }
 
 // Disconnect disconnects two nodes by calling the "admin_removePeer" RPC
 // method on the "one" node so that it disconnects from the "other" node
+// 断开两个节点间的连接,调用了admin_removePeer这个RPC方法
 func (net *Network) Disconnect(oneID, otherID enode.ID) error {
+	// 获取连接对象
 	conn := net.GetConn(oneID, otherID)
+	// 根本没建立连接或者连接没启动都返回错误
 	if conn == nil {
 		return fmt.Errorf("connection between %v and %v does not exist", oneID, otherID)
 	}
@@ -339,6 +385,7 @@ func (net *Network) Disconnect(oneID, otherID enode.ID) error {
 		return err
 	}
 	net.events.Send(ControlEvent(conn))
+	// 调用RPC方法admin_removePeer
 	return client.Call(nil, "admin_removePeer", string(conn.other.Addr()))
 }
 
@@ -410,6 +457,7 @@ func (net *Network) GetNode(id enode.ID) *Node {
 	return net.getNode(id)
 }
 
+// 通过节点ID获得网络中的Node对象
 func (net *Network) getNode(id enode.ID) *Node {
 	i, found := net.nodeMap[id]
 	if !found {
@@ -420,12 +468,14 @@ func (net *Network) getNode(id enode.ID) *Node {
 
 // GetNodeByName gets the node with the given name, returning nil if the node does
 // not exist
+// 通过节点的名称查询Node对象,如果节点不存在返回nil
 func (net *Network) GetNodeByName(name string) *Node {
 	net.lock.RLock()
 	defer net.lock.RUnlock()
 	return net.getNodeByName(name)
 }
 
+// 查询名称与输入的匹配的Node对象
 func (net *Network) getNodeByName(name string) *Node {
 	for _, node := range net.Nodes {
 		if node.Config.Name == name {
@@ -601,6 +651,7 @@ func filterIDs(ids []enode.ID, excludeIDs []enode.ID) []enode.ID {
 
 // GetConn returns the connection which exists between "one" and "other"
 // regardless of which node initiated the connection
+// 获取仿真网络中两个节点之间的连接对象,没建立连接返回nil
 func (net *Network) GetConn(oneID, otherID enode.ID) *Conn {
 	net.lock.RLock()
 	defer net.lock.RUnlock()
@@ -609,17 +660,21 @@ func (net *Network) GetConn(oneID, otherID enode.ID) *Conn {
 
 // GetOrCreateConn is like GetConn but creates the connection if it doesn't
 // already exist
+// 获取仿真网络中两个节点之间的连接对象,没建立连接新创建一个连接返回
 func (net *Network) GetOrCreateConn(oneID, otherID enode.ID) (*Conn, error) {
 	net.lock.Lock()
 	defer net.lock.Unlock()
 	return net.getOrCreateConn(oneID, otherID)
 }
 
+// 获取两个节点的连接对象
+// 首先判断之前是否已经建立了连接,如果没有建立连接创建一个返回
 func (net *Network) getOrCreateConn(oneID, otherID enode.ID) (*Conn, error) {
+	// 首先尝试获取已经建立的连接对象
 	if conn := net.getConn(oneID, otherID); conn != nil {
 		return conn, nil
 	}
-
+	// 没有建立连接,那么就先确保这两个节点都存在于网络中
 	one := net.getNode(oneID)
 	if one == nil {
 		return nil, fmt.Errorf("node %v does not exist", oneID)
@@ -628,18 +683,22 @@ func (net *Network) getOrCreateConn(oneID, otherID enode.ID) (*Conn, error) {
 	if other == nil {
 		return nil, fmt.Errorf("node %v does not exist", otherID)
 	}
+	// 构造这两个节点的连接对象
 	conn := &Conn{
 		One:   oneID,
 		Other: otherID,
 		one:   one,
 		other: other,
 	}
+	// 将新连接保存到Network对象中
+	// 要维护net.connMap和net.Conns两个字段
 	label := ConnLabel(oneID, otherID)
 	net.connMap[label] = len(net.Conns)
 	net.Conns = append(net.Conns, conn)
 	return conn, nil
 }
 
+// 找到两个节点已经建立的Conn对象,如果没有建立连接返回nil
 func (net *Network) getConn(oneID, otherID enode.ID) *Conn {
 	label := ConnLabel(oneID, otherID)
 	i, found := net.connMap[label]
@@ -657,12 +716,18 @@ func (net *Network) getConn(oneID, otherID enode.ID) *Conn {
 // it also checks whether there has been recent attempt to connect the peers
 // this is cheating as the simulation is used as an oracle and know about
 // remote peers attempt to connect to a node which will then not initiate the connection
+// 初始化一个连接
+// 调用时两个节点间要么没建立连接,要么连接还没启动
+// 而且这两个节点必须是启动状态的
 func (net *Network) InitConn(oneID, otherID enode.ID) (*Conn, error) {
 	net.lock.Lock()
 	defer net.lock.Unlock()
 	return net.initConn(oneID, otherID)
 }
 
+// 初始化一个连接
+// 调用时两个节点间要么没建立连接,要么连接还没启动
+// 而且这两个节点必须是启动状态的
 func (net *Network) initConn(oneID, otherID enode.ID) (*Conn, error) {
 	if oneID == otherID {
 		return nil, fmt.Errorf("refusing to connect to self %v", oneID)
@@ -689,6 +754,9 @@ func (net *Network) initConn(oneID, otherID enode.ID) (*Conn, error) {
 }
 
 // Shutdown stops all nodes in the network and closes the quit channel
+// 用来停止整个仿真网络
+// 调用所有Node对象的Stop方法,如果实现了Close方法的话也调用Close
+// 关闭所有节点后再关闭net.quitc管道
 func (net *Network) Shutdown() {
 	for _, node := range net.Nodes {
 		log.Debug("Stopping node", "id", node.ID())
@@ -707,6 +775,7 @@ func (net *Network) Shutdown() {
 
 // Reset resets all network properties:
 // empties the nodes and the connection list
+// 重置整个网络,清空建立的节点和连接
 func (net *Network) Reset() {
 	net.lock.Lock()
 	defer net.lock.Unlock()
@@ -722,27 +791,35 @@ func (net *Network) Reset() {
 
 // Node is a wrapper around adapters.Node which is used to track the status
 // of a node in the network
+// 这里的Node是对adapters.Node一层封装,用来追踪节点在仿真网络中的状态
+// 它也实现了adapters.Node接口
 type Node struct {
 	adapters.Node `json:"-"`
 
 	// Config if the config used to created the node
+	// 创建adapters.Node的时候使用的配置
 	Config *adapters.NodeConfig `json:"config"`
 
 	// up tracks whether or not the node is running
+	// 标记节点是否正在运行
 	up   bool
 	upMu *sync.RWMutex
 }
 
+// 创建一个Node对象,需要指定封装的adapters.Node以及它使用的配置,还有设置新建的节点是否在运行
 func newNode(an adapters.Node, ac *adapters.NodeConfig, up bool) *Node {
 	return &Node{Node: an, Config: ac, up: up, upMu: new(sync.RWMutex)}
 }
 
+// 复制当前的节点对象
 func (n *Node) copy() *Node {
+	// 复制其实是将NodeConfig对象复制了一份
 	configCpy := *n.Config
 	return newNode(n.Node, &configCpy, n.Up())
 }
 
 // Up returns whether the node is currently up (online)
+// 得知当前节点是否正在运行
 func (n *Node) Up() bool {
 	n.upMu.RLock()
 	defer n.upMu.RUnlock()
@@ -750,6 +827,7 @@ func (n *Node) Up() bool {
 }
 
 // SetUp sets the up (online) status of the nodes with the given value
+// 设置up为输入的值
 func (n *Node) SetUp(up bool) {
 	n.upMu.Lock()
 	defer n.upMu.Unlock()
@@ -767,12 +845,14 @@ func (n *Node) String() string {
 }
 
 // NodeInfo returns information about the node
+// 获取NodeInfo
 func (n *Node) NodeInfo() *p2p.NodeInfo {
 	// avoid a panic if the node is not started yet
 	if n.Node == nil {
 		return nil
 	}
 	info := n.Node.NodeInfo()
+	// n.Config.Name可能被修改过,以这个为准
 	info.Name = n.Config.Name
 	return info
 }
@@ -808,16 +888,21 @@ func (n *Node) UnmarshalJSON(raw []byte) error {
 }
 
 // Conn represents a connection between two nodes in the network
+// 仿真网络中的一个连接
 type Conn struct {
 	// One is the node which initiated the connection
+	// 连接的发起方的节点id
 	One enode.ID `json:"one"`
 
 	// Other is the node which the connection was made to
+	// 连接的接收方的节点id
 	Other enode.ID `json:"other"`
 
 	// Up tracks whether or not the connection is active
+	// 连接的状态
 	Up bool `json:"up"`
 	// Registers when the connection was grabbed to dial
+	// 这个时间在InitConn中设置
 	initiated time.Time
 
 	one   *Node
@@ -825,6 +910,7 @@ type Conn struct {
 }
 
 // nodesUp returns whether both nodes are currently up
+// 连接对象用于判断这个连接的双方节点是否启动
 func (c *Conn) nodesUp() error {
 	if !c.one.Up() {
 		return fmt.Errorf("one %v is not up", c.One)
@@ -841,6 +927,7 @@ func (c *Conn) String() string {
 }
 
 // Msg represents a p2p message sent between two nodes in the network
+// 代表仿真网络中发送的消息
 type Msg struct {
 	One      enode.ID `json:"one"`
 	Other    enode.ID `json:"other"`
@@ -857,8 +944,11 @@ func (m *Msg) String() string {
 // ConnLabel generates a deterministic string which represents a connection
 // between two nodes, used to compare if two connections are between the same
 // nodes
+// 输入两个相同的节点id将生成相同的字符串,输入中不区分两者的顺序
+// 该方法用于判断两个连接对象是不是建立在两个相同的节点
 func ConnLabel(source, target enode.ID) string {
 	var first, second enode.ID
+	// 比较一下两个节点id的大小,将小的放在前面
 	if bytes.Compare(source.Bytes(), target.Bytes()) > 0 {
 		first = target
 		second = source
@@ -871,12 +961,14 @@ func ConnLabel(source, target enode.ID) string {
 
 // Snapshot represents the state of a network at a single point in time and can
 // be used to restore the state of a network
+// Snapshot对象用于保存仿真网络在某个时刻的状态,可以用来恢复整个网络
 type Snapshot struct {
 	Nodes []NodeSnapshot `json:"nodes,omitempty"`
 	Conns []Conn         `json:"conns,omitempty"`
 }
 
 // NodeSnapshot represents the state of a node in the network
+// 用于保存一个节点的快照
 type NodeSnapshot struct {
 	Node Node `json:"node,omitempty"`
 
@@ -885,22 +977,38 @@ type NodeSnapshot struct {
 }
 
 // Snapshot creates a network snapshot
+// 创建网络快照
 func (net *Network) Snapshot() (*Snapshot, error) {
 	return net.snapshot(nil, nil)
 }
 
+// 创建网络快照,可以让快照中所有的启动的节点都有或者没有指定的服务
 func (net *Network) SnapshotWithServices(addServices []string, removeServices []string) (*Snapshot, error) {
 	return net.snapshot(addServices, removeServices)
 }
 
+// 生成仿真网络的快照
+// 生成快照包括两个主要过程,节点快照和连接快照
+// 快照中的所有启动的节点都有addServices中的服务,没有removeServices中的服务
 func (net *Network) snapshot(addServices []string, removeServices []string) (*Snapshot, error) {
 	net.lock.Lock()
 	defer net.lock.Unlock()
 	snap := &Snapshot{
+		// 快照中需要保存所有的节点,不论节点是否启动,所以这里直接分配好空间
 		Nodes: make([]NodeSnapshot, len(net.Nodes)),
+		// 这里没有初始化Conns,因为快照中只保存Up状态的连接,现在还不知道有多少Up状态的连接
 	}
+	// 保存网络的快照包括两个部分,节点的快照和连接的快照
+
+	// 这个循环用来保存节点的快照
+	// 保存节点的快照又分为三个部分,后两步是针对运行中的节点
+	//   保存Node对象
+	//   调用Node对象的Snapshots方法,保存结果
+	//   根据输入的addServices和removeServices处理Node对象应该具有的服务
 	for i, node := range net.Nodes {
 		snap.Nodes[i] = NodeSnapshot{Node: *node.copy()}
+		// 没启动的节点只保存它的Node对象就行了
+		// 启动的节点需要得到它的快照
 		if !node.Up() {
 			continue
 		}
@@ -909,6 +1017,8 @@ func (net *Network) snapshot(addServices []string, removeServices []string) (*Sn
 			return nil, err
 		}
 		snap.Nodes[i].Snapshots = snapshots
+		// 接下来处理节点的服务
+		// 将addServices中的服务添加到节点的服务中
 		for _, addSvc := range addServices {
 			haveSvc := false
 			for _, svc := range snap.Nodes[i].Node.Config.Lifecycles {
@@ -921,6 +1031,7 @@ func (net *Network) snapshot(addServices []string, removeServices []string) (*Sn
 				snap.Nodes[i].Node.Config.Lifecycles = append(snap.Nodes[i].Node.Config.Lifecycles, addSvc)
 			}
 		}
+		// 从节点的服务中移除removeServices中有的
 		if len(removeServices) > 0 {
 			var cleanedServices []string
 			for _, svc := range snap.Nodes[i].Node.Config.Lifecycles {
@@ -939,6 +1050,8 @@ func (net *Network) snapshot(addServices []string, removeServices []string) (*Sn
 			snap.Nodes[i].Node.Config.Lifecycles = cleanedServices
 		}
 	}
+	// 这个循环用来保存连接的快照
+	// 快照中只保存当前网络中Up的连接
 	for _, conn := range net.Conns {
 		if conn.Up {
 			snap.Conns = append(snap.Conns, *conn)
@@ -951,6 +1064,7 @@ func (net *Network) snapshot(addServices []string, removeServices []string) (*Sn
 var snapshotLoadTimeout = 900 * time.Second
 
 // Load loads a network snapshot
+// 从快照中恢复一个仿真网络
 func (net *Network) Load(snap *Snapshot) error {
 	// Start nodes.
 	for _, n := range snap.Nodes {
@@ -1050,6 +1164,7 @@ func (net *Network) Load(snap *Snapshot) error {
 }
 
 // Subscribe reads control events from a channel and executes them
+// 从输入的events管道中接收到Control类型的事件,然后执行这些事件
 func (net *Network) Subscribe(events chan *Event) {
 	for {
 		select {
@@ -1066,6 +1181,8 @@ func (net *Network) Subscribe(events chan *Event) {
 	}
 }
 
+// 执行三种不同类型的控制事件
+// Msg类型的控制事件会被忽略
 func (net *Network) executeControlEvent(event *Event) {
 	log.Trace("Executing control event", "type", event.Type, "event", event)
 	switch event.Type {
@@ -1082,6 +1199,7 @@ func (net *Network) executeControlEvent(event *Event) {
 	}
 }
 
+// node类型事件代表启动和停止节点,执行相应的操作
 func (net *Network) executeNodeEvent(e *Event) error {
 	if !e.Node.Up() {
 		return net.Stop(e.Node.ID())
@@ -1093,6 +1211,7 @@ func (net *Network) executeNodeEvent(e *Event) error {
 	return net.Start(e.Node.ID())
 }
 
+// conn类型事件代表建立或者断开连接,执行对应的操作
 func (net *Network) executeConnEvent(e *Event) error {
 	if e.Conn.Up {
 		return net.Connect(e.Conn.One, e.Conn.Other)

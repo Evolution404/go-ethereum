@@ -283,11 +283,11 @@ type RPCDialer interface {
 // LifecycleConstructor allows a Lifecycle to be constructed during node start-up.
 // While the service-specific package usually takes care of Lifecycle creation and registration,
 // for testing purposes, it is useful to be able to construct a Lifecycle on spot.
-// 节点启动的时候调用的函数,叫做节点的生命周期
+// LifecycleConstructor在节点启动的时候用来构造Lifecycle对象
 type LifecycleConstructor func(ctx *ServiceContext, stack *node.Node) (node.Lifecycle, error)
 
 // LifecycleConstructors stores LifecycleConstructor functions to call during node start-up.
-// 使用一个map封装多个生命周期回调函数, string->LifecycleConstructor代表生命周期的名称->需要调用的函数的映射
+// 使用一个map封装多个服务的构造方法, string->LifecycleConstructor代表服务的名称->该服务的构造函数
 type LifecycleConstructors map[string]LifecycleConstructor
 
 // lifecycleConstructorFuncs is a map of registered services which are used to boot devp2p
