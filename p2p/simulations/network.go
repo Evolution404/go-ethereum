@@ -57,7 +57,7 @@ type Network struct {
 	NetworkConfig
 
 	// 保存网络中的所有节点
-	Nodes   []*Node `json:"nodes"`
+	Nodes []*Node `json:"nodes"`
 	// 用来通过节点id获取Node对象
 	nodeMap map[enode.ID]int
 
@@ -66,15 +66,15 @@ type Network struct {
 	propertyMap map[string][]int
 
 	// 保存网络中所有连接
-	Conns   []*Conn `json:"conns"`
+	Conns []*Conn `json:"conns"`
 	// 用来通过连接的唯一字符串获取Conn对象
 	connMap map[string]int
 
 	nodeAdapter adapters.NodeAdapter
 	// 当节点启动,停止,建立连接,断开连接,发送消息,接收消息都会触发事件
-	events      event.Feed
-	lock        sync.RWMutex
-	quitc       chan struct{}
+	events event.Feed
+	lock   sync.RWMutex
+	quitc  chan struct{}
 }
 
 // NewNetwork returns a Network which uses the given NodeAdapter and NetworkConfig
@@ -779,7 +779,6 @@ func (net *Network) Shutdown() {
 func (net *Network) Reset() {
 	net.lock.Lock()
 	defer net.lock.Unlock()
-
 	//re-initialize the maps
 	net.connMap = make(map[string]int)
 	net.nodeMap = make(map[enode.ID]int)

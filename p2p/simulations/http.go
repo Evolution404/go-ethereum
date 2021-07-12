@@ -88,12 +88,15 @@ func (c *Client) LoadSnapshot(snap *Snapshot) error {
 
 // SubscribeOpts is a collection of options to use when subscribing to network
 // events
+// 客户端订阅仿真网络的事件的配置选项
 type SubscribeOpts struct {
 	// Current instructs the server to send events for existing nodes and
 	// connections first
+	// 是否获取当前网络中的节点和连接
 	Current bool
 
 	// Filter instructs the server to only send a subset of message events
+	// 消息事件的过滤器
 	Filter string
 }
 
@@ -101,6 +104,7 @@ type SubscribeOpts struct {
 // as a server-sent-events stream, optionally receiving events for existing
 // nodes and connections and filtering message events
 func (c *Client) SubscribeNetwork(events chan *Event, opts SubscribeOpts) (event.Subscription, error) {
+	// 根据配置选项,构造请求路径
 	url := fmt.Sprintf("%s/events?current=%t&filter=%s", c.URL, opts.Current, opts.Filter)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -120,6 +124,8 @@ func (c *Client) SubscribeNetwork(events chan *Event, opts SubscribeOpts) (event
 	// define a producer function to pass to event.Subscription
 	// which reads server-sent events from res.Body and sends
 	// them to the events channel
+	// 从res.Body中不断读取数据,然后发送到events管道
+	// 输入的参数stop管道在需要这个函数停止的时候会被关闭
 	producer := func(stop <-chan struct{}) error {
 		defer res.Body.Close()
 
@@ -127,6 +133,7 @@ func (c *Client) SubscribeNetwork(events chan *Event, opts SubscribeOpts) (event
 		// always reading from the stop channel
 		lines := make(chan string)
 		errC := make(chan error, 1)
+		// 后台不断扫描返回体,按照行为单位发送到lines管道
 		go func() {
 			s := bufio.NewScanner(res.Body)
 			for s.Scan() {
@@ -144,15 +151,18 @@ func (c *Client) SubscribeNetwork(events chan *Event, opts SubscribeOpts) (event
 		for {
 			select {
 			case line := <-lines:
+				// 找到数据行
 				if !strings.HasPrefix(line, "data:") {
 					continue
 				}
 				data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				// 将json字符串解码到Event对象
 				event := &Event{}
 				if err := json.Unmarshal([]byte(data), event); err != nil {
 					return fmt.Errorf("error decoding SSE event: %s", err)
 				}
 				select {
+					// 把接收到的事件发送出去
 				case events <- event:
 				case <-stop:
 					return nil
@@ -231,6 +241,10 @@ func (c *Client) Delete(path string) error {
 
 // Send performs a HTTP request, sending "in" as the JSON request body and
 // decoding the JSON response into "out"
+// 客户端向服务端发送一个http请求
+// method代表请求方法,path是路径
+// in是输入数据,编码成json发送
+// out是接收的json数据编码成的结果
 func (c *Client) Send(method, path string, in, out interface{}) error {
 	var body []byte
 	if in != nil {
@@ -240,12 +254,14 @@ func (c *Client) Send(method, path string, in, out interface{}) error {
 			return err
 		}
 	}
+	// 构造http.Request对象
 	req, err := http.NewRequest(method, c.URL+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	// 执行http请求,并得到返回结果res
 	res, err := c.client.Do(req)
 	if err != nil {
 		return err
@@ -255,6 +271,7 @@ func (c *Client) Send(method, path string, in, out interface{}) error {
 		response, _ := ioutil.ReadAll(res.Body)
 		return fmt.Errorf("unexpected HTTP status: %s: %s", res.Status, response)
 	}
+	// 将返回的Body解码到out上
 	if out != nil {
 		if err := json.NewDecoder(res.Body).Decode(out); err != nil {
 			return err
@@ -281,7 +298,7 @@ func NewServer(network *Network) *Server {
 		network: network,
 	}
 
-	// 设置路由的路径
+	// 注册路径以及处理的方法
 	s.OPTIONS("/", s.Options)
 	s.GET("/", s.GetNetwork)
 	s.POST("/start", s.StartNetwork)
@@ -290,6 +307,10 @@ func NewServer(network *Network) *Server {
 	s.POST("/mocker/stop", s.StopMocker)
 	s.GET("/mocker", s.GetMockers)
 	s.POST("/reset", s.ResetNetwork)
+	// 流式订阅网络中发生的事件, 可以传入filter参数来过滤消息事件
+	// events?filter=pingpong:1,2-other:*
+	// 订阅pingpong协议中消息码为1或者2的消息,订阅other协议的所有消息
+	// 还可以传入current=true,将返回网络中的节点和已经建立的连接
 	s.GET("/events", s.StreamNetworkEvents)
 	s.GET("/snapshot", s.CreateSnapshot)
 	s.POST("/snapshot", s.LoadSnapshot)
@@ -384,16 +405,21 @@ func (s *Server) ResetNetwork(w http.ResponseWriter, req *http.Request) {
 }
 
 // StreamNetworkEvents streams network events as a server-sent-events stream
+// 以数据流的形式不断输出网络中的事件
 func (s *Server) StreamNetworkEvents(w http.ResponseWriter, req *http.Request) {
 	events := make(chan *Event)
 	sub := s.network.events.Subscribe(events)
 	defer sub.Unsubscribe()
 
 	// write writes the given event and data to the stream like:
+	// 发送的事件的格式如下
 	//
 	// event: <event>
 	// data: <data>
 	//
+	// event有network和error两种类型
+
+	// write方法用于向http连接中写入一个事件
 	write := func(event, data string) {
 		fmt.Fprintf(w, "event: %s\n", event)
 		fmt.Fprintf(w, "data: %s\n\n", data)
@@ -401,6 +427,7 @@ func (s *Server) StreamNetworkEvents(w http.ResponseWriter, req *http.Request) {
 			fw.Flush()
 		}
 	}
+	// 通过write方法实现writeEvent和writeErr
 	writeEvent := func(event *Event) error {
 		data, err := json.Marshal(event)
 		if err != nil {
@@ -414,6 +441,7 @@ func (s *Server) StreamNetworkEvents(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// check if filtering has been requested
+	// 生成过滤器对象,接下来用MsgFilters对象来判断一个消息事件是不是应该发送给客户端
 	var filters MsgFilters
 	if filterParam := req.URL.Query().Get("filter"); filterParam != "" {
 		var err error
@@ -432,6 +460,7 @@ func (s *Server) StreamNetworkEvents(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// optionally send the existing nodes and connections
+	// 如果传入current=true,就把当前网络中的节点和建立的连接返回过去
 	if req.URL.Query().Get("current") == "true" {
 		snap, err := s.network.Snapshot()
 		if err != nil {
@@ -455,13 +484,16 @@ func (s *Server) StreamNetworkEvents(w http.ResponseWriter, req *http.Request) {
 	}
 
 	clientGone := req.Context().Done()
+	// 循环向客户端发送网络事件
 	for {
 		select {
 		case event := <-events:
 			// only send message events which match the filters
+			// 接收到了消息事件,但是没有匹配上跳过
 			if event.Msg != nil && !filters.Match(event.Msg) {
 				continue
 			}
+			// 发送网络事件
 			if err := writeEvent(event); err != nil {
 				writeErr(err)
 				return
@@ -480,14 +512,21 @@ func (s *Server) StreamNetworkEvents(w http.ResponseWriter, req *http.Request) {
 // protocol and <codes> is a comma-separated list of message codes.
 //
 // A message code of '*' or '-1' is considered a wildcard and matches any code.
+// 创建一个消息过滤器,消息过滤的格式是 <proto>:<codes>-<proto>:<codes>-...- 用破折号分割
+// <proto>是协议的名称,<codes>是消息码,使用逗号分割
+// <codes>中支持使用*和-1作为通配符
 func NewMsgFilters(filterParam string) (MsgFilters, error) {
 	filters := make(MsgFilters)
+	// 首先根据破折号分割出来一个个的 <proto>:<codes>
 	for _, filter := range strings.Split(filterParam, "-") {
+		// 再根据冒号分割出来两个部分
 		protoCodes := strings.SplitN(filter, ":", 2)
 		if len(protoCodes) != 2 || protoCodes[0] == "" || protoCodes[1] == "" {
 			return nil, fmt.Errorf("invalid message filter: %s", filter)
 		}
 		proto := protoCodes[0]
+		// 再把<codes>根据逗号切分
+		// 每个协议的每个消息码都生成一个MsgFilter对象
 		for _, code := range strings.Split(protoCodes[1], ",") {
 			if code == "*" || code == "-1" {
 				filters[MsgFilter{Proto: proto, Code: -1}] = struct{}{}
@@ -505,16 +544,20 @@ func NewMsgFilters(filterParam string) (MsgFilters, error) {
 
 // MsgFilters is a collection of filters which are used to filter message
 // events
+// 保存了许多MsgFilter对象,一个协议的一个消息码就使用一个MsgFilter对象表示
 type MsgFilters map[MsgFilter]struct{}
 
 // Match checks if the given message matches any of the filters
+// 判断指定的消息是否被匹配到
 func (m MsgFilters) Match(msg *Msg) bool {
 	// check if there is a wildcard filter for the message's protocol
+	// 首先看消息所属的协议是不是有通配符
 	if _, ok := m[MsgFilter{Proto: msg.Protocol, Code: -1}]; ok {
 		return true
 	}
 
 	// check if there is a filter for the message's protocol and code
+	// 没有通配符的话看有没有指定这个消息码
 	if _, ok := m[MsgFilter{Proto: msg.Protocol, Code: int64(msg.Code)}]; ok {
 		return true
 	}
@@ -524,6 +567,8 @@ func (m MsgFilters) Match(msg *Msg) bool {
 
 // MsgFilter is used to filter message events based on protocol and message
 // code
+// MsgFilter代表了一个协议的一种消息码
+// 消息码这里可以是通配符*和-1,代表这个协议的所有消息
 type MsgFilter struct {
 	// Proto is matched against a message's protocol
 	Proto string
@@ -560,9 +605,11 @@ func (s *Server) LoadSnapshot(w http.ResponseWriter, req *http.Request) {
 }
 
 // CreateNode creates a node in the network using the given configuration
+// 通过请求中的参数创建一个节点
 func (s *Server) CreateNode(w http.ResponseWriter, req *http.Request) {
 	config := &adapters.NodeConfig{}
 
+	// 节点的配置以json的格式保存在请求体中
 	err := json.NewDecoder(req.Body).Decode(config)
 	if err != nil && err != io.EOF {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -677,21 +724,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 // GET registers a handler for GET requests to a particular path
+// 注册指定路径GET请求的处理函数
 func (s *Server) GET(path string, handle http.HandlerFunc) {
 	s.router.GET(path, s.wrapHandler(handle))
 }
 
 // POST registers a handler for POST requests to a particular path
+// 注册指定路径POST请求的处理函数
 func (s *Server) POST(path string, handle http.HandlerFunc) {
 	s.router.POST(path, s.wrapHandler(handle))
 }
 
 // DELETE registers a handler for DELETE requests to a particular path
+// 注册指定路径DELETE请求的处理函数
 func (s *Server) DELETE(path string, handle http.HandlerFunc) {
 	s.router.DELETE(path, s.wrapHandler(handle))
 }
 
 // OPTIONS registers a handler for OPTIONS requests to a particular path
+// 注册指定路径OPTIONS请求的处理函数
 func (s *Server) OPTIONS(path string, handle http.HandlerFunc) {
 	s.router.OPTIONS("/*path", s.wrapHandler(handle))
 }
@@ -706,13 +757,22 @@ func (s *Server) JSON(w http.ResponseWriter, status int, data interface{}) {
 
 // wrapHandler returns an httprouter.Handle which wraps an http.HandlerFunc by
 // populating request.Context with any objects from the URL params
+// 由http.HandlerFunc封装成一个httprouter.Handler方法
 func (s *Server) wrapHandler(handler http.HandlerFunc) httprouter.Handle {
+	// 直接构造一个httprouter.Handler方法
+	// 将httprouter.Params通过context对象传递到http.Request对象中
 	return func(w http.ResponseWriter, req *http.Request, params httprouter.Params) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 
+		// ctx中会保存下来链接中传递的参数
+		// 有可能有两个参数
+		// 只有nodeid代表要操作的节点
+		// 同时出现nodeid和peerid代表要nodeid与peerid建立或断开连接
+
 		ctx := req.Context()
 
+		// 将查询的Node对象封装到context中
 		if id := params.ByName("nodeid"); id != "" {
 			var nodeID enode.ID
 			var node *Node
@@ -728,6 +788,7 @@ func (s *Server) wrapHandler(handler http.HandlerFunc) httprouter.Handle {
 			ctx = context.WithValue(ctx, "node", node)
 		}
 
+		// 将查询的peerid得到的Node对象也封装到context中
 		if id := params.ByName("peerid"); id != "" {
 			var peerID enode.ID
 			var peer *Node
@@ -743,6 +804,7 @@ func (s *Server) wrapHandler(handler http.HandlerFunc) httprouter.Handle {
 			ctx = context.WithValue(ctx, "peer", peer)
 		}
 
+		// 调用http.HandlerFunc,这里让req保存了更新后的context对象
 		handler(w, req.WithContext(ctx))
 	}
 }

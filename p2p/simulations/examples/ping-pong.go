@@ -45,7 +45,7 @@ func main() {
 
 	// register a single ping-pong service
 	services := map[string]adapters.LifecycleConstructor{
-		"ping-pong": func(ctx *adapters.ServiceContext, stack *node.Node) (node.Lifecycle, error) {
+		"pingpong": func(ctx *adapters.ServiceContext, stack *node.Node) (node.Lifecycle, error) {
 			pps := newPingPongService(ctx.Config.ID)
 			stack.RegisterProtocols(pps.Protocols())
 			return pps, nil
@@ -78,7 +78,7 @@ func main() {
 	// start the HTTP API
 	log.Info("starting simulation server on 0.0.0.0:8888...")
 	network := simulations.NewNetwork(adapter, &simulations.NetworkConfig{
-		DefaultService: "ping-pong",
+		DefaultService: "pingpong",
 	})
 	if err := http.ListenAndServe(":8888", simulations.NewServer(network)); err != nil {
 		log.Crit("error starting simulation server", "err", err)
@@ -104,7 +104,7 @@ func newPingPongService(id enode.ID) *pingPongService {
 // 定义一个协议对象
 func (p *pingPongService) Protocols() []p2p.Protocol {
 	return []p2p.Protocol{{
-		Name:     "ping-pong",
+		Name:     "pingpong",
 		Version:  1,
 		// 这个协议中有两种消息 pingMsgCode和pongMsgCode
 		Length:   2,
@@ -115,12 +115,12 @@ func (p *pingPongService) Protocols() []p2p.Protocol {
 }
 
 func (p *pingPongService) Start() error {
-	p.log.Info("ping-pong service starting")
+	p.log.Info("pingpong service starting")
 	return nil
 }
 
 func (p *pingPongService) Stop() error {
-	p.log.Info("ping-pong service stopping")
+	p.log.Info("pingpong service stopping")
 	return nil
 }
 

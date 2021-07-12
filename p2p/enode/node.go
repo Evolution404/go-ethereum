@@ -230,6 +230,7 @@ func (n ID) MarshalText() ([]byte, error) {
 }
 
 // UnmarshalText implements the encoding.TextUnmarshaler interface.
+// 从hex字符串转化成enode.ID对象,text是hex字符串的字节数组
 func (n *ID) UnmarshalText(text []byte) error {
 	id, err := ParseID(string(text))
 	if err != nil {
@@ -252,6 +253,7 @@ func HexID(in string) ID {
 	return id
 }
 
+// 将hex字符串转化成enode.ID对象
 func ParseID(in string) (ID, error) {
 	var id ID
 	b, err := hex.DecodeString(strings.TrimPrefix(in, "0x"))

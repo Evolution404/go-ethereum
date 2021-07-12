@@ -40,8 +40,8 @@ import (
 // 实现了p2p.NodeDialer,adapters.NodeAdapter,adapters.RPCDialer接口
 type SimAdapter struct {
 	// 用来创建net.Conn对象的函数
-	pipe       func() (net.Conn, net.Conn, error)
-	mtx        sync.RWMutex
+	pipe func() (net.Conn, net.Conn, error)
+	mtx  sync.RWMutex
 	// 保存这个Adapter已经创建的节点
 	nodes      map[enode.ID]*SimNode
 	lifecycles LifecycleConstructors
