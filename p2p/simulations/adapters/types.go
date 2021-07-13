@@ -121,6 +121,7 @@ type NodeConfig struct {
 	node *enode.Node
 
 	// ENR Record with entries to overwrite
+	// 这里记录的信息优先级低,如果设置了Port会,记录中的端口也会更新
 	Record enr.Record
 
 	// function to sanction or prevent suggesting a peer
@@ -160,6 +161,7 @@ type nodeConfigJSON struct {
 // 将NodeConfig对象编码为json字符串
 func (n *NodeConfig) MarshalJSON() ([]byte, error) {
 	confJSON := nodeConfigJSON{
+		// id是以hex字符串的格式保存
 		ID:              n.ID.String(),
 		Name:            n.Name,
 		Lifecycles:      n.Lifecycles,
@@ -169,6 +171,7 @@ func (n *NodeConfig) MarshalJSON() ([]byte, error) {
 		LogFile:         n.LogFile,
 		LogVerbosity:    int(n.LogVerbosity),
 	}
+	// 私钥也是以hex字符串保存
 	if n.PrivateKey != nil {
 		confJSON.PrivateKey = hex.EncodeToString(crypto.FromECDSA(n.PrivateKey))
 	}
@@ -184,6 +187,7 @@ func (n *NodeConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
+	// ID和PrivateKey需要特殊处理,其他的字段直接赋值
 	if confJSON.ID != "" {
 		if err := n.ID.UnmarshalText([]byte(confJSON.ID)); err != nil {
 			return err
@@ -322,7 +326,7 @@ func RegisterLifecycles(lifecycles LifecycleConstructors) {
 // creates and  the corresponding enode object to the configuration
 // 根据输入的ip和端口,初始化NodeConfig.Record和NodeConfig.node字段
 func (n *NodeConfig) initEnode(ip net.IP, tcpport int, udpport int) error {
-	// 设置n.Record
+	// 先设置n.Record,然后根据Record对象生成enode.Node对象
 	enrIp := enr.IP(ip)
 	n.Record.Set(&enrIp)
 	enrTcpPort := enr.TCP(tcpport)
@@ -335,6 +339,7 @@ func (n *NodeConfig) initEnode(ip net.IP, tcpport int, udpport int) error {
 	if err != nil {
 		return fmt.Errorf("unable to generate ENR: %v", err)
 	}
+	// 生成enode.Node对象
 	nod, err := enode.New(enode.V4ID{}, &n.Record)
 	if err != nil {
 		return fmt.Errorf("unable to create enode: %v", err)

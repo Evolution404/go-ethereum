@@ -210,6 +210,7 @@ func (n ID) Bytes() []byte {
 }
 
 // ID prints as a long hexadecimal number.
+// 将id转换成hex字符串
 func (n ID) String() string {
 	return fmt.Sprintf("%x", n[:])
 }

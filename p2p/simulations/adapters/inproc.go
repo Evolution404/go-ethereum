@@ -51,7 +51,7 @@ type SimAdapter struct {
 // simulation nodes running any of the given services (the services to run on a
 // particular node are passed to the NewNode function in the NodeConfig)
 // the adapter uses a net.Pipe for in-memory simulated network connections
-// 输入多个生命周期函数,创建SimAdapter
+// 创建SimAdapter需要输入支持的服务,因为SimAdapter不使用RegisterLifecycles中注册的服务
 func NewSimAdapter(services LifecycleConstructors) *SimAdapter {
 	return &SimAdapter{
 		pipe:       pipes.NetPipe,
@@ -67,6 +67,7 @@ func (s *SimAdapter) Name() string {
 
 // NewNode returns a new SimNode using the given config
 // SimAdapter对象使用给定的节点配置创建一个内存型节点
+// 输入的NodeConfig中必须要有PrivateKey和至少一个Lifecycles
 func (s *SimAdapter) NewNode(config *NodeConfig) (Node, error) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()

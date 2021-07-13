@@ -136,6 +136,7 @@ func (c *Client) SubscribeNetwork(events chan *Event, opts SubscribeOpts) (event
 		// 后台不断扫描返回体,按照行为单位发送到lines管道
 		go func() {
 			s := bufio.NewScanner(res.Body)
+			// scanner默认是按照行来切分
 			for s.Scan() {
 				select {
 				case lines <- s.Text():
@@ -305,6 +306,7 @@ func NewServer(network *Network) *Server {
 	s.POST("/stop", s.StopNetwork)
 	s.POST("/mocker/start", s.StartMocker)
 	s.POST("/mocker/stop", s.StopMocker)
+	// 查询现有的mocker,startStop,probabilistic和boot三种
 	s.GET("/mocker", s.GetMockers)
 	s.POST("/reset", s.ResetNetwork)
 	// 流式订阅网络中发生的事件, 可以传入filter参数来过滤消息事件
@@ -391,6 +393,7 @@ func (s *Server) StopMocker(w http.ResponseWriter, req *http.Request) {
 }
 
 // GetMockerList returns a list of available mockers
+// 获取仿真网络中现有的mocker,目前有三种:startStop,probabilistic和boot
 func (s *Server) GetMockers(w http.ResponseWriter, req *http.Request) {
 
 	list := GetMockerList()

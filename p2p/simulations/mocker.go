@@ -30,6 +30,7 @@ import (
 )
 
 //a map of mocker names to its function
+// 保存了所有mocker的名称和它的函数的映射
 var mockerList = map[string]func(net *Network, quit chan struct{}, nodeCount int){
 	"startStop":     startStop,
 	"probabilistic": probabilistic,
@@ -37,12 +38,14 @@ var mockerList = map[string]func(net *Network, quit chan struct{}, nodeCount int
 }
 
 //Lookup a mocker by its name, returns the mockerFn
+// 通过mocker的名称查询它的函数
 func LookupMocker(mockerType string) func(net *Network, quit chan struct{}, nodeCount int) {
 	return mockerList[mockerType]
 }
 
 //Get a list of mockers (keys of the map)
 //Useful for frontend to build available mocker selection
+// 获取现有的mocker的名称的列表
 func GetMockerList() []string {
 	list := make([]string, 0, len(mockerList))
 	for k := range mockerList {
@@ -52,6 +55,7 @@ func GetMockerList() []string {
 }
 
 //The boot mockerFn only connects the node in a ring and doesn't do anything else
+// 这个模式直接启动指定个数的节点建立一个环状网络
 func boot(net *Network, quit chan struct{}, nodeCount int) {
 	_, err := connectNodesInRing(net, nodeCount)
 	if err != nil {
@@ -60,11 +64,13 @@ func boot(net *Network, quit chan struct{}, nodeCount int) {
 }
 
 //The startStop mockerFn stops and starts nodes in a defined period (ticker)
+// 这个模式启动指定个数的节点建立环状网络,然后每十秒随机停止一个节点三秒后让这个节点重新运行
 func startStop(net *Network, quit chan struct{}, nodeCount int) {
 	nodes, err := connectNodesInRing(net, nodeCount)
 	if err != nil {
 		panic("Could not startup node network for mocker")
 	}
+	// 接下来的循环每十秒执行一次
 	tick := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
 	for {
@@ -73,6 +79,7 @@ func startStop(net *Network, quit chan struct{}, nodeCount int) {
 			log.Info("Terminating simulation loop")
 			return
 		case <-tick.C:
+			// 随机找到一个节点,让他停止运行
 			id := nodes[rand.Intn(len(nodes))]
 			log.Info("stopping node", "id", id)
 			if err := net.Stop(id); err != nil {
@@ -80,6 +87,7 @@ func startStop(net *Network, quit chan struct{}, nodeCount int) {
 				return
 			}
 
+			// 然后等待三秒重新启动这个节点
 			select {
 			case <-quit:
 				log.Info("Terminating simulation loop")
@@ -101,6 +109,7 @@ func startStop(net *Network, quit chan struct{}, nodeCount int) {
 //nodes are connected in a ring, then a varying number of random nodes is selected,
 //mocker then stops and starts them in random intervals, and continues the loop
 func probabilistic(net *Network, quit chan struct{}, nodeCount int) {
+	// 创建环状网络
 	nodes, err := connectNodesInRing(net, nodeCount)
 	if err != nil {
 		select {
@@ -120,23 +129,16 @@ func probabilistic(net *Network, quit chan struct{}, nodeCount int) {
 		}
 		var lowid, highid int
 		var wg sync.WaitGroup
+		// 随机等待一段时间 [1-6)秒
 		randWait := time.Duration(rand.Intn(5000)+1000) * time.Millisecond
 		rand1 := rand.Intn(nodeCount - 1)
 		rand2 := rand.Intn(nodeCount - 1)
-		if rand1 < rand2 {
+		if rand1 <= rand2 {
 			lowid = rand1
 			highid = rand2
 		} else if rand1 > rand2 {
 			highid = rand1
 			lowid = rand2
-		} else {
-			if rand1 == 0 {
-				rand2 = 9
-			} else if rand1 == 9 {
-				rand1 = 0
-			}
-			lowid = rand1
-			highid = rand2
 		}
 		var steps = highid - lowid
 		wg.Add(steps)
@@ -169,7 +171,9 @@ func probabilistic(net *Network, quit chan struct{}, nodeCount int) {
 }
 
 //connect nodeCount number of nodes in a ring
+// 创建nodeCount个节点,并让这些节点组成一个环状的网络
 func connectNodesInRing(net *Network, nodeCount int) ([]enode.ID, error) {
+	// 首先在仿真网络中随机创建nodeCount个节点
 	ids := make([]enode.ID, nodeCount)
 	for i := 0; i < nodeCount; i++ {
 		conf := adapters.RandomNodeConfig()
@@ -181,6 +185,7 @@ func connectNodesInRing(net *Network, nodeCount int) ([]enode.ID, error) {
 		ids[i] = node.ID()
 	}
 
+	// 然后启动新创建的这些节点
 	for _, id := range ids {
 		if err := net.Start(id); err != nil {
 			log.Error("Error starting a node!", "err", err)
@@ -188,6 +193,7 @@ func connectNodesInRing(net *Network, nodeCount int) ([]enode.ID, error) {
 		}
 		log.Debug(fmt.Sprintf("node %v starting up", id))
 	}
+	// 将这些节点依次建立连接,组成一个环
 	for i, id := range ids {
 		peerID := ids[(i+1)%len(ids)]
 		if err := net.Connect(id, peerID); err != nil {
