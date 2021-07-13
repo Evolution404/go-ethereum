@@ -56,7 +56,7 @@ const (
 // NodeDialer is used to connect to nodes in the network, typically by using
 // an underlying net.Dialer but also using net.Pipe in tests.
 // 用来创建与另一个节点的连接
-// 这个接口被tcpDialer和SimAdapter实现
+// 这个接口被tcpDialer和SimAdapter实现,tcpDialer是真正的网络连接,SimAdapter是使用内存管道
 // 这个Dial方法传入的参数是Context和enode.Node
 // 是对下面这个函数的封装,network一般直接指定为tcp,address由enode.Node解析出来
 // func (d *Dialer) DialContext(ctx context.Context, network, address string) (Conn, error) {

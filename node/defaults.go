@@ -55,6 +55,7 @@ var DefaultConfig = Config{
 
 // DefaultDataDir is the default data directory to use for the databases and other
 // persistence requirements.
+// 获取默认的DataDir路径
 func DefaultDataDir() string {
 	// Try to place the data folder in the user's home dir
 	home := homeDir()

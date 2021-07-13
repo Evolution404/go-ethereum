@@ -184,6 +184,7 @@ type SimNode struct {
 	node         *node.Node
 	running      map[string]node.Lifecycle
 	client       *rpc.Client
+	// 确保注册服务的过程只被执行一次
 	registerOnce sync.Once
 }
 
@@ -254,6 +255,7 @@ func (sn *SimNode) Snapshots() (map[string][]byte, error) {
 }
 
 // Start registers the services and starts the underlying devp2p node
+// 为节点注册服务,并启动节点
 func (sn *SimNode) Start(snapshots map[string][]byte) error {
 	// ensure we only register the services once in the case of the node
 	// being stopped and then started again
@@ -267,16 +269,20 @@ func (sn *SimNode) Start(snapshots map[string][]byte) error {
 			if snapshots != nil {
 				ctx.Snapshot = snapshots[name]
 			}
+			// 找到服务对应的构造函数
 			serviceFunc := sn.adapter.lifecycles[name]
+			// 调用构造函数生成服务对象
 			service, err := serviceFunc(ctx, sn.node)
 			if err != nil {
 				regErr = err
 				break
 			}
 			// if the service has already been registered, don't register it again.
+			// 跳过已经注册的服务
 			if _, ok := sn.running[name]; ok {
 				continue
 			}
+			// 将Lifecycle对象保存起来
 			sn.running[name] = service
 		}
 	})
