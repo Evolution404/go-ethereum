@@ -131,6 +131,7 @@ type Config struct {
 
 	// NodeDatabase is the path to the database containing the previously seen
 	// live nodes in the network.
+	// 保存了之前节点发现结果的数据库的路径
 	NodeDatabase string `toml:",omitempty"`
 
 	// Protocols should contain the protocols supported

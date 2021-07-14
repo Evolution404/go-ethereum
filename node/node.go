@@ -42,19 +42,25 @@ type Node struct {
 	config        *Config
 	accman        *accounts.Manager
 	log           log.Logger
-	ephemKeystore string            // if non-empty, the key directory that will be removed by Stop
-	dirLock       fileutil.Releaser // prevents concurrent use of instance directory
-	stop          chan struct{}     // Channel to wait for termination notifications
-	server        *p2p.Server       // Currently running P2P networking layer
-	startStopLock sync.Mutex        // Start/Stop are protected by an additional lock
-	state         int               // Tracks state of node lifecycle
+	ephemKeystore string // if non-empty, the key directory that will be removed by Stop
+	// 避免并发访问节点的专属文件夹,访问结束要调用dirLock.Release()释放锁
+	dirLock fileutil.Releaser // prevents concurrent use of instance directory
+	stop    chan struct{}     // Channel to wait for termination notifications
+	server  *p2p.Server       // Currently running P2P networking layer
+	// Start和Close函数中使用,避免这两个函数并发执行
+	startStopLock sync.Mutex // Start/Stop are protected by an additional lock
+	// 节点当前的状态,总共有三种
+	// initializingState,runningState,closedState
+	state int // Tracks state of node lifecycle
 
 	lock          sync.Mutex
 	lifecycles    []Lifecycle // All registered backends, services, and auxiliary services that have a lifecycle
+	// rpcAPIs保存了当前节点能够提供的所有RPC调用
 	rpcAPIs       []rpc.API   // List of APIs currently provided by the node
 	http          *httpServer //
 	ws            *httpServer //
 	ipc           *ipcServer  // Stores information about the ipc http server
+	// 进程内的RPC处理器
 	inprocHandler *rpc.Server // In-process RPC request handler to process the API requests
 
 	databases map[*closeTrackingDB]struct{} // All open databases
@@ -67,9 +73,12 @@ const (
 )
 
 // New creates a new P2P node, ready for protocol registration.
+// 创建一个p2p节点,等待注册协议
 func New(conf *Config) (*Node, error) {
 	// Copy config and resolve the datadir so future changes to the current
 	// working directory don't affect the node.
+	// 这里把Config对象复制了一份,每个节点单独有一个Config对象
+	// 这样调用New的时候输入的Config可以重复使用,不用担心DataDir被修改了
 	confCopy := *conf
 	conf = &confCopy
 	if conf.DataDir != "" {
@@ -85,24 +94,30 @@ func New(conf *Config) (*Node, error) {
 
 	// Ensure that the instance name doesn't cause weird conflicts with
 	// other files in the data directory.
+	// 确保节点的名称不是奇奇怪怪的内容
+	// 不能包括斜杠,反斜杠
 	if strings.ContainsAny(conf.Name, `/\`) {
 		return nil, errors.New(`Config.Name must not contain '/' or '\'`)
 	}
+	// 不能和keystore一样
 	if conf.Name == datadirDefaultKeyStore {
 		return nil, errors.New(`Config.Name cannot be "` + datadirDefaultKeyStore + `"`)
 	}
+	// 不能和ipc文件一样有这个后缀
 	if strings.HasSuffix(conf.Name, ".ipc") {
 		return nil, errors.New(`Config.Name cannot end in ".ipc"`)
 	}
 
+	// 创建Node对象
 	node := &Node{
 		config:        conf,
 		inprocHandler: rpc.NewServer(),
 		eventmux:      new(event.TypeMux),
 		log:           conf.Logger,
 		stop:          make(chan struct{}),
-		server:        &p2p.Server{Config: conf.P2P},
-		databases:     make(map[*closeTrackingDB]struct{}),
+		// 这个节点所处的Server对象
+		server:    &p2p.Server{Config: conf.P2P},
+		databases: make(map[*closeTrackingDB]struct{}),
 	}
 
 	// Register built-in APIs.
@@ -122,7 +137,10 @@ func New(conf *Config) (*Node, error) {
 	node.ephemKeystore = ephemeralKeystore
 
 	// Initialize the p2p server. This creates the node key and discovery databases.
+	// 为刚刚创建的p2p.Server指定一些必要的信息
+	// 指定节点私钥
 	node.server.Config.PrivateKey = node.config.NodeKey()
+	// 指定节点的标识符
 	node.server.Config.Name = node.config.NodeName()
 	node.server.Config.Logger = node.log
 	if node.server.Config.StaticNodes == nil {
@@ -131,6 +149,7 @@ func New(conf *Config) (*Node, error) {
 	if node.server.Config.TrustedNodes == nil {
 		node.server.Config.TrustedNodes = node.config.TrustedNodes()
 	}
+	// 节点发现数据库的路径
 	if node.server.Config.NodeDatabase == "" {
 		node.server.Config.NodeDatabase = node.config.NodeDB()
 	}
@@ -144,6 +163,7 @@ func New(conf *Config) (*Node, error) {
 	}
 
 	// Configure RPC servers.
+	// 处理http,ws,ipc请求
 	node.http = newHTTPServer(node.log, conf.HTTPTimeouts)
 	node.ws = newHTTPServer(node.log, rpc.DefaultHTTPTimeouts)
 	node.ipc = newIPCServer(node.log, conf.IPCEndpoint())
@@ -158,6 +178,7 @@ func (n *Node) Start() error {
 	defer n.startStopLock.Unlock()
 
 	n.lock.Lock()
+	// 调用Start时节点的状态必须是initializingState
 	switch n.state {
 	case runningState:
 		n.lock.Unlock()
@@ -166,6 +187,7 @@ func (n *Node) Start() error {
 		n.lock.Unlock()
 		return ErrNodeStopped
 	}
+	// 修改运行状态
 	n.state = runningState
 	// open networking and RPC endpoints
 	err := n.openEndpoints()
@@ -304,17 +326,20 @@ func (n *Node) stopServices(running []Lifecycle) error {
 	return nil
 }
 
+// 为专属文件夹生成锁
 func (n *Node) openDataDir() error {
 	if n.config.DataDir == "" {
 		return nil // ephemeral
 	}
 
+	// 节点的专属文件夹,DataDir与节点名称拼起来
 	instdir := filepath.Join(n.config.DataDir, n.config.name())
 	if err := os.MkdirAll(instdir, 0700); err != nil {
 		return err
 	}
 	// Lock the instance directory to prevent concurrent use by another instance as well as
 	// accidental use of the instance directory as a database.
+	// 生成占用这个文件夹的锁
 	release, _, err := fileutil.Flock(filepath.Join(instdir, "LOCK"))
 	if err != nil {
 		return convertFileLockError(err)
@@ -323,6 +348,7 @@ func (n *Node) openDataDir() error {
 	return nil
 }
 
+// 释放专属文件夹的锁
 func (n *Node) closeDataDir() {
 	// Release instance directory lock.
 	if n.dirLock != nil {
@@ -336,6 +362,7 @@ func (n *Node) closeDataDir() {
 // configureRPC is a helper method to configure all the various RPC endpoints during node
 // startup. It's not meant to be called at any time afterwards as it makes certain
 // assumptions about the state of the node.
+// 启动各个RPC服务,包括ipc,http,ws
 func (n *Node) startRPC() error {
 	if err := n.startInProc(); err != nil {
 		return err
@@ -401,6 +428,7 @@ func (n *Node) stopRPC() {
 }
 
 // startInProc registers all RPC APIs on the inproc server.
+// 为inprocHandler注册n.rpcAPIs中保存的服务
 func (n *Node) startInProc() error {
 	for _, api := range n.rpcAPIs {
 		if err := n.inprocHandler.RegisterName(api.Namespace, api.Service); err != nil {
@@ -460,15 +488,20 @@ func (n *Node) RegisterAPIs(apis []rpc.API) {
 //
 // The name of the handler is shown in a log message when the HTTP server starts
 // and should be a descriptive term for the service provided by the handler.
+// 为节点注册某个路径下的处理函数
+// 这个方法必须在节点启动前调用
 func (n *Node) RegisterHandler(name, path string, handler http.Handler) {
 	n.lock.Lock()
 	defer n.lock.Unlock()
 
+	// 不是initializingState状态,不能注册处理函数
 	if n.state != initializingState {
 		panic("can't register HTTP handler on running/stopped node")
 	}
 
+	// 在mux中注册处理函数
 	n.http.mux.Handle(path, handler)
+	// httpServer中记录下来路径和名称
 	n.http.handlerNames[path] = name
 }
 
@@ -526,6 +559,7 @@ func (n *Node) IPCEndpoint() string {
 
 // HTTPEndpoint returns the URL of the HTTP server. Note that this URL does not
 // contain the JSON-RPC path prefix set by HTTPPathPrefix.
+// 获取http服务的地址
 func (n *Node) HTTPEndpoint() string {
 	return "http://" + n.http.listenAddr()
 }

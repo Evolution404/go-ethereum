@@ -26,6 +26,8 @@ import (
 )
 
 // StartHTTPEndpoint starts the HTTP RPC endpoint.
+// 在endpoint上启动一个http服务,接收的请求由handler处理
+// endpoint指定了监听的地址和端口,handler实现了ServeHTTP方法
 func StartHTTPEndpoint(endpoint string, timeouts rpc.HTTPTimeouts, handler http.Handler) (*http.Server, net.Addr, error) {
 	// start the HTTP listener
 	var (
@@ -51,14 +53,20 @@ func StartHTTPEndpoint(endpoint string, timeouts rpc.HTTPTimeouts, handler http.
 // checkModuleAvailability checks that all names given in modules are actually
 // available API services. It assumes that the MetadataApi module ("rpc") is always available;
 // the registration of this "rpc" module happens in NewServer() and is thus common to all endpoints.
+// bad代表modules中不在apis中的Namespace
+// available代表apis中所有的Namespace
 func checkModuleAvailability(modules []string, apis []rpc.API) (bad, available []string) {
+	// 保存所有rpc.API.Namespace
 	availableSet := make(map[string]struct{})
 	for _, api := range apis {
+		// 找到还没保存下来的就添加到列表中
 		if _, ok := availableSet[api.Namespace]; !ok {
 			availableSet[api.Namespace] = struct{}{}
 			available = append(available, api.Namespace)
 		}
 	}
+	// modules中不在apis中的被保存到bad里面
+	// 需要注意的是MetadataApi不会被保存到bad中
 	for _, name := range modules {
 		if _, ok := availableSet[name]; !ok && name != rpc.MetadataApi {
 			bad = append(bad, name)
@@ -68,6 +76,8 @@ func checkModuleAvailability(modules []string, apis []rpc.API) (bad, available [
 }
 
 // CheckTimeouts ensures that timeout values are meaningful
+// 判断超时时间是不是有效
+// 读取,写入和空闲超时时间任何一个都不能小于一秒,小于一秒就改成默认值
 func CheckTimeouts(timeouts *rpc.HTTPTimeouts) {
 	if timeouts.ReadTimeout < time.Second {
 		log.Warn("Sanitizing invalid HTTP read timeout", "provided", timeouts.ReadTimeout, "updated", rpc.DefaultHTTPTimeouts.ReadTimeout)

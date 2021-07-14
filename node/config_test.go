@@ -18,10 +18,8 @@ package node
 
 import (
 	"bytes"
-	"fmt"
 	"io/ioutil"
 	"os"
-	"os/user"
 	"path/filepath"
 	"runtime"
 	"testing"

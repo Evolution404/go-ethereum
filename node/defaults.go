@@ -37,6 +37,8 @@ const (
 )
 
 // DefaultConfig contains reasonable default settings.
+// 默认的node.Config对象
+// 默认值里没有指定节点私钥,需要使用者自己指定
 var DefaultConfig = Config{
 	DataDir:             DefaultDataDir(),
 	HTTPPort:            DefaultHTTPPort,
@@ -46,6 +48,8 @@ var DefaultConfig = Config{
 	WSPort:              DefaultWSPort,
 	WSModules:           []string{"net", "web3"},
 	GraphQLVirtualHosts: []string{"localhost"},
+	// p2p默认监听30303端口
+	// 这里没有指定节点私钥
 	P2P: p2p.Config{
 		ListenAddr: ":30303",
 		MaxPeers:   50,
@@ -55,12 +59,13 @@ var DefaultConfig = Config{
 
 // DefaultDataDir is the default data directory to use for the databases and other
 // persistence requirements.
-// 获取默认的DataDir路径
+// 获取默认的DataDir路径,获取失败返回空字符串
 func DefaultDataDir() string {
 	// Try to place the data folder in the user's home dir
 	home := homeDir()
 	if home != "" {
 		switch runtime.GOOS {
+		// Mac的默认DataDir是 $HOME/Library/Ethereum目录下面
 		case "darwin":
 			return filepath.Join(home, "Library", "Ethereum")
 		case "windows":
@@ -73,6 +78,7 @@ func DefaultDataDir() string {
 				return fallback
 			}
 			return filepath.Join(appdata, "Ethereum")
+		// linux默认的DataDir是 $HOME/.ethereum
 		default:
 			return filepath.Join(home, ".ethereum")
 		}
@@ -92,16 +98,20 @@ func windowsAppData() string {
 	return v
 }
 
+// 判断输入的目录是不是空目录
 func isNonEmptyDir(dir string) bool {
 	f, err := os.Open(dir)
 	if err != nil {
 		return false
 	}
+	// 判断能不能读出来至少一个文件信息
 	names, _ := f.Readdir(1)
 	f.Close()
+	// 一个都读不出来说明这个文件夹是空的
 	return len(names) > 0
 }
 
+// 获取用户的家目录,获取失败的话返回空字符串
 func homeDir() string {
 	if home := os.Getenv("HOME"); home != "" {
 		return home

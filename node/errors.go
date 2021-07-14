@@ -32,6 +32,8 @@ var (
 	datadirInUseErrnos = map[uint]bool{11: true, 32: true, 35: true}
 )
 
+// 如果是因为文件被使用了造成的错误都转换成ErrDatadirUsed
+// 其他类型的错误不做处理
 func convertFileLockError(err error) error {
 	if errno, ok := err.(syscall.Errno); ok && datadirInUseErrnos[uint(errno)] {
 		return ErrDatadirUsed
@@ -41,6 +43,7 @@ func convertFileLockError(err error) error {
 
 // StopError is returned if a Node fails to stop either any of its registered
 // services or itself.
+// StopError是一个节点停止它注册的服务或者它自己的时候发生的错误
 type StopError struct {
 	Server   error
 	Services map[reflect.Type]error

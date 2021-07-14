@@ -96,6 +96,8 @@ type HTTPTimeouts struct {
 
 // DefaultHTTPTimeouts represents the default timeout values used if further
 // configuration is not provided.
+// 默认的超时时间
+// 读30秒,写30秒,空闲120秒
 var DefaultHTTPTimeouts = HTTPTimeouts{
 	ReadTimeout:  30 * time.Second,
 	WriteTimeout: 30 * time.Second,
