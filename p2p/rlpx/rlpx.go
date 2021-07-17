@@ -445,9 +445,9 @@ type authRespV4 struct {
 	// 接收方生成的随机公钥
 	RandomPubkey [pubLen]byte
 	// 接收方生成的随机Nonce
-	Nonce        [shaLen]byte
+	Nonce [shaLen]byte
 	// 当前一定是4
-	Version      uint
+	Version uint
 
 	// Ignore additional fields (forward-compatibility)
 	Rest []rlp.RawValue `rlp:"tail"`

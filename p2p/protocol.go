@@ -47,6 +47,8 @@ type Protocol struct {
 	// The peer connection is closed when Start returns. It should return
 	// any protocol-level error (such as an I/O error) that is
 	// encountered.
+	// Run 在与一个节点握手成功后调用,在单独协程中执行.
+	// 可以通过rw来接收和发送消息,所有接收的消息的Payload必须被全部读取
 	Run func(peer *Peer, rw MsgReadWriter) error
 
 	// NodeInfo is an optional helper method to retrieve protocol specific metadata
@@ -81,11 +83,14 @@ type Cap struct {
 	Version uint
 }
 
+// Cap的打印格式 name/version
+// 例如 protocol/1
 func (cap Cap) String() string {
 	return fmt.Sprintf("%s/%d", cap.Name, cap.Version)
 }
 
 // 排序首先按照Name的字典序排序,Name相同按照Version排序
+// 实现了sort接口
 type capsByNameAndVersion []Cap
 
 func (cs capsByNameAndVersion) Len() int      { return len(cs) }

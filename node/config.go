@@ -443,6 +443,7 @@ func (c *Config) TrustedNodes() []*enode.Node {
 
 // parsePersistentNodes parses a list of discovery node URLs loaded from a .json
 // file from within the data directory.
+// 将path路径代表的json文件解析成一组节点对象
 // 用于解析static-nodes.json和trusted-nodes.json,这里输入的路径是绝对路径
 func (c *Config) parsePersistentNodes(w *bool, path string) []*enode.Node {
 	// Short circuit if no node config is present

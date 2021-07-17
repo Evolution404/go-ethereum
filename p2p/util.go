@@ -23,6 +23,11 @@ import (
 )
 
 // expHeap tracks strings and their expiry time.
+// expHeap 用来记录字符串类型的数据,每个字符串可以带有一个过期时间
+// expHeap.add(item,exp)添加一个字符串和对应的过期时间
+// expHeap.expiry(now,onExp)删除所有过期时间在now前的字符串,被删除的字符串会调用onExp回调函数
+// expHeap.contains(item)判断指定字符串是否被保存
+// expHeap.nextExpiry()返回下一个元素的过期时间
 type expHeap []expItem
 
 // expItem is an entry in addrHistory.
@@ -56,6 +61,7 @@ func (h expHeap) contains(item string) bool {
 
 // expire removes items with expiry time before 'now'.
 // 输入一个时间,将过期时间在指定时间之前的元素都删除
+// 当一个保存的字符串被删除的时候会调用传入的回调函数onExp
 func (h *expHeap) expire(now mclock.AbsTime, onExp func(string)) {
 	for h.Len() > 0 && h.nextExpiry() < now {
 		item := heap.Pop(h)

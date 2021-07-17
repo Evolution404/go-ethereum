@@ -33,8 +33,11 @@ import (
 
 const (
 	// IP tracker configuration
+	// 至少有十个节点认为本地ip是某个值才会预测出来这个值
 	iptrackMinStatements = 10
+	// statement保存的时间
 	iptrackWindow        = 5 * time.Minute
+	// contact保存的时间
 	iptrackContactWindow = 10 * time.Minute
 )
 
@@ -50,12 +53,12 @@ type LocalNode struct {
 	// 用于记录本地节点的Seq,每次更新了记录就会自增Seq
 	// db中记录了id->Seq的键值对
 	// 使用相同的私钥就有相同的公钥就能计算相同的id,通过这种方式恢复Seq
-	db  *DB
+	db *DB
 
 	// everything below is protected by a lock
 	// 以下的字段都被锁保护
-	mu        sync.Mutex
-	seq       uint64
+	mu  sync.Mutex
+	seq uint64
 	// ENRKey->Entry对象的映射
 	entries   map[string]enr.Entry
 	endpoint4 lnEndpoint
@@ -209,8 +212,10 @@ func (ln *LocalNode) SetFallbackUDP(port int) {
 
 // UDPEndpointStatement should be called whenever a statement about the local node's
 // UDP endpoint is received. It feeds the local endpoint predictor.
-// 一旦有关于本地节点的statement接收到,就调用该方法
-// 为predictor提供预测的信息
+// fromaddr代表其他节点的地址,endpoint代表fromaddr认为本地的地址
+// 一旦获得了别的节点认为本地节点的地址的信息就调用此方法
+// v4版本节点发现收到ping和pong都会调用
+// v5版本节点发现收到pong包会调用
 func (ln *LocalNode) UDPEndpointStatement(fromaddr, endpoint *net.UDPAddr) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()

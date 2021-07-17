@@ -111,6 +111,7 @@ type PeerEvent struct {
 }
 
 // Peer represents a connected remote node.
+// Peer代表一个本地已经连接的远程节点
 type Peer struct {
 	rw      *conn
 	// 协议名称->protoRW对象的映射
@@ -151,7 +152,8 @@ func (p *Peer) Node() *enode.Node {
 }
 
 // Name returns an abbreviated form of the name
-// 节点名称超过20个字节后面使用省略号缩写
+// Name如果是对Fullname的省略,小于20字节时Name和Fullname一致
+// Fullname超过20个字节后面使用省略号缩写
 func (p *Peer) Name() string {
 	s := p.rw.name
 	if len(s) > 20 {
@@ -161,6 +163,7 @@ func (p *Peer) Name() string {
 }
 
 // Fullname returns the node name that the remote node advertised.
+// Fullname 就是在Server里定义的Name
 func (p *Peer) Fullname() string {
 	return p.rw.name
 }
@@ -212,6 +215,8 @@ func (p *Peer) String() string {
 }
 
 // Inbound returns true if the peer is an inbound connection
+// Inbound为true代表这个peer主动连接的本地
+// 为false代表本地主动连接的这个peer
 func (p *Peer) Inbound() bool {
 	return p.rw.is(inboundConn)
 }
@@ -434,8 +439,11 @@ func (p *Peer) startProtocols(writeStart <-chan struct{}, writeErr chan<- error)
 		go func() {
 			defer p.wg.Done()
 			err := proto.Run(p, rw)
+			// 用户定义的协议函数返回了一个nil的错误
+			// 说明用户设计的协议有问题,正常运行不应该返回
 			if err == nil {
 				p.log.Trace(fmt.Sprintf("Protocol %s/%d returned", proto.Name, proto.Version))
+				// 用户定义的Run函数不应该返回nil的错误
 				err = errProtocolReturned
 			} else if err != io.EOF {
 				p.log.Trace(fmt.Sprintf("Protocol %s/%d failed", proto.Name, proto.Version), "err", err)

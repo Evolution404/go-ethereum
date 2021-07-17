@@ -39,6 +39,7 @@ const (
 // DefaultConfig contains reasonable default settings.
 // 默认的node.Config对象
 // 默认值里没有指定节点私钥,需要使用者自己指定
+// 默认端口分别为 http 8545,websocket 8546,graphQl 8547
 var DefaultConfig = Config{
 	DataDir:             DefaultDataDir(),
 	HTTPPort:            DefaultHTTPPort,
@@ -60,6 +61,8 @@ var DefaultConfig = Config{
 // DefaultDataDir is the default data directory to use for the databases and other
 // persistence requirements.
 // 获取默认的DataDir路径,获取失败返回空字符串
+// Mac是 $HOME/Library/Ethereum
+// Linux $HOME/.ethereum
 func DefaultDataDir() string {
 	// Try to place the data folder in the user's home dir
 	home := homeDir()
@@ -78,7 +81,7 @@ func DefaultDataDir() string {
 				return fallback
 			}
 			return filepath.Join(appdata, "Ethereum")
-		// linux默认的DataDir是 $HOME/.ethereum
+		// Linux默认的DataDir是 $HOME/.ethereum
 		default:
 			return filepath.Join(home, ".ethereum")
 		}

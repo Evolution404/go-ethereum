@@ -62,10 +62,11 @@ const (
 
 	// Maximum time allowed for reading a complete message.
 	// This is effectively the amount of time a connection can be idle.
+	// 本地从网络中读取一条消息最长不能超过30秒
 	frameReadTimeout = 30 * time.Second
 
 	// Maximum amount of time allowed for writing a complete message.
-	// 发送消息的超时时间是20秒
+	// 本地向远程节点发送一条消息最大不能超过20秒
 	frameWriteTimeout = 20 * time.Second
 )
 
@@ -81,6 +82,7 @@ type Config struct {
 
 	// MaxPeers is the maximum number of peers that can be
 	// connected. It must be greater than zero.
+	// MaxPeers必须指定,而且必须指定一个大于零的数
 	MaxPeers int
 
 	// MaxPendingPeers is the maximum number of peers that can be pending in the
@@ -267,7 +269,7 @@ type conn struct {
 	name  string     // valid after the protocol handshake
 }
 
-// 实际使用中只有一个transport->rlpxTransport
+// 实际使用中只有一个transport那就是rlpxTransport
 // 两个节点建立网络连接之后,需要执行握手. 握手包括两个步骤:加密握手和协议握手
 // 加密握手的目的是交换接下来通信的对称加密的密钥
 // 协议握手是为了交换一些协议相关的信息,例如协议的版本号,高于某个版本号才执行压缩
@@ -435,6 +437,9 @@ func (srv *Server) SubscribeEvents(ch chan *PeerEvent) event.Subscription {
 }
 
 // Self returns the local node's endpoint information.
+// 获取Server对应的enode.Node对象
+// 在Server调用Start前获取到v4版本
+// 在Server调用Start后获取到enr记录
 func (srv *Server) Self() *enode.Node {
 	srv.lock.Lock()
 	ln := srv.localnode
@@ -1214,14 +1219,19 @@ func (srv *Server) runPeer(p *Peer) {
 }
 
 // NodeInfo represents a short summary of the information known about the host.
+// NodeInfo用来表示本地节点的各种信息
+// 对应的是PeerInfo用来表示本地连接的其他节点的信息
 type NodeInfo struct {
 	ID    string `json:"id"`    // Unique node identifier (also the encryption key)
 	Name  string `json:"name"`  // Name of the node, including client type, version, OS, custom data
 	Enode string `json:"enode"` // Enode URL for adding this peer from remote peers
 	ENR   string `json:"enr"`   // Ethereum Node Record
 	IP    string `json:"ip"`    // IP address of the node
+	// 本地占用的两个端口
 	Ports struct {
+		// UDP用于节点发现的端口
 		Discovery int `json:"discovery"` // UDP listening port for discovery protocol
+		// TCP运行RLPx协议进行数据传输的端口
 		Listener  int `json:"listener"`  // TCP listening port for RLPx
 	} `json:"ports"`
 	ListenAddr string                 `json:"listenAddr"`
@@ -1229,6 +1239,7 @@ type NodeInfo struct {
 }
 
 // NodeInfo gathers and returns a collection of metadata known about the host.
+// 获取本地节点的相关信息
 func (srv *Server) NodeInfo() *NodeInfo {
 	// Gather and assemble the generic node infos
 	node := srv.Self()
@@ -1258,8 +1269,11 @@ func (srv *Server) NodeInfo() *NodeInfo {
 }
 
 // PeersInfo returns an array of metadata objects describing connected peers.
+// 获取本地连接的所有节点的信息
+// 返回的所有信息根据节点的ID从小到大排序
 func (srv *Server) PeersInfo() []*PeerInfo {
 	// Gather all the generic and sub-protocol specific infos
+	// 首先收集所有的PeerInfo对象
 	infos := make([]*PeerInfo, 0, srv.PeerCount())
 	for _, peer := range srv.Peers() {
 		if peer != nil {
@@ -1267,6 +1281,7 @@ func (srv *Server) PeersInfo() []*PeerInfo {
 		}
 	}
 	// Sort the result array alphabetically by node identifier
+	// 根据各个对等节点的ID从小到大排序
 	for i := 0; i < len(infos); i++ {
 		for j := i + 1; j < len(infos); j++ {
 			if infos[i].ID > infos[j].ID {

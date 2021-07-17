@@ -54,6 +54,7 @@ func (pe *peerError) Error() string {
 	return pe.message
 }
 
+// 用户为协议定义的Run函数返回了nil的错误
 var errProtocolReturned = errors.New("protocol returned")
 
 // 断开连接的原因 Disconnect Reason

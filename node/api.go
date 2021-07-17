@@ -31,6 +31,7 @@ import (
 )
 
 // apis returns the collection of built-in RPC APIs.
+// 获得内置的RPC APIs
 func (n *Node) apis() []rpc.API {
 	return []rpc.API{
 		{
@@ -142,6 +143,7 @@ func (api *privateAdminAPI) PeerEvents(ctx context.Context) (*rpc.Subscription, 
 	rpcSub := notifier.CreateSubscription()
 
 	go func() {
+		// 节点事件将会被发送到events管道
 		events := make(chan *p2p.PeerEvent)
 		sub := server.SubscribeEvents(events)
 		defer sub.Unsubscribe()

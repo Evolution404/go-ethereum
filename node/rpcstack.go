@@ -35,31 +35,55 @@ import (
 )
 
 // httpConfig is the JSON-RPC/HTTP configuration.
+// 使用http协议的RPC的控制选项
 type httpConfig struct {
-	Modules            []string
+	// 需要注册的服务名称
+	Modules []string
+	// 允许跨域来自哪些域名 http://xxx.xxx
 	CorsAllowedOrigins []string
-	Vhosts             []string
-	prefix             string // path prefix on which to mount http handler
+	// 抵抗dns重绑定攻击 允许哪些http的Host字段的域名 xxx.xx
+	Vhosts []string
+	// 以这个前缀的请求还被发送到这里处理
+	prefix string // path prefix on which to mount http handler
 }
 
 // wsConfig is the JSON-RPC/Websocket configuration
+// 使用websocket协议的RPC的控制选项
 type wsConfig struct {
 	Origins []string
 	Modules []string
 	prefix  string // path prefix on which to mount ws handler
 }
 
+// rpc的处理器,可以是http类型也可能是websocket类型
+// rpc.Server保存注册的服务
+// http.Handler封装了rpc.Server里的ServeHTTP方法,增加了一些额外功能
 type rpcHandler struct {
+	// http类型通过NewHTTPHandlerStack创建
+	// websocket类型是server.WebsocketHandler
 	http.Handler
 	server *rpc.Server
 }
 
+// 这里有两种类型的rpc服务端,分别是httpServer,ipcServer
+// httpServer使用http协议提供服务
+// ipcServer使用unix进程通信提供服务
+
+// httpServer对象用来处理http和websocket类型的RPC请求
+// 使用的过程
+// h:=newHTTPServer(log,timeouts)
+// h.setListenAddr(host,port)
+// h.enableRPC(apis,config)
+// h.enableWS(apis,config)
+// h.start()
+// h.stop()
 type httpServer struct {
 	log      log.Logger
 	timeouts rpc.HTTPTimeouts
 	mux      http.ServeMux // registered handlers go here
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// 最终向外暴露的http服务
 	server *http.Server
 	// 当服务器正在运行的时候是一个非nil的值
 	listener net.Listener // non-nil when server is running
@@ -142,8 +166,10 @@ func (h *httpServer) start() error {
 	}
 
 	// Initialize the server.
-	// 如果httpServer对象设置了超时时间,也对htpp.Server对象设置超时时间
+	// 生成一个http.Server对象,请求Handler就是h
+	// 也就是h.ServeHTTP()处理h.server接收到的请求
 	h.server = &http.Server{Handler: h}
+	// 如果httpServer对象设置了超时时间,也对htpp.Server对象设置超时时间
 	if h.timeouts != (rpc.HTTPTimeouts{}) {
 		// 如果有不合理的超时时间进行修正
 		// 就是超时时间不能小于一秒
@@ -206,7 +232,7 @@ func (h *httpServer) start() error {
 	return nil
 }
 
-// 处理http请求
+// 处理h.server启动后接收到的http请求
 // 1. 判断是不是websocket,如果是使用wsHandler处理请求
 // 2. 判断是不是使用RegisterHandler在node.mux中注册了路由,如果是使用注册的函数处理请求
 // 3. 最后尝试使用httpHandler来处理请求
@@ -283,14 +309,16 @@ func (h *httpServer) stop() {
 	h.doStop()
 }
 
+// 完全关闭所有服务
 func (h *httpServer) doStop() {
 	if h.listener == nil {
 		return // not running
 	}
 
 	// Shut down the server.
+	// 清空httpHandler,wsHandler并对rpc.Server都调用Stop
 	httpHandler := h.httpHandler.Load().(*rpcHandler)
-	wsHandler := h.httpHandler.Load().(*rpcHandler)
+	wsHandler := h.wsHandler.Load().(*rpcHandler)
 	if httpHandler != nil {
 		h.httpHandler.Store((*rpcHandler)(nil))
 		httpHandler.server.Stop()
@@ -299,6 +327,7 @@ func (h *httpServer) doStop() {
 		h.wsHandler.Store((*rpcHandler)(nil))
 		wsHandler.server.Stop()
 	}
+	// 停止监听请求
 	h.server.Shutdown(context.Background())
 	h.listener.Close()
 	h.log.Info("HTTP server stopped", "endpoint", h.listener.Addr())
@@ -326,6 +355,7 @@ func (h *httpServer) enableRPC(apis []rpc.API, config httpConfig) error {
 	}
 	h.httpConfig = config
 	h.httpHandler.Store(&rpcHandler{
+		// 输入srv作为原始http.Handler,增加了跨域,抗dns重绑定,gzip三个功能
 		Handler: NewHTTPHandlerStack(srv, config.CorsAllowedOrigins, config.Vhosts),
 		server:  srv,
 	})
@@ -345,6 +375,7 @@ func (h *httpServer) disableRPC() bool {
 
 // enableWS turns on JSON-RPC over WebSocket on the server.
 // 启用websocket请求
+// 设置wsConfig和wsHandler
 func (h *httpServer) enableWS(apis []rpc.API, config wsConfig) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -367,6 +398,8 @@ func (h *httpServer) enableWS(apis []rpc.API, config wsConfig) error {
 }
 
 // stopWS disables JSON-RPC over WebSocket and also stops the server if it only serves WebSocket.
+// 停止websocket
+// 如果没有其他服务了就把rpc服务都停止
 func (h *httpServer) stopWS() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -379,6 +412,7 @@ func (h *httpServer) stopWS() {
 }
 
 // disableWS disables the WebSocket handler. This is internal, the caller must hold h.mu.
+// 清空wsHandler,并调用wsHandler.server.Stop()
 func (h *httpServer) disableWS() bool {
 	ws := h.wsHandler.Load().(*rpcHandler)
 	if ws != nil {
@@ -542,8 +576,10 @@ func newGzipHandler(next http.Handler) http.Handler {
 	})
 }
 
+// 建立使用unix进程通信的链路
 type ipcServer struct {
-	log      log.Logger
+	log log.Logger
+	// 这个endpoint应该是文件的路径
 	endpoint string
 
 	mu       sync.Mutex
@@ -558,6 +594,7 @@ func newIPCServer(log log.Logger, endpoint string) *ipcServer {
 
 // Start starts the httpServer's http.Server
 // 启动ipc类型的RPC服务
+// 本质是调用rpc.StartIPCEndpoint构造ipcServer.listener和ipcServer.src
 func (is *ipcServer) start(apis []rpc.API) error {
 	is.mu.Lock()
 	defer is.mu.Unlock()
@@ -575,7 +612,9 @@ func (is *ipcServer) start(apis []rpc.API) error {
 	return nil
 }
 
-// 停止server
+// 停止ipcServer,包括两步
+// ipcServer.listener.Close()
+// ipcServer.srv.Stop()
 func (is *ipcServer) stop() error {
 	is.mu.Lock()
 	defer is.mu.Unlock()
@@ -592,7 +631,9 @@ func (is *ipcServer) stop() error {
 
 // RegisterApisFromWhitelist checks the given modules' availability, generates a whitelist based on the allowed modules,
 // and then registers all of the APIs exposed by the services.
-// 在srv上注册modules里面的服务
+// apis包括了所有支持的服务,modules是允许注册的服务
+// 在srv上注册所有modules和apis都有的服务
+// exposeAll用来控制是不是要直接注册所有apis中的服务
 func RegisterApisFromWhitelist(apis []rpc.API, modules []string, srv *rpc.Server, exposeAll bool) error {
 	// 检查modules中是不是有apis里面不支持的
 	if bad, available := checkModuleAvailability(modules, apis); len(bad) > 0 {

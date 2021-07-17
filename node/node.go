@@ -37,6 +37,10 @@ import (
 )
 
 // Node is a container on which services can be registered.
+// n:=New(config)
+// n.RegisterLifecycle(lifecycle)
+// n.Start()
+// n.Close()
 type Node struct {
 	eventmux      *event.TypeMux
 	config        *Config
@@ -54,11 +58,15 @@ type Node struct {
 	state int // Tracks state of node lifecycle
 
 	lock          sync.Mutex
+	// 所有通过RegisterLifecycle注册的服务
 	lifecycles    []Lifecycle // All registered backends, services, and auxiliary services that have a lifecycle
 	// rpcAPIs保存了当前节点能够提供的所有RPC调用
 	rpcAPIs       []rpc.API   // List of APIs currently provided by the node
+	// http协议的rpc通信服务
 	http          *httpServer //
+	// websocket协议的rpc通信服务
 	ws            *httpServer //
+	// 进程间rpc通信的服务
 	ipc           *ipcServer  // Stores information about the ipc http server
 	// 进程内的RPC处理器
 	inprocHandler *rpc.Server // In-process RPC request handler to process the API requests
@@ -111,6 +119,7 @@ func New(conf *Config) (*Node, error) {
 	// 创建Node对象
 	node := &Node{
 		config:        conf,
+		// 启动的时候就创建一个线程内的rpc.server
 		inprocHandler: rpc.NewServer(),
 		eventmux:      new(event.TypeMux),
 		log:           conf.Logger,
@@ -121,6 +130,7 @@ func New(conf *Config) (*Node, error) {
 	}
 
 	// Register built-in APIs.
+	// 保存内置的RPC APIs
 	node.rpcAPIs = append(node.rpcAPIs, node.apis()...)
 
 	// Acquire the instance directory lock.
@@ -173,6 +183,10 @@ func New(conf *Config) (*Node, error) {
 
 // Start starts all registered lifecycles, RPC services and p2p networking.
 // Node can only be started once.
+// 启动一个节点,包括三个部分
+// 调用所有服务Start方法
+// 启动四种RPC服务
+// 启动p2p网络
 func (n *Node) Start() error {
 	n.startStopLock.Lock()
 	defer n.startStopLock.Unlock()
@@ -190,7 +204,9 @@ func (n *Node) Start() error {
 	// 修改运行状态
 	n.state = runningState
 	// open networking and RPC endpoints
+	// 启动p2p网络和四种RPC服务
 	err := n.openEndpoints()
+	// 下面就执行所有注册服务的Start方法
 	lifecycles := make([]Lifecycle, len(n.lifecycles))
 	copy(lifecycles, n.lifecycles)
 	n.lock.Unlock()
@@ -201,14 +217,17 @@ func (n *Node) Start() error {
 		return err
 	}
 	// Start all registered lifecycles.
+	// started保存所有调用过Start方法且没有错误的服务
 	var started []Lifecycle
 	for _, lifecycle := range lifecycles {
+		// 顺序执行所有服务,遇到错误就停止下来的所有服务
 		if err = lifecycle.Start(); err != nil {
 			break
 		}
 		started = append(started, lifecycle)
 	}
 	// Check if any lifecycle failed to start.
+	// 遇到错误,关闭刚才执行成功的服务
 	if err != nil {
 		n.stopServices(started)
 		n.doClose(nil)
@@ -218,6 +237,10 @@ func (n *Node) Start() error {
 
 // Close stops the Node and releases resources acquired in
 // Node constructor New.
+// 关闭一个节点
+// 初始化状态: doClose
+// 运行状态: 停止所有服务,doClose
+// 关闭状态: 报错
 func (n *Node) Close() error {
 	n.startStopLock.Lock()
 	defer n.startStopLock.Unlock()
@@ -232,6 +255,7 @@ func (n *Node) Close() error {
 	case runningState:
 		// The node was started, release resources acquired by Start().
 		var errs []error
+		// 释放Start占用的资源
 		if err := n.stopServices(n.lifecycles); err != nil {
 			errs = append(errs, err)
 		}
@@ -244,17 +268,23 @@ func (n *Node) Close() error {
 }
 
 // doClose releases resources acquired by New(), collecting errors.
+// 释放New()中使用的资源
+// 关闭所有数据库,关闭账户管理,删除临时私钥,使用专属文件夹
 func (n *Node) doClose(errs []error) error {
 	// Close databases. This needs the lock because it needs to
 	// synchronize with OpenDatabase*.
 	n.lock.Lock()
+	// 修改状态到关闭
 	n.state = closedState
+	// 关闭所有数据库
 	errs = append(errs, n.closeDatabases()...)
 	n.lock.Unlock()
 
+	// 关闭账户管理
 	if err := n.accman.Close(); err != nil {
 		errs = append(errs, err)
 	}
+	// 删除临时私钥
 	if n.ephemKeystore != "" {
 		if err := os.RemoveAll(n.ephemKeystore); err != nil {
 			errs = append(errs, err)
@@ -262,12 +292,14 @@ func (n *Node) doClose(errs []error) error {
 	}
 
 	// Release instance directory lock.
+	// 释放节点专属文件夹
 	n.closeDataDir()
 
 	// Unblock n.Wait.
 	close(n.stop)
 
 	// Report any errors that might have occurred.
+	// 将错误列表合并成一个错误
 	switch len(errs) {
 	case 0:
 		return nil
@@ -279,13 +311,16 @@ func (n *Node) doClose(errs []error) error {
 }
 
 // openEndpoints starts all network and RPC endpoints.
+// 启动p2p网络和四种RPC服务
 func (n *Node) openEndpoints() error {
 	// start networking endpoints
 	n.log.Info("Starting peer-to-peer node", "instance", n.server.Name)
+	// 启动p2p网络
 	if err := n.server.Start(); err != nil {
 		return convertFileLockError(err)
 	}
 	// start RPC endpoints
+	// 启动RPC服务
 	err := n.startRPC()
 	if err != nil {
 		n.stopRPC()
@@ -295,6 +330,7 @@ func (n *Node) openEndpoints() error {
 }
 
 // containsLifecycle checks if 'lfs' contains 'l'.
+// 检查lfs中是否包括l
 func containsLifecycle(lfs []Lifecycle, l Lifecycle) bool {
 	for _, obj := range lfs {
 		if obj == l {
@@ -306,11 +342,17 @@ func containsLifecycle(lfs []Lifecycle, l Lifecycle) bool {
 
 // stopServices terminates running services, RPC and p2p networking.
 // It is the inverse of Start.
+// 关闭所有的服务,分为三个过程
+// stopRPC()
+// 所有输入的正在运行的服务调用Stop()
+// n.server.Stop() 关闭p2p网络
 func (n *Node) stopServices(running []Lifecycle) error {
 	n.stopRPC()
 
 	// Stop running lifecycles in reverse order.
+	// failure记录所有服务调用Stop发生的错误
 	failure := &StopError{Services: make(map[reflect.Type]error)}
+	// 倒序执行Stop方法
 	for i := len(running) - 1; i >= 0; i-- {
 		if err := running[i].Stop(); err != nil {
 			failure.Services[reflect.TypeOf(running[i])] = err
@@ -362,13 +404,15 @@ func (n *Node) closeDataDir() {
 // configureRPC is a helper method to configure all the various RPC endpoints during node
 // startup. It's not meant to be called at any time afterwards as it makes certain
 // assumptions about the state of the node.
-// 启动各个RPC服务,包括ipc,http,ws
+// 启动各个RPC服务,包括ipc,http,ws以及进程内
 func (n *Node) startRPC() error {
+	// 启动进程内通信
 	if err := n.startInProc(); err != nil {
 		return err
 	}
 
 	// Configure IPC.
+	// 启动进程间通信
 	if n.ipc.endpoint != "" {
 		if err := n.ipc.start(n.rpcAPIs); err != nil {
 			return err
@@ -376,6 +420,7 @@ func (n *Node) startRPC() error {
 	}
 
 	// Configure HTTP.
+	// 配置http协议
 	if n.config.HTTPHost != "" {
 		config := httpConfig{
 			CorsAllowedOrigins: n.config.HTTPCors,
@@ -392,7 +437,9 @@ func (n *Node) startRPC() error {
 	}
 
 	// Configure WebSocket.
+	// 配置websocket协议
 	if n.config.WSHost != "" {
+		// 这里如果websocket和http共用一个端口或者http没有启动,就使用同一个httpServer对象
 		server := n.wsServerForPort(n.config.WSPort)
 		config := wsConfig{
 			Modules: n.config.WSModules,
@@ -407,12 +454,15 @@ func (n *Node) startRPC() error {
 		}
 	}
 
+	// 启动http
 	if err := n.http.start(); err != nil {
 		return err
 	}
+	// 启动websocket
 	return n.ws.start()
 }
 
+// 这里如果websocket和http共用一个端口或者http没有启动,就使用同一个httpServer对象
 func (n *Node) wsServerForPort(port int) *httpServer {
 	if n.config.HTTPHost == "" || n.http.port == port {
 		return n.http
@@ -420,6 +470,7 @@ func (n *Node) wsServerForPort(port int) *httpServer {
 	return n.ws
 }
 
+// 调用四种类型通信的stop方法
 func (n *Node) stopRPC() {
 	n.http.stop()
 	n.ws.stop()
@@ -449,13 +500,16 @@ func (n *Node) Wait() {
 }
 
 // RegisterLifecycle registers the given Lifecycle on the node.
+// 为节点注册服务,注册服务时节点必须在初始化状态
 func (n *Node) RegisterLifecycle(lifecycle Lifecycle) {
 	n.lock.Lock()
 	defer n.lock.Unlock()
 
+	// 必须是初始化状态
 	if n.state != initializingState {
 		panic("can't register lifecycle on running/stopped node")
 	}
+	// 不能重复注册
 	if containsLifecycle(n.lifecycles, lifecycle) {
 		panic(fmt.Sprintf("attempt to register lifecycle %T more than once", lifecycle))
 	}
@@ -506,11 +560,14 @@ func (n *Node) RegisterHandler(name, path string, handler http.Handler) {
 }
 
 // Attach creates an RPC client attached to an in-process API handler.
+// 获取一个rpc.Client对象
+// 通信过程是内存中直接通信
 func (n *Node) Attach() (*rpc.Client, error) {
 	return rpc.DialInProc(n.inprocHandler), nil
 }
 
 // RPCHandler returns the in-process RPC request handler.
+// 获取处理进程内请求的rpc.Server对象
 func (n *Node) RPCHandler() (*rpc.Server, error) {
 	n.lock.Lock()
 	defer n.lock.Unlock()
@@ -522,6 +579,7 @@ func (n *Node) RPCHandler() (*rpc.Server, error) {
 }
 
 // Config returns the configuration of node.
+// 获取节点配置
 func (n *Node) Config() *Config {
 	return n.config
 }
@@ -643,6 +701,8 @@ func (n *Node) ResolvePath(x string) string {
 // closeTrackingDB wraps the Close method of a database. When the database is closed by the
 // service, the wrapper removes it from the node's database map. This ensures that Node
 // won't auto-close the database if it is closed by the service that opened it.
+// 针对ethdb.Database的Close方法进行了封装
+// Close会额外从Node.databases中删除对应的项
 type closeTrackingDB struct {
 	ethdb.Database
 	n *Node
@@ -663,6 +723,7 @@ func (n *Node) wrapDatabase(db ethdb.Database) ethdb.Database {
 }
 
 // closeDatabases closes all open databases.
+// 关闭所有数据库
 func (n *Node) closeDatabases() (errors []error) {
 	for db := range n.databases {
 		delete(n.databases, db)

@@ -34,6 +34,7 @@ import (
 const (
 	// total timeout for encryption handshake and protocol
 	// handshake in both directions.
+	// 整个握手过程持续的时间不能超过5秒
 	handshakeTimeout = 5 * time.Second
 
 	// This is the timeout for sending the disconnect reason.
@@ -44,13 +45,18 @@ const (
 
 // rlpxTransport is the transport used by actual (non-test) connections.
 // It wraps an RLPx connection with locks and read/write deadlines.
+// 实现了transport接口
+// transport接口包括了MsgReadWriter接口
 type rlpxTransport struct {
 	rmu, wmu sync.Mutex
+	// 用于缓存即将发送的消息
 	wbuf     bytes.Buffer
+	// 代表与远程节点建立的加密连接
 	conn     *rlpx.Conn
 }
 
-// 创建本质是rlpxTransport对象的transport对象
+// 创建一个rlpxTransport对象,并返回transport接口
+// 需要提供与远程节点建立的连接以及对方节点的公钥,公钥可以是nil
 func newRLPX(conn net.Conn, dialDest *ecdsa.PublicKey) transport {
 	return &rlpxTransport{conn: rlpx.NewConn(conn, dialDest)}
 }
@@ -82,12 +88,14 @@ func (t *rlpxTransport) WriteMsg(msg Msg) error {
 	defer t.wmu.Unlock()
 
 	// Copy message data to write buffer.
+	// 首先将要发送的消息拷贝到t.wbuf中
 	t.wbuf.Reset()
 	if _, err := io.CopyN(&t.wbuf, msg.Payload, int64(msg.Size)); err != nil {
 		return err
 	}
 
 	// Write the message.
+	// 设置超时时间,并发送消息
 	t.conn.SetWriteDeadline(time.Now().Add(frameWriteTimeout))
 	size, err := t.conn.Write(msg.Code, t.wbuf.Bytes())
 	if err != nil {
@@ -95,8 +103,10 @@ func (t *rlpxTransport) WriteMsg(msg Msg) error {
 	}
 
 	// Set metrics.
+	// 记录每种协议不同消息发送的数据包个数和总数据量
 	msg.meterSize = size
 	if metrics.Enabled && msg.meterCap.Name != "" { // don't meter non-subprotocol messages
+		// 每个协议的每种不同的消息都有一个专属的度量
 		m := fmt.Sprintf("%s/%s/%d/%#02x", egressMeterName, msg.meterCap.Name, msg.meterCap.Version, msg.meterCode)
 		metrics.GetOrRegisterMeter(m, nil).Mark(int64(msg.meterSize))
 		metrics.GetOrRegisterMeter(m+"/packets", nil).Mark(1)
