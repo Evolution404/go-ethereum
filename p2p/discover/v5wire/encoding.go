@@ -246,7 +246,7 @@ func (c *Codec) Encode(id enode.ID, addr string, packet Packet, challenge *Whoar
 	if challenge, ok := packet.(*Whoareyou); ok {
 		challenge.ChallengeData = bytesCopy(&c.buf)
 		c.sc.storeSentHandshake(id, addr, challenge)
-	// 前面还没调用encodeRandom生成随机msgData的话编码消息
+	// 如果本地保存了会话的密钥对Packet对象编码后使用密钥加密
 	} else if msgData == nil {
 		headerData := c.buf.Bytes()
 		// 获得加密消息内容
@@ -265,8 +265,9 @@ func (c *Codec) Encode(id enode.ID, addr string, packet Packet, challenge *Whoar
 }
 
 // EncodeRaw encodes a packet with the given header.
-// 编码一个数据包的字节信息
-// 需要提供:对方节点的id,原始数据包头部对象未加密,实际数据内容
+// 给定数据包头Header对象和已经处理好的消息字节,编码成一个实际发送的字节数组
+// msgdata就是真正发送的消息,不需要再进行加密
+// 需要提供接收者的id,用来对Header对象编码后的结果加密
 // 1. 编码Header对象到c.buf中
 // 2. 利用id前16字节作为密钥对c.buf的IV后面部分进行加密
 // 3. 再向c.buf写入msgdata
@@ -541,6 +542,7 @@ func (c *Codec) encryptMessage(s *session, p Packet, head *Header, headerData []
 // 利用IV和本地id解码头部信息,恢复静态部分到head中
 // 继续解密恢复authData到head中
 // 消息包利用msgData构造Packet对象,WHOAREYOU包构造Whoareyou类型的Packet对象
+// 当解码的数据包是握手包时返回的enode.Node对象可能不是nil
 func (c *Codec) Decode(input []byte, addr string) (src enode.ID, n *enode.Node, p Packet, err error) {
 	// Unmask the static header.
 	if len(input) < sizeofStaticPacketData {
