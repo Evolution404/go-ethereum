@@ -37,7 +37,7 @@ type lookup struct {
 	asked, seen map[enode.ID]bool
 	result      nodesByDistance
 	replyBuffer []*node
-	// 标记当前正在查询的进程数,还没有进行过查询用-1标记
+	// 记录当前正在查询的进程数,还没有进行过查询用-1标记
 	queries     int
 }
 

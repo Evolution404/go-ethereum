@@ -32,11 +32,12 @@ import (
 // node represents a host on the network.
 // The fields of Node may not be modified.
 // 将enode.Node外面又增加了两个字段
+// 在Table中使用的节点
 type node struct {
 	enode.Node
-	addedAt        time.Time // time when the node was added to the table
+	addedAt time.Time // time when the node was added to the table
 	// ping通 过多少次
-	livenessChecks uint      // how often liveness was checked
+	livenessChecks uint // how often liveness was checked
 }
 
 // 64字节的公钥 32字节保存X,32字节保存Y
@@ -71,6 +72,7 @@ func (e encPubkey) id() enode.ID {
 	return enode.ID(crypto.Keccak256Hash(e[:]))
 }
 
+// 将enode.Node封装成discover.node
 func wrapNode(n *enode.Node) *node {
 	return &node{Node: *n}
 }
@@ -85,6 +87,7 @@ func wrapNodes(ns []*enode.Node) []*node {
 }
 
 // discover.Node -> enode.Node
+// 将discover.node去掉封装,取出enode.Node
 func unwrapNode(n *node) *enode.Node {
 	return &n.Node
 }
@@ -98,6 +101,7 @@ func unwrapNodes(ns []*node) []*enode.Node {
 	return result
 }
 
+// 获取节点监听的udp地址
 func (n *node) addr() *net.UDPAddr {
 	return &net.UDPAddr{IP: n.IP(), Port: n.UDP()}
 }
