@@ -122,6 +122,7 @@ func (t *rlpxTransport) close(err error) {
 	// Tell the remote end why we're disconnecting if possible.
 	// We only bother doing this if the underlying connection supports
 	// setting a timeout tough.
+	// 如果可能的话向对面节点通知我们关闭的原因
 	if t.conn != nil {
 		if r, ok := err.(DiscReason); ok && r != DiscNetworkError {
 			deadline := time.Now().Add(discWriteTimeout)

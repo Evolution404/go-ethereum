@@ -28,6 +28,8 @@ import (
 )
 
 // UDPConn is a network connection on which discovery can operate.
+// UDPConn接口是节点发现过程中使用的网络连接
+// 可以使用别的对象实现该接口就可以替换节点发现过程使用的通信链路
 type UDPConn interface {
 	ReadFromUDP(b []byte) (n int, addr *net.UDPAddr, err error)
 	WriteToUDP(b []byte, addr *net.UDPAddr) (n int, err error)
@@ -36,16 +38,23 @@ type UDPConn interface {
 }
 
 // Config holds settings for the discovery listener.
+// 启动节点发现监听服务使用的配置
+// 必须设置的字段是PrivateKey
 type Config struct {
 	// These settings are required and configure the UDP listener:
+	// 必选字段
 	PrivateKey *ecdsa.PrivateKey
 
 	// These settings are optional:
+	// 可选字段
 	NetRestrict  *netutil.Netlist   // network whitelist
 	Bootnodes    []*enode.Node      // list of bootstrap nodes
 	Unhandled    chan<- ReadPacket  // unhandled packets are sent on this channel
+	// 默认是log.Root()
 	Log          log.Logger         // if set, log messages go here
+	// 默认是当前所有节点标识方案
 	ValidSchemes enr.IdentityScheme // allowed identity schemes
+	// 默认使用系统时钟
 	Clock        mclock.Clock
 }
 
@@ -67,6 +76,8 @@ func (cfg Config) withDefaults() Config {
 }
 
 // ListenUDP starts listening for discovery packets on the given UDP socket.
+// ListenUDP在UDP端口上启动监听节点发现的数据包
+// 有ListenV4和ListenV5两个参数完全一致的函数,现在ListenUDP还默认使用ListenV4实现
 func ListenUDP(c UDPConn, ln *enode.LocalNode, cfg Config) (*UDPv4, error) {
 	return ListenV4(c, ln, cfg)
 }

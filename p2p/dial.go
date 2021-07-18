@@ -130,8 +130,9 @@ type dialScheduler struct {
 	// Everything below here belongs to loop and
 	// should only be accessed by code on the loop goroutine.
 	dialing   map[enode.ID]*dialTask // active tasks
+	// 记录当前所有连接成功的节点以及它们的标识位
 	peers     map[enode.ID]connFlag  // all connected peers
-	// 记录当前连接成功的节点个数
+	// 记录本地主动向外拨号且成功连接的节点个数
 	dialPeers int                    // current number of dialed peers
 
 	// The static map tracks all static dial tasks. The subset of usable static dial tasks
@@ -301,20 +302,30 @@ loop:
 			d.updateStaticPool(id)
 			d.doneSinceLastLog++
 
+		// 完成了加密握手协议握手还有所有检测真正成为Peer了
+		// 如果是主动拨号的节点让dialPeers加一
+		// 将新节点id和连接标识位加入到peers
+		// 由于连接成功如果是静态节点从staticPool中删除
 		case c := <-d.addPeerCh:
+			// 让当前拨号的节点个数增加一
 			if c.is(dynDialedConn) || c.is(staticDialedConn) {
 				d.dialPeers++
 			}
 			id := c.node.ID()
+			// 将这个节点的标识位记录下来
 			d.peers[id] = c.flags
-			// 这个节点如果在staticPool中,连接成功之后从里面移除
 			// Remove from static pool because the node is now connected.
+			// 这个节点如果在staticPool中,现在已经连接成功了需要从里面移除
 			task := d.static[id]
 			if task != nil && task.staticPoolIndex >= 0 {
 				d.removeFromStaticPool(task.staticPoolIndex)
 			}
 			// TODO: cancel dials to connected peers
 
+		// 删除一个对等节点,需要如下三步
+		// 如果是主动拨号的节点让dialPeers减一
+		// 将节点id和连接标识位从peers移除
+		// 由于删除节点如果是静态节点就添加到staticPool
 		case c := <-d.remPeerCh:
 			if c.is(dynDialedConn) || c.is(staticDialedConn) {
 				d.dialPeers--

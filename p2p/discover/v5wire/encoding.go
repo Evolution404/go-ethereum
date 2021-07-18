@@ -165,7 +165,7 @@ type Codec struct {
 	buf      bytes.Buffer // whole packet
 	// 头部数据
 	headbuf  bytes.Buffer // packet header
-	// 消息的原文
+	// 缓存消息的原文,第一字节包类型,接着是Packet对象的RLP编码
 	msgbuf   bytes.Buffer // message RLP plaintext
 	// 消息的密文
 	msgctbuf []byte       // message data ciphertext
@@ -451,7 +451,7 @@ func (c *Codec) makeHandshakeAuth(toID enode.ID, addr string, challenge *Whoarey
 	if err := challenge.Node.Load((*enode.Secp256k1)(remotePubkey)); err != nil {
 		return nil, nil, fmt.Errorf("can't find secp256k1 key for recipient")
 	}
-	// 生成一个私钥
+	// 生成临时私钥
 	ephkey, err := c.sc.ephemeralKeyGen()
 	if err != nil {
 		return nil, nil, fmt.Errorf("can't generate ephemeral key")
@@ -464,7 +464,7 @@ func (c *Codec) makeHandshakeAuth(toID enode.ID, addr string, challenge *Whoarey
 	// Add ID nonce signature to response.
 	// 接下来计算id-signature
 	cdata := challenge.ChallengeData
-	// 注意这里对签名的是节点自己的私钥不是ephkey
+	// 使用本地真正的私钥对挑战数据签名和本地临时公钥签名
 	idsig, err := makeIDSignature(c.sha256, c.privkey, cdata, ephpubkey[:], toID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("can't sign: %v", err)
@@ -513,6 +513,7 @@ func (c *Codec) encodeMessageHeader(toID enode.ID, s *session) (Header, error) {
 // msgbuf保存了明文,msgctbuf保存了密文
 func (c *Codec) encryptMessage(s *session, p Packet, head *Header, headerData []byte) ([]byte, error) {
 	// Encode message plaintext.
+	// 生成消息的明文写入c.msgbuf,第一字节包类型,然后是Packet对象的rlp编码
 	c.msgbuf.Reset()
 	// 先写入消息的类型
 	c.msgbuf.WriteByte(p.Kind())
@@ -520,7 +521,7 @@ func (c *Codec) encryptMessage(s *session, p Packet, head *Header, headerData []
 	if err := rlp.Encode(&c.msgbuf, p); err != nil {
 		return nil, err
 	}
-	// 类型和rlp编码连接组成消息的明文
+	// 获取完整的消息明文
 	messagePT := c.msgbuf.Bytes()
 
 	// Encrypt into message ciphertext buffer.
@@ -667,8 +668,8 @@ func (c *Codec) decodeHandshake(fromAddr string, head *Header) (n *enode.Node, a
 		return nil, auth, nil, errInvalidAuthKey
 	}
 	// Derive sesssion keys.
-	// 发送握手包的节点派生成的writeKey和readKey就是调用deriveKeys
-	// 参考makeHandshakeAuth函数的结束位置调用deriveKeys
+	// 生成接下来沟通使用的对称加密的密钥,注意输入的节点ID必须是AID和BID
+	// 参考makeHandshakeAuth函数的结束位置调用deriveKeys,那里传入的节点ID与这里相反
 	// 本地和远程writeKey和readKey应该反过来
 	// 所以这里session使用keysFlipped交换writeKey和readKey
 	session := deriveKeys(sha256.New, c.privkey, ephkey, auth.h.SrcID, c.localnode.ID(), cdata)

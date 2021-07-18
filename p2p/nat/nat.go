@@ -91,6 +91,7 @@ func Parse(spec string) (Interface, error) {
 }
 
 const (
+	// 一个映射持续的默认时间
 	mapTimeout = 10 * time.Minute
 )
 

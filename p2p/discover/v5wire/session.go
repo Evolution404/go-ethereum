@@ -44,15 +44,18 @@ type SessionCache struct {
 	clock      mclock.Clock
 
 	// hooks for overriding randomness.
+	// 以下定义的两个函数没有写死便于在测试的时候替换
 	// 默认返回12字节Nonce,前4字节为输入的uint32,后8字节随机填充
 	nonceGen        func(uint32) (Nonce, error)
-	// 默认使用随机字节填充输入的buf
+	// 用来生成随机数IV的函数
 	maskingIVGen    func([]byte) error
 	ephemeralKeyGen func() (*ecdsa.PrivateKey, error)
 }
 
 // sessionID identifies a session or handshake.
 // 用来从SessionCache.sessions中索引session对象
+// 一条网络连接对应一个session
+// 需要节点的ID和它的网络地址才能唯一确定一条连接,才对应一个session
 type sessionID struct {
 	id   enode.ID
 	addr string
@@ -108,6 +111,7 @@ func generateMaskingIV(buf []byte) error {
 }
 
 // nextNonce creates a nonce for encrypting a message to the given session.
+// 获取下一个nonce
 // 让nonceCounter自增,并生成一个新的Nonce
 func (sc *SessionCache) nextNonce(s *session) (Nonce, error) {
 	s.nonceCounter++

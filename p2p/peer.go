@@ -34,6 +34,15 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
+// 首先通过newPeer创建一个Peer对象
+// peer := newPeer(log,conn,protocols)
+// conn是已经完成所有握手的conn对象,protocols是本地支持的所有协议的Protocol对象
+// newPeer中将每个Protocol对象封装成protoRW,实现了MsgReadWriter接口
+// 重写收发消息的方法,根据各个协议的offset修正消息码,而且ReadMsg从各自的in管道中读取
+// 然后执行run函数启动多个协程,readLoop,pingLoop以及每个协议一个协程
+// peer.run()
+// run中readLoop不断从网络中读取消息然后分配到各个协议的in管道中,相当于一个中间层
+
 var (
 	ErrShuttingDown = errors.New("shutting down")
 )
@@ -62,12 +71,16 @@ const (
 )
 
 // protoHandshake is the RLP structure of the protocol handshake.
+// 在协议握手过程中双方交换的数据包,描述了节点支持的协议
 type protoHandshake struct {
+	// 协议握手这个协议自身的版本,定义在baseProtocolVersion,就是5
 	Version    uint64
+	// 节点的名称
 	Name       string
 	// 保存本地或者远程节点支持的所有协议的名称和版本
 	Caps       []Cap
 	ListenPort uint64
+	// 保存了64字节的公钥,去掉了公钥开头的第一个固定字节04
 	ID         []byte // secp256k1 public key
 
 	// Ignore additional fields (for forward compatibility).
@@ -121,6 +134,7 @@ type Peer struct {
 	created mclock.AbsTime
 
 	wg       sync.WaitGroup
+	// 接收用户自定义的Run函数返回的错误,还有发送Ping包遇到错误
 	protoErr chan error
 	closed   chan struct{}
 	disc     chan DiscReason
@@ -222,6 +236,8 @@ func (p *Peer) Inbound() bool {
 }
 
 // 真实环境中创建Peer对象的方法,在launchPeer中调用
+// 创建一个Peer需要已经执行完所有握手的conn对象和本地支持的协议
+// newPeer内部根据本地支持的协议获取远程节点和本地都支持的协议进行执行
 func newPeer(log log.Logger, conn *conn, protocols []Protocol) *Peer {
 	// 对比本地和远程节点支持的协议名称和版本,得到两者共同支持的协议对象
 	protomap := matchProtocols(protocols, conn.caps, conn)
@@ -243,7 +259,13 @@ func (p *Peer) Log() log.Logger {
 }
 
 func (p *Peer) run() (remoteRequested bool, err error) {
+	// 运行过程中会遇到三种错误
+	// writeErr,readErr,protoErr
+	// writeErr每发送一条消息会收到一个错误,可能是nil
+	// readErr一定是读取的时候发生了问题,不会是nil
 	var (
+		// 用于控制一个节点所有协议线性的发送消息,不能并发的发送消息
+		// 每发送一条消息再向管道写入一个元素,控制最多同时只有一个在发送
 		writeStart = make(chan struct{}, 1)
 		writeErr   = make(chan error, 1)
 		// readLoop中发生的错误发送到这里
@@ -258,6 +280,7 @@ func (p *Peer) run() (remoteRequested bool, err error) {
 
 	// Start all protocol handlers.
 	writeStart <- struct{}{}
+	// 启动用户定义的协议
 	p.startProtocols(writeStart, writeErr)
 
 	// Wait for an error or disconnect.
@@ -265,6 +288,7 @@ func (p *Peer) run() (remoteRequested bool, err error) {
 loop:
 	for {
 		select {
+		// 每发送一条消息都会收到一个writeErr,没有错误收到nil
 		case err = <-writeErr:
 			// A write finished. Allow the next write to start if
 			// there was no error.
@@ -272,7 +296,9 @@ loop:
 				reason = DiscNetworkError
 				break loop
 			}
+			// 每发送完成一条就立刻再向管道里写入一个元素
 			writeStart <- struct{}{}
+		// readErr一定收到非nil的错误
 		case err = <-readErr:
 			if r, ok := err.(DiscReason); ok {
 				remoteRequested = true
@@ -297,6 +323,8 @@ loop:
 }
 
 // 在run函数中调用
+// 每15秒周期性的向对方发送ping包,确保对方在线而且保持连接不断开
+// 因为frameReadTimeout控制了超过30s不收发消息会导致连接断开,所以这里15s发送一次控制不断开连接
 func (p *Peer) pingLoop() {
 	ping := time.NewTimer(pingInterval)
 	defer p.wg.Done()
@@ -335,6 +363,9 @@ func (p *Peer) readLoop(errc chan<- error) {
 }
 
 // 处理接收到的消息
+// 消息可能是预定义的消息和用户定义消息
+// 预定义消息现在有ping和disc,收到ping返回pong,收到disc获取断开原因
+// 用户定义消息发送到对应协议的in管道中
 func (p *Peer) handle(msg Msg) error {
 	// 首先判断消息码是不是在baseProtocolLength之前,如果是说明是预定义消息
 	// 不然的话是用户实现的子协议,使用子协议进行处理
@@ -422,6 +453,7 @@ outer:
 }
 
 // 启动运行所有子协议
+// 每个子协议的Run函数执行在一个协程中
 func (p *Peer) startProtocols(writeStart <-chan struct{}, writeErr chan<- error) {
 	p.wg.Add(len(p.running))
 	for _, proto := range p.running {
@@ -467,10 +499,11 @@ func (p *Peer) getProto(code uint64) (*protoRW, error) {
 	return nil, newPeerError(errInvalidMsgCode, "%d", code)
 }
 
-// 外部的创建的Protocol对象会进一步封装为protoRW对象,额外实现了MsgReadWriter接口
+// 为每个子协议生成一个protoRW对象,实现了MsgReadWriter接口,用来收发这个子协议自己的消息
+// 每个子协议从自己的in管道中接收消息
 type protoRW struct {
 	Protocol
-	// 在handle函数中收到的消息将会发送到这个管道
+	// handle函数中根据消息码识别应该将消息分配给哪个协议,分配过程就是发送到in管道中
 	in     chan Msg        // receives read messages
 	closed <-chan struct{} // receives when peer is shutting down
 	wstart <-chan struct{} // receives when write may start
@@ -483,6 +516,8 @@ type protoRW struct {
 	w      MsgWriter
 }
 
+// 这里输入的消息码是用户定义的从0开始
+// 内部转换成实际在链路上发送消息码
 func (rw *protoRW) WriteMsg(msg Msg) (err error) {
 	if msg.Code >= rw.Length {
 		return newPeerError(errInvalidMsgCode, "not handled")
@@ -490,6 +525,7 @@ func (rw *protoRW) WriteMsg(msg Msg) (err error) {
 	msg.meterCap = rw.cap()
 	msg.meterCode = msg.Code
 
+	// 转换成实际传输的消息码
 	msg.Code += rw.offset
 
 	select {
@@ -499,6 +535,7 @@ func (rw *protoRW) WriteMsg(msg Msg) (err error) {
 		// shutdown if the error is non-nil and unblock the next write
 		// otherwise. The calling protocol code should exit for errors
 		// as well but we don't want to rely on that.
+		// 如果错误非nil就会让节点立刻关闭,错误是nil通知run往writeStart写入一个元素,允许继续发送
 		rw.werr <- err
 	case <-rw.closed:
 		err = ErrShuttingDown
@@ -506,6 +543,7 @@ func (rw *protoRW) WriteMsg(msg Msg) (err error) {
 	return err
 }
 
+// 从in管道读取一条消息并返回
 func (rw *protoRW) ReadMsg() (Msg, error) {
 	select {
 	case msg := <-rw.in:

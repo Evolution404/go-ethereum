@@ -43,7 +43,7 @@ const (
 type Nonce [gcmNonceSize]byte
 
 // EncodePubkey encodes a public key.
-// 获取压缩格式的公钥
+// 获取压缩格式的公钥,公钥所在的曲线必须是secp256k1
 func EncodePubkey(key *ecdsa.PublicKey) []byte {
 	switch key.Curve {
 	case crypto.S256():
@@ -69,10 +69,10 @@ func DecodePubkey(curve elliptic.Curve, e []byte) (*ecdsa.PublicKey, error) {
 }
 
 // idNonceHash computes the ID signature hash used in the handshake.
-// 发送握手包时要对挑战数据进行签名,签名是对哈希签名
-// 这个函数用来计算这个哈希
+// 该函数用来生成签名数据的哈希,也就是如下这个数据的哈希
 // id-signature-input = "discovery v5 identity proof" || challenge-data || ephemeral-pubkey || node-id-B
 // 返回 sha256(id-signature-input)
+// 变动的部分是挑战数据,本地临时公钥,远程节点的ID
 func idNonceHash(h hash.Hash, challenge, ephkey []byte, destID enode.ID) []byte {
 	h.Reset()
 	h.Write([]byte("discovery v5 identity proof"))
@@ -83,11 +83,15 @@ func idNonceHash(h hash.Hash, challenge, ephkey []byte, destID enode.ID) []byte 
 }
 
 // makeIDSignature creates the ID nonce signature.
-// 生成id-signature
+// 生成握手包中的id-signature
+// 先拼接出来签名数据(id-signature-input),然后计算签名数据的哈希(sha256(id-signature-input)),然后对哈希签名
 // id-signature = id_sign(sha256(id-signature-input))
-// 输入的key是本地私钥,ephkey是本地公钥
+// id-signature-input = "discovery v5 identity proof" || challenge-data || ephemeral-pubkey || node-id-B
+// 输入的key是本地私钥,ephkey是本地刚刚生成的临时公钥
+// 生成签名需要本地私钥,签名的数据是由挑战数据,本地临时公钥和远程节点ID这些组成
+// 返回的签名是64字节格式,包括r和s去掉了v
 func makeIDSignature(hash hash.Hash, key *ecdsa.PrivateKey, challenge, ephkey []byte, destID enode.ID) ([]byte, error) {
-	// 计算相关数据的哈希
+	// 首先计算签名数据的哈希
 	input := idNonceHash(hash, challenge, ephkey, destID)
 	switch key.Curve {
 	case crypto.S256():
@@ -109,7 +113,11 @@ type s256raw []byte
 func (s256raw) ENRKey() string { return "secp256k1" }
 
 // verifyIDSignature checks that signature over idnonce was made by the given node.
-// 验证签名
+// 接收到握手包后验证签名是否有效
+// n是从握手包中解析出来的远程节点记录,保存了远程节点的公钥
+// challenge是本地发送WHOAREYOU包时保存下来的挑战数据
+// ephkey是从握手包中获取的远程节点A生成的临时公钥
+// destID是本地节点的ID
 func verifyIDSignature(hash hash.Hash, sig []byte, n *enode.Node, challenge, ephkey []byte, destID enode.ID) error {
 	// 现在只有v4
 	switch idscheme := n.Record().IdentityScheme(); idscheme {
@@ -131,7 +139,8 @@ func verifyIDSignature(hash hash.Hash, sig []byte, n *enode.Node, challenge, eph
 type hashFn func() hash.Hash
 
 // deriveKeys creates the session keys.
-// 通过本地私钥和远程公钥得出来对称加密使用的密钥,返回会话对象
+// 通过本地私钥和远程的临时公钥得出来对称加密使用的密钥,返回会话对象
+// 生成session需要本地私钥,远程临时公钥,节点A的id,节点B的id,挑战数据
 // 需要注意接收方和发送方调用这个函数恢复出来的会话对象完全一致
 // 所以需要有一方调用session.keysFlipped来交换writeKey和readKey
 func deriveKeys(hash hashFn, priv *ecdsa.PrivateKey, pub *ecdsa.PublicKey, n1, n2 enode.ID, challenge []byte) *session {
@@ -159,7 +168,7 @@ func deriveKeys(hash hashFn, priv *ecdsa.PrivateKey, pub *ecdsa.PublicKey, n1, n
 }
 
 // ecdh creates a shared secret.
-// 通过本地私钥和远程公钥,计算本地和远程节点共享的密钥
+// 通过本地私钥和远程临时公钥,计算本地和远程节点共享的密钥
 func ecdh(privkey *ecdsa.PrivateKey, pubkey *ecdsa.PublicKey) []byte {
 	// 计算本地私钥与远程节点公钥的乘积
 	// secX,secY分别是椭圆曲线上点的横纵坐标
@@ -176,7 +185,8 @@ func ecdh(privkey *ecdsa.PrivateKey, pubkey *ecdsa.PublicKey) []byte {
 // encryptGCM encrypts pt using AES-GCM with the given key and nonce. The ciphertext is
 // appended to dest, which must not overlap with plaintext. The resulting ciphertext is 16
 // bytes longer than plaintext because it contains an authentication tag.
-// 加密plaintext,将密文追加到dest,并返回密文
+// 使用给定的key和nonce加密plaintext,将密文追加到dest,并返回密文
+// 密文比原文长度增加了16字节,因为增加了认证信息
 func encryptGCM(dest, key, nonce, plaintext, authData []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {

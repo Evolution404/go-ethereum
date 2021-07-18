@@ -78,12 +78,14 @@ type (
 	Whoareyou struct {
 		// ChallengeData其实就是收到整个WHOYOUARE数据包解密后的内容
 		ChallengeData []byte   // Encoded challenge
+		// 引起发送Whoareyou包的Nonce,接收Whoareyou包的节点可以根据这个Nonce来得知发送Whoareyou包的节点是哪一个
 		Nonce         Nonce    // Nonce of request packet
 		IDNonce       [16]byte // Identity proof data
 		RecordSeq     uint64   // ENR sequence number of recipient
 
 		// Node is the locally known node record of recipient.
 		// This must be set by the caller of Encode.
+		// Node代表Whoareyou发送方的记录,本地根据Nonce来得知之前发送的请求包,所以就能直到发送给了哪个节点
 		Node *enode.Node
 
 		sent mclock.AbsTime // for handshake GC.
