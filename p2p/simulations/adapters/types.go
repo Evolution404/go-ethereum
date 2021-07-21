@@ -92,6 +92,7 @@ type NodeConfig struct {
 
 	// PrivateKey is the node's private key which is used by the devp2p
 	// stack to encrypt communications
+	// 必须指定私钥
 	PrivateKey *ecdsa.PrivateKey
 
 	// Enable peer events for Msgs
@@ -107,6 +108,7 @@ type NodeConfig struct {
 	// starting the node (for SimNodes it should be the names of service lifecycles
 	// contained in SimAdapter.lifecycles, for other nodes it should be
 	// service lifecycles registered by calling the RegisterLifecycle function)
+	// 必须指定至少一个服务名称
 	Lifecycles []string
 
 	// Properties are the names of the properties this node should hold

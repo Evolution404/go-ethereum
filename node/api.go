@@ -32,6 +32,7 @@ import (
 
 // apis returns the collection of built-in RPC APIs.
 // 获得内置的RPC APIs
+// 所有创建的节点都默认拥有这些RPC调用
 func (n *Node) apis() []rpc.API {
 	return []rpc.API{
 		{

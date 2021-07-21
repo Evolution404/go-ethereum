@@ -41,6 +41,10 @@ import (
 // n.RegisterLifecycle(lifecycle)
 // n.Start()
 // n.Close()
+
+// 一个node.Node对象内部运行了p2p服务和RPC服务
+// p2p服务使用p2p.Server实现
+// RPC服务实现了四种连接方式,分别是进程内,进程间,http,websocket
 type Node struct {
 	eventmux      *event.TypeMux
 	config        *Config
@@ -57,20 +61,22 @@ type Node struct {
 	// initializingState,runningState,closedState
 	state int // Tracks state of node lifecycle
 
-	lock          sync.Mutex
+	lock sync.Mutex
 	// 所有通过RegisterLifecycle注册的服务
-	lifecycles    []Lifecycle // All registered backends, services, and auxiliary services that have a lifecycle
+	lifecycles []Lifecycle // All registered backends, services, and auxiliary services that have a lifecycle
 	// rpcAPIs保存了当前节点能够提供的所有RPC调用
-	rpcAPIs       []rpc.API   // List of APIs currently provided by the node
+	rpcAPIs []rpc.API // List of APIs currently provided by the node
 	// http协议的rpc通信服务
-	http          *httpServer //
+	http *httpServer //
 	// websocket协议的rpc通信服务
-	ws            *httpServer //
+	ws *httpServer //
 	// 进程间rpc通信的服务
-	ipc           *ipcServer  // Stores information about the ipc http server
+	ipc *ipcServer // Stores information about the ipc http server
 	// 进程内的RPC处理器
 	inprocHandler *rpc.Server // In-process RPC request handler to process the API requests
 
+	// 保存节点打开的所有数据库
+	// 封装成closeTrackingDB是为了只需要对数据库对象调用Close方法就能从databases字段中删除
 	databases map[*closeTrackingDB]struct{} // All open databases
 }
 
@@ -82,6 +88,10 @@ const (
 
 // New creates a new P2P node, ready for protocol registration.
 // 创建一个p2p节点,等待注册协议
+// 创建一个node.Node主要包括以下步骤
+// 处理配置信息,数据文件夹路径转换成绝对路径,节点名称合法
+// 初始化Node对象,主要创建了p2p.Server对象,在rpcAPIs中添加内置方法
+// 创建四个rpc服务对象,但是没有启动 进程内是rpc.Server,进程间是ipcServer,http和websocket都是httpServer
 func New(conf *Config) (*Node, error) {
 	// Copy config and resolve the datadir so future changes to the current
 	// working directory don't affect the node.
@@ -118,13 +128,13 @@ func New(conf *Config) (*Node, error) {
 
 	// 创建Node对象
 	node := &Node{
-		config:        conf,
+		config: conf,
 		// 启动的时候就创建一个线程内的rpc.server
 		inprocHandler: rpc.NewServer(),
 		eventmux:      new(event.TypeMux),
 		log:           conf.Logger,
 		stop:          make(chan struct{}),
-		// 这个节点所处的Server对象
+		// 这个节点内部运行的p2p服务对象
 		server:    &p2p.Server{Config: conf.P2P},
 		databases: make(map[*closeTrackingDB]struct{}),
 	}
@@ -183,6 +193,7 @@ func New(conf *Config) (*Node, error) {
 
 // Start starts all registered lifecycles, RPC services and p2p networking.
 // Node can only be started once.
+// 只有刚初始化完成的节点才能调用Start也就是initializingState状态才能启动
 // 启动一个节点,包括三个部分
 // 调用所有服务Start方法
 // 启动四种RPC服务
@@ -190,16 +201,21 @@ func New(conf *Config) (*Node, error) {
 func (n *Node) Start() error {
 	n.startStopLock.Lock()
 	defer n.startStopLock.Unlock()
-
 	n.lock.Lock()
+	if n.stop == nil {
+		n.stop = make(chan struct{})
+	}
+	if n.inprocHandler == nil{
+		n.inprocHandler = rpc.NewServer()
+	}
 	// 调用Start时节点的状态必须是initializingState
 	switch n.state {
 	case runningState:
 		n.lock.Unlock()
 		return ErrNodeRunning
-	case closedState:
-		n.lock.Unlock()
-		return ErrNodeStopped
+		//case closedState:
+		//	n.lock.Unlock()
+		//	return ErrNodeStopped
 	}
 	// 修改运行状态
 	n.state = runningState
@@ -237,14 +253,13 @@ func (n *Node) Start() error {
 
 // Close stops the Node and releases resources acquired in
 // Node constructor New.
-// 关闭一个节点
+// 关闭一个节点,处于以下三种状态的不同处理方式
 // 初始化状态: doClose
 // 运行状态: 停止所有服务,doClose
 // 关闭状态: 报错
 func (n *Node) Close() error {
 	n.startStopLock.Lock()
 	defer n.startStopLock.Unlock()
-
 	n.lock.Lock()
 	state := n.state
 	n.lock.Unlock()
@@ -269,7 +284,7 @@ func (n *Node) Close() error {
 
 // doClose releases resources acquired by New(), collecting errors.
 // 释放New()中使用的资源
-// 关闭所有数据库,关闭账户管理,删除临时私钥,使用专属文件夹
+// 关闭所有数据库,关闭账户管理,删除临时私钥,释放专属文件夹
 func (n *Node) doClose(errs []error) error {
 	// Close databases. This needs the lock because it needs to
 	// synchronize with OpenDatabase*.
@@ -281,8 +296,11 @@ func (n *Node) doClose(errs []error) error {
 	n.lock.Unlock()
 
 	// 关闭账户管理
-	if err := n.accman.Close(); err != nil {
-		errs = append(errs, err)
+	if n.accman != nil {
+		if err := n.accman.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		n.accman = nil
 	}
 	// 删除临时私钥
 	if n.ephemKeystore != "" {
@@ -297,7 +315,7 @@ func (n *Node) doClose(errs []error) error {
 
 	// Unblock n.Wait.
 	close(n.stop)
-
+	n.stop = nil
 	// Report any errors that might have occurred.
 	// 将错误列表合并成一个错误
 	switch len(errs) {
@@ -492,6 +510,7 @@ func (n *Node) startInProc() error {
 // stopInProc terminates the in-process RPC endpoint.
 func (n *Node) stopInProc() {
 	n.inprocHandler.Stop()
+	n.inprocHandler = nil
 }
 
 // Wait blocks until the node is closed.
@@ -716,6 +735,7 @@ func (db *closeTrackingDB) Close() error {
 }
 
 // wrapDatabase ensures the database will be auto-closed when Node is closed.
+// 将数据库对象封装成closeTrackingDB,然后加入到databases字段中
 func (n *Node) wrapDatabase(db ethdb.Database) ethdb.Database {
 	wrapper := &closeTrackingDB{db, n}
 	n.databases[wrapper] = struct{}{}

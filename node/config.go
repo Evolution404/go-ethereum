@@ -52,6 +52,7 @@ const (
 // Config represents a small collection of configuration values to fine tune the
 // P2P network layer of a protocol stack. These values can be further extended by
 // all registered services.
+// P2P字段中可以不指定私钥,不指定私钥将随机生成
 type Config struct {
 	// Name sets the instance name of the node. It must not contain the / character and is
 	// used in the devp2p node identifier. The instance name of geth is "geth". If no
@@ -76,6 +77,7 @@ type Config struct {
 	DataDir string
 
 	// Configuration of peer-to-peer networking.
+	// 这里p2p.Config中可以不指定私钥,不指定私钥将随机生成
 	P2P p2p.Config
 
 	// KeyStoreDir is the file system folder that contains private keys. The directory can
@@ -293,6 +295,8 @@ func DefaultWSEndpoint() string {
 
 // ExtRPCEnabled returns the indicator whether node enables the external
 // RPC(http, ws or graphql).
+// 判断是否有外部的RPC启用了
+// 外部是指http,ws或者graphql,相对于内部是进程内通信和进程间通信
 func (c *Config) ExtRPCEnabled() bool {
 	return c.HTTPHost != "" || c.WSHost != ""
 }

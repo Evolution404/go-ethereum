@@ -177,13 +177,13 @@ func (s *SimAdapter) GetNode(id enode.ID) (*SimNode, bool) {
 // SimNode实现了adapters.Node接口,但是还额外实现了几个函数
 // Close,Node,Server,Service,ServiceMap,Services,SubscribeEvents
 type SimNode struct {
-	lock         sync.RWMutex
-	ID           enode.ID
-	config       *NodeConfig
-	adapter      *SimAdapter
-	node         *node.Node
-	running      map[string]node.Lifecycle
-	client       *rpc.Client
+	lock    sync.RWMutex
+	ID      enode.ID
+	config  *NodeConfig
+	adapter *SimAdapter
+	node    *node.Node
+	running map[string]node.Lifecycle
+	client  *rpc.Client
 	// 确保注册服务的过程只被执行一次
 	registerOnce sync.Once
 }
@@ -293,7 +293,6 @@ func (sn *SimNode) Start(snapshots map[string][]byte) error {
 	if err := sn.node.Start(); err != nil {
 		return err
 	}
-
 	// create an in-process RPC client
 	client, err := sn.node.Attach()
 	if err != nil {
@@ -302,7 +301,6 @@ func (sn *SimNode) Start(snapshots map[string][]byte) error {
 	sn.lock.Lock()
 	sn.client = client
 	sn.lock.Unlock()
-
 	return nil
 }
 
