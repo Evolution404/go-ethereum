@@ -235,8 +235,8 @@ func (net *Network) startWithSnapshots(id enode.ID, snapshots map[string][]byte)
 		return fmt.Errorf("error getting rpc client  for node %v: %s", id, err)
 	}
 	events := make(chan *p2p.PeerEvent)
-	// 让这个rpc客户端订阅admin_subscribe事件
-	// 接收到的事件发送到events管道中
+	// 订阅了privateAdminAPI.PeerEvents方法
+	// node.Node订阅了内部p2p.Server发送的事件然后转发到这里
 	sub, err := client.Subscribe(context.Background(), "admin", events, "peerEvents")
 	if err != nil {
 		return fmt.Errorf("error getting peer events for node %v: %s", id, err)
@@ -247,7 +247,7 @@ func (net *Network) startWithSnapshots(id enode.ID, snapshots map[string][]byte)
 
 // watchPeerEvents reads peer events from the given channel and emits
 // corresponding network events
-// 处理指定节点的peer events,例如增加或减少对等节点,发送或接收到消息
+// 监听来自节点内部p2p.Server发送的事件,然后转换成simulations.Event
 func (net *Network) watchPeerEvents(id enode.ID, events chan *p2p.PeerEvent, sub event.Subscription) {
 	defer func() {
 		// 结束的时候取消订阅

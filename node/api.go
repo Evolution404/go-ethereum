@@ -129,6 +129,7 @@ func (api *privateAdminAPI) RemoveTrustedPeer(url string) (bool, error) {
 
 // PeerEvents creates an RPC subscription which receives peer events from the
 // node's p2p.Server
+// 订阅了内部p2p.Server对象发送的事件,然后转发到外部RPC的调用者
 func (api *privateAdminAPI) PeerEvents(ctx context.Context) (*rpc.Subscription, error) {
 	// Make sure the server is running, fail otherwise
 	server := api.node.Server()
