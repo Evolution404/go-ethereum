@@ -112,8 +112,11 @@ type transport interface {
 
 // bucket contains nodes, ordered by their last activity. the entry
 // that was most recently active is the first element in entries.
+// bucket中保存距离都在一个范围内的节点,entries是当前在线节点,replacements是替补节点
 type bucket struct {
+	// 当前在线的所有节点,按照上次联系的时间进行排序
 	entries      []*node // live entries, sorted by time of last contact
+	// entries中断连后用来替补的节点
 	replacements []*node // recently seen nodes to be used if revalidation fails
 	// 每个桶内也对一个子网的ip个数有限制
 	ips netutil.DistinctNetSet
@@ -226,6 +229,7 @@ func (tab *Table) setFallbackNodes(nodes []*enode.Node) error {
 			return fmt.Errorf("bad bootstrap node %q: %v", n, err)
 		}
 	}
+	// 封装起来保存到nursery中
 	tab.nursery = wrapNodes(nodes)
 	return nil
 }
@@ -256,11 +260,11 @@ func (tab *Table) refresh() <-chan struct{} {
 }
 
 // loop schedules runs of doRefresh, doRevalidate and copyLiveNodes.
+// loop中总共有三种操作refresh,revalidate以及copyNodes
+//   refresh每次经过refreshInterval(30分钟)自动触发一次,还有从tab.refreshReq管道中手动触发
+//   revalidate每次经过tab.nextRevalidateTime()自动触发,触发间隔会变化
+//   copyNodes经过copyNodesInterval(30秒)自动触发
 func (tab *Table) loop() {
-	// 总共有三种操作refresh,revalidate以及copyNodes
-	//   refresh每次经过refreshInterval(30分钟)自动触发一次,还有从tab.refreshReq管道中手动触发
-	//   revalidate每次经过tab.nextRevalidateTime()自动触发,触发间隔会变化
-	//   copyNodes经过copyNodesInterval(30秒)自动触发
 
 	var (
 		revalidate     = time.NewTimer(tab.nextRevalidateTime())
@@ -761,6 +765,7 @@ func contains(ns []*node, id enode.ID) bool {
 // pushNode adds n to the front of list, keeping at most max items.
 // 将新节点n插入list的最开始
 // 如果达到最大长度限制,末尾的节点会被挤出来并返回
+// 没达到上限返回的removed是nil
 func pushNode(list []*node, n *node, max int) ([]*node, *node) {
 	if len(list) < max {
 		list = append(list, nil)
@@ -793,9 +798,12 @@ type nodesByDistance struct {
 // 计算n于target的位置,按照距离逐渐变大的顺序将n插入到列表中
 // 超过maxElems就移除末尾的元素
 func (h *nodesByDistance) push(n *node, maxElems int) {
+	// 找到新节点n应该放置的位置ix
 	ix := sort.Search(len(h.entries), func(i int) bool {
+		// 在列表中找到第一个使得返回结果大于零,也就是刚好距离小于那个节点的位置,也就是n应该插入的位置
 		return enode.DistCmp(h.target, h.entries[i].ID(), n.ID()) > 0
 	})
+	// 没到上限直接先追加让列表长度加一,到了上限不追加在下面复制过程中相当于丢掉了最后一个元素
 	if len(h.entries) < maxElems {
 		h.entries = append(h.entries, n)
 	}
@@ -805,6 +813,7 @@ func (h *nodesByDistance) push(n *node, maxElems int) {
 	} else {
 		// slide existing entries down to make room
 		// this will overwrite the entry we just appended.
+		// 全部向后挪,然后把n放到ix上
 		copy(h.entries[ix+1:], h.entries[ix:])
 		h.entries[ix] = n
 	}

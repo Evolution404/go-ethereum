@@ -178,6 +178,7 @@ func newUDPv5(conn UDPConn, ln *enode.LocalNode, cfg Config) (*UDPv5, error) {
 		closeCtx:       closeCtx,
 		cancelCloseCtx: cancelCloseCtx,
 	}
+	// 配置中的Bootnodes直接传入Table中
 	tab, err := newTable(t, t.db, cfg.Bootnodes, cfg.Log)
 	if err != nil {
 		return nil, err
@@ -478,6 +479,7 @@ func (t *UDPv5) call(node *enode.Node, responseType byte, packet v5wire.Packet) 
 }
 
 // callDone tells dispatch that the active call is done.
+// 通知dispatch一个调用完成
 func (t *UDPv5) callDone(c *callV5) {
 	// This needs a loop because further responses may be incoming until the
 	// send to callDoneCh has completed. Such responses need to be discarded
