@@ -69,6 +69,7 @@ func (msg Msg) Decode(val interface{}) error {
 	return nil
 }
 
+// 输出消息码和消息的长度
 func (msg Msg) String() string {
 	return fmt.Sprintf("msg #%v (%v bytes)", msg.Code, msg.Size)
 }
