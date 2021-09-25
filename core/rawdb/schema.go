@@ -173,6 +173,7 @@ type LegacyTxLookupEntry struct {
 }
 
 // encodeBlockNumber encodes a block number as big endian uint64
+// 将一个uint64类型的区块号转换成大端表示的字节数组
 func encodeBlockNumber(number uint64) []byte {
 	enc := make([]byte, 8)
 	binary.BigEndian.PutUint64(enc, number)

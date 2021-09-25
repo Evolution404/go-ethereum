@@ -17,11 +17,11 @@
 package rawdb
 
 // 每个freezertable对应了一个索引文件和数个数据文件
-// 索引文件以 ridx或者cidx 结尾
+// 索引文件以ridx或者cidx结尾
 //   索引文件每六个字节保存了一个数据项,每个数据项filenum记录该项数据存储在哪个数据文件,offset记录在数据文件的结束位置
 //   索引文件最开始六个字节不对应数据项,offset字段保存了这个表删除了多少之前的数据
 //   例如第一个条目的索引存储在索引文件的7-12字节,offset记录了第一项在数据文件的结束位置
-// 数据文件以 rdat或者cdat 结尾
+// 数据文件以rdat或者cdat结尾
 
 import (
 	"encoding/binary"
@@ -94,26 +94,31 @@ type freezerTable struct {
 	// WARNING: The `items` field is accessed atomically. On 32 bit platforms, only
 	// 64-bit aligned fields can be atomic. The struct is guaranteed to be so aligned,
 	// so take advantage of that (https://golang.org/pkg/sync/atomic/#pkg-note-BUG).
-	// 在这个表内保存了多少键值对
+	// 在这个表内保存了多少键值对,items的访问需要是原子的
 	items uint64 // Number of items stored in the table (including items removed from tail)
 
 	noCompression bool   // if true, disables snappy compression. Note: does not work retroactively
+	// 代表一个dat数据文件大小的最大值
+	// newTable函数中使用的值是2*1000*1000*1000
 	maxFileSize   uint32 // Max file size for data-files
 	name          string
 	path          string
 
 	head   *os.File            // File descriptor for the data head of the table
+	// 记录所有打开的索引文件,便于根据索引文件号获取文件对象
 	files  map[uint32]*os.File // open files
-	// 当前的文件所以是在开头
+	// 当前的数据文件的编号,当前在写的所以是head
 	headId uint32              // number of the currently active head file
-	// 最早保存的文件所以是在末尾
+	// 最早的数据文件的编号,最开始写的定义为tail
 	tailId uint32              // number of the earliest file
+	// 这个表对应的索引文件
 	index  *os.File            // File descriptor for the indexEntry file of the table
 
 	// In the case that old items are deleted (from the tail), we use itemOffset
 	// to count how many historic items have gone missing.
 	itemOffset uint32 // Offset (number of discarded items)
 
+	// 记录当前正在写的这个数据文件的大小
 	headBytes  uint32        // Number of bytes written to the head file
 	readMeter  metrics.Meter // Meter for measuring the effective amount of data read
 	writeMeter metrics.Meter // Meter for measuring the effective amount of data written
@@ -130,8 +135,14 @@ func NewFreezerTable(path, name string, disableSnappy bool) (*freezerTable, erro
 
 // newTable opens a freezer table with default settings - 2G files
 func newTable(path string, name string, readMeter metrics.Meter, writeMeter metrics.Meter, sizeGauge metrics.Gauge, disableSnappy bool) (*freezerTable, error) {
+	// 每个dat文件的最大值是20亿字节
 	return newCustomTable(path, name, readMeter, writeMeter, sizeGauge, 2*1000*1000*1000, disableSnappy)
 }
+
+// 以下三个函数定义了三种不同的打开文件的模式
+// openFreezerFileForAppend -> 直接打开文件并指向文件末尾
+// openFreezerFileForReadOnly -> 以只读模式打开文件
+// openFreezerFileTruncated -> 确保打开的文件是空文件,原来有内容会清空
 
 // openFreezerFileForAppend opens a freezer table file and seeks to the end
 // 打开指定的文件,并让文件指针指向文件末尾
@@ -153,11 +164,13 @@ func openFreezerFileForAppend(filename string) (*os.File, error) {
 }
 
 // openFreezerFileForReadOnly opens a freezer table file for read only access
+// 以只读模式打开文件
 func openFreezerFileForReadOnly(filename string) (*os.File, error) {
 	return os.OpenFile(filename, os.O_RDONLY, 0644)
 }
 
 // openFreezerFileTruncated opens a freezer table making sure it is truncated
+// 保证打开一个空文件,如果原来文件有内容会清空
 func openFreezerFileTruncated(filename string) (*os.File, error) {
 	return os.OpenFile(filename, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 }
@@ -186,6 +199,7 @@ func newCustomTable(path string, name string, readMeter metrics.Meter, writeMete
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return nil, err
 	}
+	// 索引文件的文件名
 	var idxName string
 	if noCompression {
 		// Raw idx
@@ -196,7 +210,7 @@ func newCustomTable(path string, name string, readMeter metrics.Meter, writeMete
 		// 压缩就是Compressed idx
 		idxName = fmt.Sprintf("%s.cidx", name)
 	}
-	// offsets现在指向了数据文件的末尾
+	// 打开索引文件，并指向索引文件的末尾位置
 	offsets, err := openFreezerFileForAppend(filepath.Join(path, idxName))
 	if err != nil {
 		return nil, err
@@ -220,6 +234,7 @@ func newCustomTable(path string, name string, readMeter metrics.Meter, writeMete
 		return nil, err
 	}
 	// Initialize the starting size counter
+	// 在创建表对象的时候计算一下之前的文件大小,在sizeGauge中记录一下
 	size, err := tab.sizeNolock()
 	if err != nil {
 		tab.Close()
@@ -232,6 +247,8 @@ func newCustomTable(path string, name string, readMeter metrics.Meter, writeMete
 
 // repair cross checks the head and the index file and truncates them to
 // be in sync with each other after a potential crash / data loss.
+// 维护索引文件和数据文件的相关关系,修复可能出现的错误
+// 1. 索引文件的大小必须是6字节的整数倍,如果不是6的整数倍就去掉多余的部分
 // 当前已经有索引文件,根据索引文件设置head,headId,headBytes,tailId
 func (t *freezerTable) repair() error {
 	// Create a temporary offset buffer to init files with and read indexEntry into
@@ -263,9 +280,13 @@ func (t *freezerTable) repair() error {
 
 	// Open the head file
 	var (
+		// 索引文件的最开始6字节
 		firstIndex  indexEntry
+		// 索引文件的最末尾6字节
 		lastIndex   indexEntry
+		// 当前正在操作的数据文件的大小
 		contentSize int64
+		// 索引文件记录的最后一个数据项的结束位置
 		contentExp  int64
 	)
 	// Read index zero, determine what file is the earliest
@@ -738,7 +759,8 @@ func (t *freezerTable) size() (uint64, error) {
 
 // sizeNolock returns the total data size in the freezer table without obtaining
 // the mutex first.
-// 返回当前表的文件大小
+// 返回当前表占用空间的大小
+// 计算索引文件和所有数据文件的大小求和
 func (t *freezerTable) sizeNolock() (uint64, error) {
 	stat, err := t.index.Stat()
 	if err != nil {

@@ -71,6 +71,7 @@ const (
 // - The memory mapping ensures we can max out system memory for caching without
 //   reserving it for go-ethereum. This would also reduce the memory requirements
 //   of Geth, and thus also GC overhead.
+// 实现了ethdb.AncientStore接口
 type freezer struct {
 	// WARNING: The `frozen` field is accessed atomically. On 32 bit platforms, only
 	// 64-bit aligned fields can be atomic. The struct is guaranteed to be so aligned,
@@ -94,6 +95,7 @@ type freezer struct {
 
 // newFreezer creates a chain freezer that moves ancient chain data into
 // append-only flat file containers.
+// 创建freezer对象,用来将数据库中的过期数据移动到冻结数据库中
 // freezer的默认文件夹是datadir/geth/chaindata/ancient
 func newFreezer(datadir string, namespace string, readonly bool) (*freezer, error) {
 	// Create the initial freezer object
@@ -130,7 +132,7 @@ func newFreezer(datadir string, namespace string, readonly bool) (*freezer, erro
 		trigger:      make(chan chan struct{}),
 		quit:         make(chan struct{}),
 	}
-	// 遍历所有freezer控制的表
+	// 创建五张表对应的freezerTable对象
 	for name, disableSnappy := range FreezerNoSnappy {
 		table, err := newTable(datadir, name, readMeter, writeMeter, sizeGauge, disableSnappy)
 		// 如果报错就把所有表都关闭

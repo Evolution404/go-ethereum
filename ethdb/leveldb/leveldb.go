@@ -117,7 +117,9 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 // NewCustom returns a wrapped LevelDB object. The namespace is the prefix that the
 // metrics reporting should use for surfacing internal stats.
 // The customize function allows the caller to modify the leveldb options.
+// 用来创建一个Database对象,封装了LevelDB对象
 // file是保存数据库的位置,namespace是前缀
+// customize是用户定义的函数,用来对LevelDB的选项进行修改,可以传入nil代表使用默认选项
 func NewCustom(file string, namespace string, customize func(options *opt.Options)) (*Database, error) {
 	options := configureOptions(customize)
 	// 每个Database对象有一个logger
