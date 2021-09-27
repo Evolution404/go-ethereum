@@ -76,12 +76,14 @@ type freezer struct {
 	// WARNING: The `frozen` field is accessed atomically. On 32 bit platforms, only
 	// 64-bit aligned fields can be atomic. The struct is guaranteed to be so aligned,
 	// so take advantage of that (https://golang.org/pkg/sync/atomic/#pkg-note-BUG).
-	// 记录当前已经存储到freezer中的数据条数
+	// 记录当前已经存储到冻结数据库中的数据条数
 	frozen    uint64 // Number of blocks already frozen
+	// 保存到冻结数据库的阈值
 	threshold uint64 // Number of recent blocks not to freeze (params.FullImmutabilityThreshold apart from tests)
 
 	readonly     bool
 	tables       map[string]*freezerTable // Data tables for storing everything
+	// 新建freezer对象会锁定数据文件夹，避免其他freezer对象使用
 	instanceLock fileutil.Releaser        // File-system lock to prevent double opens
 
 	// 用于由外部主动触发冻结操作
@@ -310,6 +312,7 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 	nfdb := &nofreezedb{KeyValueStore: db}
 
 	var (
+		// 用于控制是否需要等待一分钟
 		backoff   bool
 		triggered chan struct{} // Used in tests
 	)
@@ -328,6 +331,7 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 				triggered = nil
 			}
 			select {
+			// 等待一分钟
 			case <-time.NewTimer(freezerRecheckInterval).C:
 				backoff = false
 			case triggered = <-f.trigger:
@@ -338,6 +342,7 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 		}
 		// Retrieve the freezing threshold.
 		hash := ReadHeadBlockHash(nfdb)
+		// 刚创建的区块链，不需要冻结数据
 		if hash == (common.Hash{}) {
 			log.Debug("Current full block hash unavailable") // new chain, empty database
 			backoff = true
@@ -371,7 +376,9 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 			continue
 		}
 		// Seems we have data ready to be frozen, process in usable batches
-		// limit记录freeze块的上限,也就是一次freeze从f.frozen到limit的块
+		// limit代表本次冻结数据到哪个区块
+		// 一般情况直接冻结到 当前区块号-阈值
+		// 但是由于一次最多冻结3w个区块，所以需要判断本次冻结是否达到了3w个块，达到3w就最多冻结3w
 		limit := *number - threshold
 		if limit-f.frozen > freezerBatchLimit {
 			limit = f.frozen + freezerBatchLimit
@@ -381,7 +388,7 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 			first    = f.frozen
 			ancients = make([]common.Hash, 0, limit-f.frozen)
 		)
-		// 不断循环写入batchLimit个块
+		// 需要冻结的区块依次保存到冻结数据库中
 		for f.frozen <= limit {
 			// Retrieves all the components of the canonical block
 			// 读取frozen位置的块
@@ -425,11 +432,18 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 		}
 		// Wipe out all data from the active database
 		// 从原始的数据库中删除刚才写入freezer中的数据
+		// 1. 删除主链上的数据
+		// 2. 删除侧链上的数据
+
+		// 删除主链上的数据,通过DeleteBlockWithoutNumber删除区块信息,保留区块哈希->区块号映射
 		batch := db.NewBatch()
 		for i := 0; i < len(ancients); i++ {
 			// Always keep the genesis block in active database
+			// first+uint64(i)代表当前要删除的区块号,创世区块不删除
 			if first+uint64(i) != 0 {
+				// 删除正常的区块的时候不删除leveldb中保存的 区块哈希->区块号 映射
 				DeleteBlockWithoutNumber(batch, ancients[i], first+uint64(i))
+				// 删除区块号->区块哈希的映射
 				DeleteCanonicalHash(batch, first+uint64(i))
 			}
 		}
@@ -439,9 +453,11 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 		batch.Reset()
 
 		// Wipe out side chains also and track dangling side chians
+		// 删除侧链上的数据,直接调用DeleteBlock删除整个区块信息
 		var dangling []common.Hash
 		for number := first; number < f.frozen; number++ {
 			// Always keep the genesis block in active database
+			// 创世区块不从默认数据库中删除
 			if number != 0 {
 				dangling = ReadAllHashes(db, number)
 				for _, hash := range dangling {
@@ -456,6 +472,9 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 		batch.Reset()
 
 		// Step into the future and delete and dangling side chains
+		// 初始化的时候dangling保存的是被冻结的最后一个位置的分叉块
+		// 接下来继续向前搜索每个块号对应的所有区块，如果有是dangling的子块的就删除
+		// 这样一直把初始dangling连续下来的块全部删除
 		if f.frozen > 0 {
 			tip := f.frozen
 			for len(dangling) > 0 {
@@ -492,12 +511,15 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 		context := []interface{}{
 			"blocks", f.frozen - first, "elapsed", common.PrettyDuration(time.Since(start)), "number", f.frozen - 1,
 		}
+		// 记录下本次冻结的最后一个区块的哈希
 		if n := len(ancients); n > 0 {
 			context = append(context, []interface{}{"hash", ancients[n-1]}...)
 		}
+		// 打印本次冻结了多少数据以及消耗的时间
 		log.Info("Deep froze chain segment", context...)
 
 		// Avoid database thrashing with tiny writes
+		// 本次冻结的区块数少于3w个,等待一分钟后积累足够多的区块再操作
 		if f.frozen-first < freezerBatchLimit {
 			backoff = true
 		}

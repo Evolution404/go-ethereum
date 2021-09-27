@@ -73,9 +73,12 @@ func DeleteCanonicalHash(db ethdb.KeyValueWriter, number uint64) {
 
 // ReadAllHashes retrieves all the hashes assigned to blocks at a certain heights,
 // both canonical and reorged forks included.
+// 查询leveldb中指定区块号对应的区块哈希,由于分叉可能导致一个区块号对应多个区块哈希
+// 该函数不会查询冻结数据
 func ReadAllHashes(db ethdb.Iteratee, number uint64) []common.Hash {
 	prefix := headerKeyPrefix(number)
 
+	// 初始容量为1,大部分情况只会查询到一个结果
 	hashes := make([]common.Hash, 0, 1)
 	it := db.NewIterator(prefix, nil)
 	defer it.Release()
@@ -305,6 +308,8 @@ func ReadHeaderRLP(db ethdb.Reader, hash common.Hash, number uint64) rlp.RawValu
 	// So during the first check for ancient db, the data is not yet in there,
 	// but when we reach into leveldb, the data was already moved. That would
 	// result in a not found error.
+	// 有可能在查询leveldb的过程中这个区块的信息被移动到了冻结数据库
+	// 所以在结束的时候再查询一遍冻结数据库
 	data, _ = db.Ancient(freezerHeaderTable, number)
 	if len(data) > 0 && crypto.Keccak256Hash(data) == hash {
 		return data
@@ -719,6 +724,11 @@ func WriteAncientBlock(db ethdb.AncientWriter, block *types.Block, receipts type
 	return len(headerBlob) + len(bodyBlob) + len(receiptBlob) + len(tdBlob) + common.HashLength
 }
 
+// 一个区块在leveldb中保存了6条数据
+// DeleteBlock删除全部6条数据
+// DeleteBlockWithoutNumber删除5条数据,不删除 区块哈希->区块号 这一条
+//   该函数用在将区块信息移动到冻结数据库的时候,冻结数据库不容易查询 区块哈希->区块号
+
 // DeleteBlock removes all block data associated with a hash.
 func DeleteBlock(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 	DeleteReceipts(db, hash, number)
@@ -729,7 +739,7 @@ func DeleteBlock(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 
 // DeleteBlockWithoutNumber removes all block data associated with a hash, except
 // the hash to number mapping.
-// 不删除 hash -> number 映射
+// 删除一个区块哈希对应区块的所有数据,但是不删除 hash -> number 映射
 func DeleteBlockWithoutNumber(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 	DeleteReceipts(db, hash, number)
 	deleteHeaderWithoutNumber(db, hash, number)
