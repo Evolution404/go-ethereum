@@ -94,31 +94,36 @@ type freezerTable struct {
 	// WARNING: The `items` field is accessed atomically. On 32 bit platforms, only
 	// 64-bit aligned fields can be atomic. The struct is guaranteed to be so aligned,
 	// so take advantage of that (https://golang.org/pkg/sync/atomic/#pkg-note-BUG).
-	// 在这个表内保存了多少键值对,items的访问需要是原子的
+	// 在这个表内保存了多少条数据,items的访问需要是原子的
 	items uint64 // Number of items stored in the table (including items removed from tail)
 
+	// 标记表是否压缩
 	noCompression bool   // if true, disables snappy compression. Note: does not work retroactively
 	// 代表一个dat数据文件大小的最大值
 	// newTable函数中使用的值是2*1000*1000*1000
 	maxFileSize   uint32 // Max file size for data-files
+	// 表的名称
 	name          string
+	// 表的存储路径
 	path          string
 
+	// 当前数据文件的文件描述符
 	head   *os.File            // File descriptor for the data head of the table
 	// 记录所有打开的索引文件,便于根据索引文件号获取文件对象
 	files  map[uint32]*os.File // open files
 	// 当前的数据文件的编号,当前在写的所以是head
 	headId uint32              // number of the currently active head file
-	// 最早的数据文件的编号,最开始写的定义为tail
+	// 初始数据文件的编号,最开始写的定义为tail
 	tailId uint32              // number of the earliest file
 	// 这个表对应的索引文件
 	index  *os.File            // File descriptor for the indexEntry file of the table
 
 	// In the case that old items are deleted (from the tail), we use itemOffset
 	// to count how many historic items have gone missing.
+	// 记录当前冻结数据表中丢失了多少条数据
 	itemOffset uint32 // Offset (number of discarded items)
 
-	// 记录当前正在写的这个数据文件的大小
+	// 记录当前数据文件的大小
 	headBytes  uint32        // Number of bytes written to the head file
 	readMeter  metrics.Meter // Meter for measuring the effective amount of data read
 	writeMeter metrics.Meter // Meter for measuring the effective amount of data written
@@ -267,7 +272,7 @@ func (t *freezerTable) repair() error {
 		}
 	}
 	// Ensure the index is a multiple of indexEntrySize bytes
-	// 文件大小不是0还不是6的倍数,说明出现了意外情况,剔除掉最后一个indexEntry
+	// 确保索引文件的大小一定是6的倍数
 	if overflow := stat.Size() % indexEntrySize; overflow != 0 {
 		truncateFreezerFile(t.index, stat.Size()-overflow) // New file can't trigger this path
 	}
@@ -275,7 +280,7 @@ func (t *freezerTable) repair() error {
 	if stat, err = t.index.Stat(); err != nil {
 		return err
 	}
-	// 获取修正后的索引文件大小
+	// offsetsSize用来记录索引文件的大小,初始化大小是经过6的倍数校验后的结果
 	offsetsSize := stat.Size()
 
 	// Open the head file
@@ -299,7 +304,7 @@ func (t *freezerTable) repair() error {
 	// 第一个索引记录的偏移量就是这个表整体的偏移量
 	t.itemOffset = firstIndex.offset
 
-	// 读取最后六个字节
+	// 读取最后六个字节,获得最后一条数据所在的数据文件和在数据文件中的位置
 	t.index.ReadAt(buffer, offsetsSize-indexEntrySize)
 	lastIndex.unmarshalBinary(buffer)
 	// 打开当前所操作的数据文件
@@ -307,17 +312,19 @@ func (t *freezerTable) repair() error {
 	if err != nil {
 		return err
 	}
+	// 记录数据文件的文件信息
 	if stat, err = t.head.Stat(); err != nil {
 		return err
 	}
-	// 当前操作的数据文件的大小
+	// 当前操作的数据文件的实际大小
 	contentSize = stat.Size()
 
 	// Keep truncating both files until they come in sync
+	// 索引文件记录的数据文件的大小
 	contentExp = int64(lastIndex.offset)
 
-	// 经过这个for循环后,lastIndex保存了保证正确的最后一个索引
-	// 保证正确的含义是:修正如下的两种错误情况
+	// 校对索引文件记录的数据文件大小是否和实际的数据文件大小一致
+	// 有可能会出现如下的两种错误情况
 	// 索引记录的少于数据文件
 	//   清除数据文件的大于索引的部分
 	// 索引记录的大于数据文件
@@ -336,12 +343,15 @@ func (t *freezerTable) repair() error {
 		// 索引记录的比文件本身大,不断向前搜索之前的索引,直到索引位置小于等于文件的大小
 		if contentExp > contentSize {
 			t.logger.Warn("Truncating dangling indexes", "indexed", common.StorageSize(contentExp), "stored", common.StorageSize(contentSize))
+			// 将索引文件末尾6字节去掉，然后读取新的末尾6字节代表的数据项信息
 			if err := truncateFreezerFile(t.index, offsetsSize-indexEntrySize); err != nil {
 				return err
 			}
-			// 读取前一个indexEntry
+			// 维护索引文件的大小，前面缩小了6字节
 			offsetsSize -= indexEntrySize
+			// 读取去掉旧末尾项后新的末尾项,新末尾项用newLastIndex表示
 			t.index.ReadAt(buffer, offsetsSize-indexEntrySize)
+			// 定义新末尾项
 			var newLastIndex indexEntry
 			newLastIndex.unmarshalBinary(buffer)
 			// We might have slipped back into an earlier head-file here
@@ -371,7 +381,9 @@ func (t *freezerTable) repair() error {
 		return err
 	}
 	// Update the item and byte counters and return
-	// 去除索引文件第一个indexEntry
+	// 计算当前表中有多少条数据
+	// 总条数=丢失的数据条数+保存的数据条数
+	// 保存的数据条数=索引文件大小/6-1  减1是因为最开始6字节用于记录丢失数据
 	t.items = uint64(t.itemOffset) + uint64(offsetsSize/indexEntrySize-1) // last indexEntry points to the end of the data file
 	t.headBytes = uint32(contentSize)
 	t.headId = lastIndex.filenum
@@ -388,6 +400,9 @@ func (t *freezerTable) repair() error {
 // since it assumes that it doesn't have to bother with locking
 // The rationale for doing preopen is to not have to do it from within Retrieve, thus not needing to ever
 // obtain a write-lock within Retrieve.
+// 打开所有数据文件
+// 历史数据文件以只读模式打开
+// 当前数据文件以读写模式打开,并且文件指针指向文件末尾
 func (t *freezerTable) preopen() (err error) {
 	// The repair might have already opened (some) files
 	t.releaseFilesAfter(0, false)
@@ -515,7 +530,7 @@ func (t *freezerTable) openFile(num uint32, opener func(string) (*os.File, error
 		// 不压缩的文件后缀是 rdat
 		if t.noCompression {
 			name = fmt.Sprintf("%s.%04d.rdat", t.name, num)
-		// 压缩的文件的后缀是 cdat
+			// 压缩的文件的后缀是 cdat
 		} else {
 			name = fmt.Sprintf("%s.%04d.cdat", t.name, num)
 		}
@@ -539,12 +554,14 @@ func (t *freezerTable) releaseFile(num uint32) {
 }
 
 // releaseFilesAfter closes all open files with a higher number, and optionally also deletes the files
-// 删除任何大于num的键值对,如果remove为true那么对应的数据文件也会被删除
+// 释放所有大于等于num的数据文件，remove为true代表会删除对应的数据文件
 func (t *freezerTable) releaseFilesAfter(num uint32, remove bool) {
 	for fnum, f := range t.files {
 		if fnum > num {
+			// 从map中删除文件描述符，然后关闭文件
 			delete(t.files, fnum)
 			f.Close()
+			// 判断是否要删除文件
 			if remove {
 				os.Remove(f.Name())
 			}
@@ -561,7 +578,7 @@ func (t *freezerTable) releaseFilesAfter(num uint32, remove bool) {
 // 向表内追加一项数据,调用后不会写入硬盘,确保最终调用Sync
 func (t *freezerTable) Append(item uint64, blob []byte) error {
 	// Encode the blob before the lock portion
-	// 需要对数据进行压缩
+	// 如果是压缩表,对原始数据进行压缩
 	if !t.noCompression {
 		blob = snappy.Encode(nil, blob)
 	}
@@ -599,38 +616,48 @@ func (t *freezerTable) append(item uint64, encodedBlob []byte, wlock bool) (bool
 		return false, errClosed
 	}
 	// Ensure only the next item can be written, nothing else
-	// item从0开始,保证输入的item是正确的
+	// 校验用户输入的数据序号和实际存储的是否一致，不一致返回错误
 	if atomic.LoadUint64(&t.items) != item {
 		return false, fmt.Errorf("appending unexpected item: want %d, have %d", t.items, item)
 	}
+	// 代表存储到磁盘上的数据的真实长度，不压缩就是数据长度，压缩就是压缩后的长度
 	bLen := uint32(len(encodedBlob))
+	// 当前数据文件大小 + 新数据大小 > 单个数据文件最大值
+	// 这种情况需要新建数据文件
 	if t.headBytes+bLen < bLen ||
-		t.headBytes+bLen > t.maxFileSize {
-		// 数据文件需要更新,修改t.head
+	t.headBytes+bLen > t.maxFileSize {
 		// Writing would overflow, so we need to open a new data file.
 		// If we don't already hold the writelock, abort and let the caller
 		// invoke this method a second time.
+		// 确保拿到了修改head的锁
 		if !wlock {
 			return true, nil
 		}
+		// 新数据文件的序号就是原来的序号加一
 		nextID := atomic.LoadUint32(&t.headId) + 1
 		// We open the next file in truncated mode -- if this file already
 		// exists, we need to start over from scratch on it
+		// 打开新的数据文件,如果原来存在这个文件会被清空
 		newHead, err := t.openFile(nextID, openFreezerFileTruncated)
 		if err != nil {
 			return false, err
 		}
 		// Close old file, and reopen in RDONLY mode
+		// 关闭原来的数据文件，然后以只读模式重新打开
 		t.releaseFile(t.headId)
 		t.openFile(t.headId, openFreezerFileForReadOnly)
 
 		// Swap out the current head
+		// 更新相关的数据，文件描述符、数据文件大小、数据文件序号
 		t.head = newHead
 		atomic.StoreUint32(&t.headBytes, 0)
 		atomic.StoreUint32(&t.headId, nextID)
 	}
-	// 增加新一项
-	// 向数据文件写入
+	// 执行添加一条数据时真正的磁盘操作
+	// 1. 数据写入数据文件
+	// 2. 索引文件添加一项
+
+	// 向数据文件写入新增的数据
 	if _, err := t.head.Write(encodedBlob); err != nil {
 		return false, err
 	}
@@ -640,7 +667,7 @@ func (t *freezerTable) append(item uint64, encodedBlob []byte, wlock bool) (bool
 		offset:  newOffset,
 	}
 	// Write indexEntry
-	// 向索引文件写入
+	// 向索引文件写入索引项
 	t.index.Write(idx.marshallBinary())
 
 	t.writeMeter.Mark(int64(bLen + indexEntrySize))
@@ -669,7 +696,7 @@ func (t *freezerTable) getBounds(item uint64) (uint32, uint32, uint32, error) {
 			return 0, 0, 0, err
 		}
 		startIdx.unmarshalBinary(buffer)
-	// 第0条数据的开始位置一定是0
+		// 第0条数据的开始位置一定是0
 	} else {
 		// Special case if we're reading the first item in the freezer. We assume that
 		// the first item always start from zero(regarding the deletion, we
