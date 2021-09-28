@@ -87,6 +87,8 @@ func WriteChainConfig(db ethdb.KeyValueWriter, hash common.Hash, cfg *params.Cha
 
 // crashList is a list of unclean-shutdown-markers, for rlp-encoding to the
 // database
+// crashList对象会被编码成rlp编码保存到leveldb的uncleanShutdownKey下
+// 记录了异常退出的时间列表
 type crashList struct {
 	// Discarded记录已经删除了多少项
 	Discarded uint64   // how many ucs have we deleted
@@ -102,19 +104,21 @@ const crashesToKeep = 10
 // 将当前的时间加入到crashList中
 // 返回之前的列表,以及discarded
 func PushUncleanShutdownMarker(db ethdb.KeyValueStore) ([]uint64, uint64, error) {
+	// 保存异常退出信息，从数据库中读取解码到该变量，然后修改此变量再写回数据库
 	var uncleanShutdowns crashList
 	// Read old data
-	// 读取数据库之前存储的信息
+	// 读取数据库之前存储的信息，解析到uncleanShutdowns变量中
 	if data, err := db.Get(uncleanShutdownKey); err != nil {
 		log.Warn("Error reading unclean shutdown markers", "error", err)
 	} else if err := rlp.DecodeBytes(data, &uncleanShutdowns); err != nil {
 		return nil, 0, err
 	}
+	// 保存数据库中的数据，用于最后的返回值
 	var discarded = uncleanShutdowns.Discarded
 	var previous = make([]uint64, len(uncleanShutdowns.Recent))
 	copy(previous, uncleanShutdowns.Recent)
 	// Add a new (but cap it)
-	// 以当前的时间新增加一项
+	// 以当前的时间新增加一项，如果超过上限从开头位置删除多余的记录
 	uncleanShutdowns.Recent = append(uncleanShutdowns.Recent, uint64(time.Now().Unix()))
 	if count := len(uncleanShutdowns.Recent); count > crashesToKeep+1 {
 		numDel := count - (crashesToKeep + 1)
@@ -122,6 +126,7 @@ func PushUncleanShutdownMarker(db ethdb.KeyValueStore) ([]uint64, uint64, error)
 		uncleanShutdowns.Discarded += uint64(numDel)
 	}
 	// And save it again
+	// 生成新的rlp编码，并保存到数据库中
 	data, _ := rlp.EncodeToBytes(uncleanShutdowns)
 	if err := db.Put(uncleanShutdownKey, data); err != nil {
 		log.Warn("Failed to write unclean-shutdown marker", "err", err)
@@ -131,18 +136,22 @@ func PushUncleanShutdownMarker(db ethdb.KeyValueStore) ([]uint64, uint64, error)
 }
 
 // PopUncleanShutdownMarker removes the last unclean shutdown marker
-// 删除uncleanShutdowns的最后一项
+// 删除异常退出记录的最后一项
 func PopUncleanShutdownMarker(db ethdb.KeyValueStore) {
+	// 保存从数据库中读取的数据
 	var uncleanShutdowns crashList
 	// Read old data
+	// 读取异常退出记录
 	if data, err := db.Get(uncleanShutdownKey); err != nil {
 		log.Warn("Error reading unclean shutdown markers", "error", err)
 	} else if err := rlp.DecodeBytes(data, &uncleanShutdowns); err != nil {
 		log.Error("Error decoding unclean shutdown markers", "error", err) // Should mos def _not_ happen
 	}
+	// 删除记录的最后一项，如果记录条数是0就不删除了
 	if l := len(uncleanShutdowns.Recent); l > 0 {
 		uncleanShutdowns.Recent = uncleanShutdowns.Recent[:l-1]
 	}
+	// 重新生成rlp编码并写回数据库
 	data, _ := rlp.EncodeToBytes(uncleanShutdowns)
 	if err := db.Put(uncleanShutdownKey, data); err != nil {
 		log.Warn("Failed to clear unclean-shutdown marker", "err", err)
