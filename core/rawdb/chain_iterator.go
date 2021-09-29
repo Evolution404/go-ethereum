@@ -44,6 +44,7 @@ func InitDatabaseFromFreezer(db ethdb.Database) {
 	var (
 		batch  = db.NewBatch()
 		start  = time.Now()
+		// 记录上次打印日志的时间，每8秒打印一次时间
 		logged = start.Add(-7 * time.Second) // Unindex during import is fast, don't double log
 		hash   common.Hash
 	)
@@ -57,8 +58,10 @@ func InitDatabaseFromFreezer(db ethdb.Database) {
 		} else {
 			hash = common.BytesToHash(h)
 		}
+		// 向leveldb中写入 区块哈希->区块号
 		WriteHeaderNumber(batch, hash, i)
 		// If enough data was accumulated in memory or we're at the last block, dump to disk
+		// 积累到足够多的操作后写入到磁盘上
 		if batch.ValueSize() > ethdb.IdealBatchSize {
 			if err := batch.Write(); err != nil {
 				log.Crit("Failed to write data to db", "err", err)
@@ -102,7 +105,7 @@ func iterateTransactions(db ethdb.Database, from uint64, to uint64, reverse bool
 	if to == from {
 		return nil
 	}
-	// 根据cpu的核心数目设置线程数
+	// 计算启动的线程数：min(遍历的区块数, cpu的核数)
 	threads := to - from
 	if cpus := runtime.NumCPU(); threads > uint64(cpus) {
 		threads = uint64(cpus)
@@ -148,6 +151,7 @@ func iterateTransactions(db ethdb.Database, from uint64, to uint64, reverse bool
 				close(hashesCh)
 			}
 		}()
+		// 接收rlp编码进行解码
 		for data := range rlpCh {
 			var body types.Body
 			if err := rlp.DecodeBytes(data.rlp, &body); err != nil {
@@ -194,6 +198,7 @@ func indexTransactions(db ethdb.Database, from uint64, to uint64, interrupt chan
 		return
 	}
 	var (
+		// 在协程内遍历区块中的交易,返回一个管道用于接收查询结果
 		hashesCh = iterateTransactions(db, from, to, true, interrupt)
 		batch    = db.NewBatch()
 		start    = time.Now()
@@ -202,21 +207,23 @@ func indexTransactions(db ethdb.Database, from uint64, to uint64, interrupt chan
 		// in to be [to-1]. Therefore, setting lastNum to means that the
 		// prqueue gap-evaluation will work correctly
 		lastNum = to
-		// 使用优先队列保存交易,每个元素是一个区块内的所有哈希
+		// 使用优先队列保存交易,每个元素是一个区块内的所有哈希,优先级是块号
 		queue   = prque.New(nil)
 		// for stats reporting
 		// 分别记录已经写入了几个区块,多少条交易
 		blocks, txs = 0, 0
 	)
+	// 遍历接收协程查询的结果
+	// 管道返回的区块并不一定是按照倒序发送的，但是这里要求从最高的区块开始索引，所以使用了优先队列来保证顺序
 	for chanDelivery := range hashesCh {
 		// Push the delivery into the queue and process contiguous ranges.
 		// Since we iterate in reverse, so lower numbers have lower prio, and
 		// we can use the number directly as prio marker
-		// 使用块号作为优先级
+		// 需要保证最高的区块最先被索引，所以使用块号作为优先级
 		queue.Push(chanDelivery, int64(chanDelivery.number))
 		for !queue.Empty() {
 			// If the next available item is gapped, return
-			// 一直等待,等到最后一个区块被读取出来
+			// 一直在判断优先队列中优先级最高的元素的区块高度是否是最后一个区块,也就是保证按照倒序来进行索引
 			if _, priority := queue.Peek(); priority != int64(lastNum-1) {
 				break
 			}
@@ -231,6 +238,7 @@ func indexTransactions(db ethdb.Database, from uint64, to uint64, interrupt chan
 			lastNum = delivery.number
 			// 写入这一批交易信息到数据库中
 			WriteTxLookupEntries(batch, delivery.number, delivery.hashes)
+			// 这个区块的索引已经完成,区块数量加一,交易数加上这个区块内的交易
 			blocks++
 			txs += len(delivery.hashes)
 			// If enough data was accumulated in memory or we're at the last block, dump to disk

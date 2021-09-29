@@ -528,6 +528,7 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 
 // repair truncates all data tables to the same length.
 // 修正freezer中所有表的数据项个数一致到条目最少的那个表
+// 在repair函数中初始化冻结数据库内的数据条数
 func (f *freezer) repair() error {
 	// 找到所有表中键值对个数的最小值
 	min := uint64(math.MaxUint64)
