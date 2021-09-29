@@ -440,11 +440,15 @@ func (c *ChainConfig) IsCatalyst(num *big.Int) bool {
 
 // CheckCompatible checks whether scheduled fork transitions have been imported
 // with a mismatching chain configuration.
+// 检查新的配置中是否会产生不兼容,返回能解决所有不兼容问题的最低区块高度
 func (c *ChainConfig) CheckCompatible(newcfg *ChainConfig, height uint64) *ConfigCompatError {
 	bhead := new(big.Int).SetUint64(height)
 
 	// Iterate checkCompatible to find the lowest conflict.
+	// 循环调用checkCompatible找到发生不兼容的最低区块高度
 	var lasterr *ConfigCompatError
+	// 每次循环查询新的不兼容位置,然后设置高度到回滚高度继续查询不兼容
+	// 一直到没有不兼容或者到达了创世区块位置,上一次不兼容就是最低的位置
 	for {
 		err := c.checkCompatible(newcfg, bhead)
 		if err == nil || (lasterr != nil && err.RewindTo == lasterr.RewindTo) {
@@ -464,6 +468,8 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		block    *big.Int
 		optional bool // if true, the fork may be nil and next fork is still allowed
 	}
+	// 用来记录上一项分叉的位置,用于比较下一次的高度是否大于它
+	// 必选分叉一定会记录,可选分叉不为nil也会被记录
 	var lastFork fork
 	for _, cur := range []fork{
 		{name: "homesteadBlock", block: c.HomesteadBlock},
@@ -479,12 +485,16 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		{name: "berlinBlock", block: c.BerlinBlock},
 		{name: "londonBlock", block: c.LondonBlock},
 	} {
+		// 分叉名称是空字符串说明是第一次循环,不需要检查
 		if lastFork.name != "" {
 			// Next one must be higher number
+			// 上一项分叉和当前分叉都为nil不报错
+			// 但是上一项为nil,当前不是nil会报错
 			if lastFork.block == nil && cur.block != nil {
 				return fmt.Errorf("unsupported fork ordering: %v not enabled, but %v enabled at %v",
 					lastFork.name, cur.name, cur.block)
 			}
+			// 上一项和当前都不是nil,需要保证当前高度大于上一项高度
 			if lastFork.block != nil && cur.block != nil {
 				if lastFork.block.Cmp(cur.block) > 0 {
 					return fmt.Errorf("unsupported fork ordering: %v enabled at %v, but %v enabled at %v",
@@ -493,6 +503,8 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 			}
 		}
 		// If it was optional and not set, then ignore it
+		// 如果是可选的分叉并且没有指定区块高度就跳过更新lastFork
+		// 换句话说如果是必选的分叉或者指定了区块高度就要更新lastFork
 		if !cur.optional || cur.block != nil {
 			lastFork = cur
 		}
@@ -500,6 +512,8 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 	return nil
 }
 
+// 输入新的区块链配置、当前区块高度,判断新的区块链配置是否有不兼容的情况发生
+// 按照时间顺序依次检查各个分叉点,返回第一个不兼容的位置
 func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *ConfigCompatError {
 	if isForkIncompatible(c.HomesteadBlock, newcfg.HomesteadBlock, head) {
 		return newCompatError("Homestead fork block", c.HomesteadBlock, newcfg.HomesteadBlock)
@@ -507,6 +521,8 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *Confi
 	if isForkIncompatible(c.DAOForkBlock, newcfg.DAOForkBlock, head) {
 		return newCompatError("DAO fork block", c.DAOForkBlock, newcfg.DAOForkBlock)
 	}
+	// 如果当前的区块链已经进入了DAO分叉,两次配置关于DAO分叉的支持选项配置应该一致
+	// 还没有进入DAO分叉的高度的话,新的配置都无所谓
 	if c.IsDAOFork(head) && c.DAOForkSupport != newcfg.DAOForkSupport {
 		return newCompatError("DAO fork support flag", c.DAOForkBlock, newcfg.DAOForkBlock)
 	}
@@ -519,6 +535,7 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *Confi
 	if isForkIncompatible(c.EIP158Block, newcfg.EIP158Block, head) {
 		return newCompatError("EIP158 fork block", c.EIP158Block, newcfg.EIP158Block)
 	}
+	// EIP158启用后链ID就不能更改
 	if c.IsEIP158(head) && !configNumEqual(c.ChainID, newcfg.ChainID) {
 		return newCompatError("EIP158 chain ID", c.EIP158Block, newcfg.EIP158Block)
 	}
@@ -552,18 +569,27 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *Confi
 
 // isForkIncompatible returns true if a fork scheduled at s1 cannot be rescheduled to
 // block s2 because head is already past the fork.
+// s1是之前预计的分叉高度，s2是修改后的预计分叉高度，head是当前的区块高度
+// 判断将s1改期为s2是否兼容,不兼容的情况下返回true
+// 如果s1和s2相等,说明没发生改期,不存在兼容不兼容,一定返回false
+// 在s1不等于s2的前提下,如果head越过了s1或者s2都会造成不兼容
 func isForkIncompatible(s1, s2, head *big.Int) bool {
 	return (isForked(s1, head) || isForked(s2, head)) && !configNumEqual(s1, s2)
 }
 
 // isForked returns whether a fork scheduled at block s is active at the given head block.
+// s是预计的分叉高度，head是当前高度，判断当前高度是否已经完成了分叉
+// 只需要s小于等于head就说明完成了分叉，此函数还处理了s和head可能是nil的情况
 func isForked(s, head *big.Int) bool {
+	// s和head中只要有一个nil这个分叉就没有执行
 	if s == nil || head == nil {
 		return false
 	}
 	return s.Cmp(head) <= 0
 }
 
+// x和y是两个区块高度，用于判断区块链配置(ChainConfig)里的区块高度是否相等
+// x和y都是nil的时候直接相等，都不是nil的时候通过Cmp方法判断
 func configNumEqual(x, y *big.Int) bool {
 	if x == nil {
 		return y == nil
@@ -576,16 +602,23 @@ func configNumEqual(x, y *big.Int) bool {
 
 // ConfigCompatError is raised if the locally-stored blockchain is initialised with a
 // ChainConfig that would alter the past.
+// 用于描述一次不兼容错误
+// 保存了针对哪次硬分叉导致的不兼容、原来和新修改的区块高度、修复不兼容错误需要回滚到的高度
 type ConfigCompatError struct {
 	What string
 	// block numbers of the stored and new configurations
+	// StoredConfig保存原来的分叉位置
+	// NewConfig保存新的分叉位置
 	StoredConfig, NewConfig *big.Int
 	// the block number to which the local chain must be rewound to correct the error
+	// 为了修复兼容错误本地需要回滚到哪个区块
 	RewindTo uint64
 }
 
+// 生成配置不兼容错误对象
 func newCompatError(what string, storedblock, newblock *big.Int) *ConfigCompatError {
 	var rew *big.Int
+	// 计算需要回滚到的区块高度,取两次分叉高度的较小值减一
 	switch {
 	case storedblock == nil:
 		rew = newblock
