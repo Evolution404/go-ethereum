@@ -50,19 +50,25 @@ func BytesToBloom(b []byte) Bloom {
 
 // SetBytes sets the content of b to the given bytes.
 // It panics if d is not of suitable size.
+// 将布隆过滤器的底层字节数组的末尾部分替换为输入值
 func (b *Bloom) SetBytes(d []byte) {
+	// 输入长度不能超过256字节
 	if len(b) < len(d) {
 		panic(fmt.Sprintf("bloom bytes too big %d %d", len(b), len(d)))
 	}
+	// 替换末尾部分
 	copy(b[BloomByteLength-len(d):], d)
 }
 
 // Add adds d to the filter. Future calls of Test(d) will return true.
+// 将一个数据添加到布隆过滤器中
 func (b *Bloom) Add(d []byte) {
+	// 提前生成好保存哈希值的缓存空间,只需要哈希值的前6字节
 	b.add(d, make([]byte, 6))
 }
 
 // add is internal version of Add, which takes a scratch buffer for reuse (needs to be at least 6 bytes)
+// 分别设置三个要变为1的比特位
 func (b *Bloom) add(d []byte, buf []byte) {
 	i1, v1, i2, v2, i3, v3 := bloomValues(d, buf)
 	b[i1] |= v1
@@ -83,8 +89,11 @@ func (b Bloom) Bytes() []byte {
 }
 
 // Test checks if the given topic is present in the bloom filter
+// 检测输入的数据是否保存在布隆过滤器中
 func (b Bloom) Test(topic []byte) bool {
+	// 计算数据的哪三个比特位需要是1
 	i1, v1, i2, v2, i3, v3 := bloomValues(topic, make([]byte, 6))
+	// 检测三个比特位是否是1,都得是1才能判断存在
 	return v1 == v1&b[i1] &&
 		v2 == v2&b[i2] &&
 		v3 == v3&b[i3]
@@ -136,6 +145,8 @@ func Bloom9(data []byte) []byte {
 }
 
 // bloomValues returns the bytes (index-value pairs) to set for the given data
+// 计算输入数据应该修改布隆过滤器的哪三个比特位
+// i1,i2,i3代表要修改哪三个字节 v1,v2,v3对应这三个字节要修改为的内容
 func bloomValues(data []byte, hashbuf []byte) (uint, byte, uint, byte, uint, byte) {
 	sha := hasherPool.Get().(crypto.KeccakState)
 	sha.Reset()
@@ -143,14 +154,17 @@ func bloomValues(data []byte, hashbuf []byte) (uint, byte, uint, byte, uint, byt
 	sha.Read(hashbuf)
 	hasherPool.Put(sha)
 	// The actual bits to flip
+	// & 0x7代表取末尾3位
+	// v1,v2,v3都一定是2的指数
+	// 分别代表将2左移第1,3,5字节末尾3位所代表的值
 	v1 := byte(1 << (hashbuf[1] & 0x7))
 	v2 := byte(1 << (hashbuf[3] & 0x7))
 	v3 := byte(1 << (hashbuf[5] & 0x7))
 	// The indices for the bytes to OR in
+	// &0x7ff代表取末尾11位
 	i1 := BloomByteLength - uint((binary.BigEndian.Uint16(hashbuf)&0x7ff)>>3) - 1
 	i2 := BloomByteLength - uint((binary.BigEndian.Uint16(hashbuf[2:])&0x7ff)>>3) - 1
 	i3 := BloomByteLength - uint((binary.BigEndian.Uint16(hashbuf[4:])&0x7ff)>>3) - 1
-
 	return i1, v1, i2, v2, i3, v3
 }
 

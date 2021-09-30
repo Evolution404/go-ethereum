@@ -32,13 +32,16 @@ import (
 
 // bloomIndexes represents the bit indexes inside the bloom filter that belong
 // to some key.
+// 用来描述一个元素在布隆过滤器中标记为1的三个比特位的下标
 type bloomIndexes [3]uint
 
 // calcBloomIndexes returns the bloom filter bit indexes belonging to the given key.
+// 计算输入数据的标记位
 func calcBloomIndexes(b []byte) bloomIndexes {
 	b = crypto.Keccak256(b)
 
 	var idxs bloomIndexes
+	// 循环三次,每组两字节,每个循环取每组的最后11位
 	for i := 0; i < len(idxs); i++ {
 		idxs[i] = (uint(b[2*i])<<8)&2047 + uint(b[2*i+1])
 	}
@@ -121,6 +124,7 @@ func NewMatcher(sectionSize uint64, filters [][][]byte) *Matcher {
 		}
 	}
 	// For every bit, create a scheduler to load/download the bit vectors
+	// 将过滤器组拆分为位集查询任务
 	for _, bloomIndexLists := range m.filters {
 		for _, bloomIndexList := range bloomIndexLists {
 			for _, bloomIndex := range bloomIndexList {

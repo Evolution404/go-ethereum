@@ -84,6 +84,8 @@ func (s *scheduler) reset() {
 // scheduleRequests reads section retrieval requests from the input channel,
 // deduplicates the stream and pushes unique retrieval tasks into the distribution
 // channel for a database or network layer to honour.
+// 从reqs管道接收请求,对请求去重后发送到dist中
+// 发送到dist和pend管道中的数据一一对应
 func (s *scheduler) scheduleRequests(reqs chan uint64, dist chan *request, pend chan uint64, quit chan struct{}, wg *sync.WaitGroup) {
 	// Clean up the goroutine and pipeline when done
 	defer wg.Done()
@@ -95,8 +97,10 @@ func (s *scheduler) scheduleRequests(reqs chan uint64, dist chan *request, pend 
 		case <-quit:
 			return
 
+		// 监听reqs的输入
 		case section, ok := <-reqs:
 			// New section retrieval requested
+			// 请求管道已经关闭,直接结束函数
 			if !ok {
 				return
 			}
@@ -113,6 +117,7 @@ func (s *scheduler) scheduleRequests(reqs chan uint64, dist chan *request, pend 
 			s.lock.Unlock()
 
 			// Schedule the section for retrieval and notify the deliverer to expect this section
+			// 向dist和pend管道发送数据
 			if unique {
 				select {
 				case <-quit:
@@ -131,6 +136,7 @@ func (s *scheduler) scheduleRequests(reqs chan uint64, dist chan *request, pend 
 
 // scheduleDeliveries reads section acceptance notifications and waits for them
 // to be delivered, pushing them into the output data buffer.
+// pend管道代表查询任务,等待查询任务结束向done管道发送查询结果
 func (s *scheduler) scheduleDeliveries(pend chan uint64, done chan []byte, quit chan struct{}, wg *sync.WaitGroup) {
 	// Clean up the goroutine and pipeline when done
 	defer wg.Done()
@@ -142,6 +148,7 @@ func (s *scheduler) scheduleDeliveries(pend chan uint64, done chan []byte, quit 
 		case <-quit:
 			return
 
+		// 监听pend管道,每收到一项代表有一个查询请求已经发出
 		case idx, ok := <-pend:
 			// New section retrieval pending
 			if !ok {
@@ -151,13 +158,14 @@ func (s *scheduler) scheduleDeliveries(pend chan uint64, done chan []byte, quit 
 			s.lock.Lock()
 			res := s.responses[idx]
 			s.lock.Unlock()
-
+			// 等待查询完成
 			select {
 			case <-quit:
 				return
 			case <-res.done:
 			}
 			// Deliver the result
+			// 将查询数据发送到done管道
 			select {
 			case <-quit:
 				return
