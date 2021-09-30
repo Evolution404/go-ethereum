@@ -34,6 +34,7 @@ var (
 
 // Generator takes a number of bloom filters and generates the rotated bloom bits
 // to be used for batched filtering.
+// 用来聚合一组布隆过滤器,可以快速查询这一组过滤器的指定位的结果
 type Generator struct {
 	blooms   [types.BloomBitLength][]byte // Rotated blooms for per-bit matching
 	sections uint                         // Number of sections to batch together
@@ -42,6 +43,7 @@ type Generator struct {
 
 // NewGenerator creates a rotated bloom generator that can iteratively fill a
 // batched bloom filter's bits.
+// 生成Generator对象,传入容量,容量必须是8的倍数
 func NewGenerator(sections uint) (*Generator, error) {
 	if sections%8 != 0 {
 		return nil, errors.New("section count not multiple of 8")
@@ -55,8 +57,10 @@ func NewGenerator(sections uint) (*Generator, error) {
 
 // AddBloom takes a single bloom filter and sets the corresponding bit column
 // in memory accordingly.
+// index代表要添加第几个布隆过滤器
 func (b *Generator) AddBloom(index uint, bloom types.Bloom) error {
 	// Make sure we're not adding more bloom filters than our capacity
+	// 容量满了报错
 	if b.nextSec >= b.sections {
 		return errSectionOutOfBounds
 	}
@@ -64,14 +68,21 @@ func (b *Generator) AddBloom(index uint, bloom types.Bloom) error {
 		return errors.New("bloom filter with unexpected index")
 	}
 	// Rotate the bloom and insert into our collection
+	// 计算要修改哪个字节
 	byteIndex := b.nextSec / 8
+	// 计算处于被修改的字节哪一位,单个字节内:最右边是第0位,最左边是第7位
 	bitIndex := byte(7 - b.nextSec%8)
+	// 遍历新增布隆过滤器中的每个字节,每次循环向旋转格式中写入一个字节
 	for byt := 0; byt < types.BloomByteLength; byt++ {
+		// 从第0字节开始,第0字节是最后一个字节
 		bloomByte := bloom[types.BloomByteLength-1-byt]
+		// 如果该字节全0,没有必要写入,本来旋转格式中也是全0
 		if bloomByte == 0 {
 			continue
 		}
+		// base代表截止前一轮已经写入了多少位,代表本轮要从第几位开始
 		base := 8 * byt
+		// 修改各个位
 		b.blooms[base+7][byteIndex] |= ((bloomByte >> 7) & 1) << bitIndex
 		b.blooms[base+6][byteIndex] |= ((bloomByte >> 6) & 1) << bitIndex
 		b.blooms[base+5][byteIndex] |= ((bloomByte >> 5) & 1) << bitIndex
@@ -81,18 +92,23 @@ func (b *Generator) AddBloom(index uint, bloom types.Bloom) error {
 		b.blooms[base+1][byteIndex] |= ((bloomByte >> 1) & 1) << bitIndex
 		b.blooms[base][byteIndex] |= (bloomByte & 1) << bitIndex
 	}
+	// 已经存储的过滤器个数加一
 	b.nextSec++
 	return nil
 }
 
 // Bitset returns the bit vector belonging to the given bit index after all
 // blooms have been added.
+// 查询前必须将生成器填充满,要查询的比特位一定是[0,2047]
 func (b *Generator) Bitset(idx uint) ([]byte, error) {
+	// 容量必须是满的
 	if b.nextSec != b.sections {
 		return nil, errors.New("bloom not fully generated yet")
 	}
+	// 查询的比特位一定要小于2048
 	if idx >= types.BloomBitLength {
 		return nil, errBloomBitOutOfBounds
 	}
+	// 直接返回旋转格式的第idx个元素即可
 	return b.blooms[idx], nil
 }
