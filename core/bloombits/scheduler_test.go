@@ -18,6 +18,7 @@ package bloombits
 
 import (
 	"bytes"
+	"fmt"
 	"math/big"
 	"math/rand"
 	"sync"
@@ -36,6 +37,7 @@ func TestSchedulerMultiClientMultiFetcher(t *testing.T)   { testScheduler(t, 10,
 
 func testScheduler(t *testing.T, clients int, fetchers int, requests int) {
 	t.Parallel()
+	// 所有测试的调度器都负责0比特位
 	f := newScheduler(0)
 
 	// Create a batch of handler goroutines that respond to bloom bit requests and
@@ -103,4 +105,36 @@ func testScheduler(t *testing.T, clients int, fetchers int, requests int) {
 	if have := atomic.LoadUint32(&delivered); int(have) != requests {
 		t.Errorf("request count mismatch: have %v, want %v", have, requests)
 	}
+}
+
+func TestMyScheduler(t *testing.T) {
+	// 负责0比特位的调度器
+	s := newScheduler(0)
+
+	// 客户端和服务器所需要的管道
+	sections := make(chan uint64)
+	dist := make(chan *request)
+	done := make(chan []byte)
+
+	var wg sync.WaitGroup
+
+	// 启动客户端
+	go func() {
+		var i uint64
+		// 发送9次请求,并接收查询结果
+		for i = 1; i < 10; i++ {
+			sections <- i
+			fmt.Println(<-done)
+		}
+		// 结束关闭sections管道
+		close(sections)
+	}()
+	// 启动服务端，每接收一个请求就提交一次结果，结果就是请求的区块段号
+	go func() {
+		for req := range dist {
+			s.deliver([]uint64{req.section}, [][]byte{new(big.Int).SetUint64(req.section).Bytes()})
+		}
+	}()
+	s.run(sections, dist, done, nil, &wg)
+	wg.Wait()
 }

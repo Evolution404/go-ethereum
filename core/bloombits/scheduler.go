@@ -22,14 +22,21 @@ import (
 
 // request represents a bloom retrieval task to prioritize and pull from the local
 // database or remotely from the network.
+// 描述针对一个区块段的布隆过滤器的查询信息
 type request struct {
+	// 要查询的区块段号，用于定位是哪个布隆过滤器
 	section uint64 // Section index to retrieve the a bit-vector from
+	// 要查询的布隆过滤器的比特位
 	bit     uint   // Bit index within the section to retrieve the vector of
 }
 
 // response represents the state of a requested bit-vector through a scheduler.
+// 描述请求的响应，请求对象与响应对象一一对应
 type response struct {
+	// 代表查询的结果，是一个长度4096位的位集
+	// 将结果保存下来，重复的请求直接返回
 	cached []byte        // Cached bits to dedup multiple requests
+	// 响应到达关闭done管道，通知外部数据到达
 	done   chan struct{} // Channel to allow waiting for completion
 }
 
@@ -38,14 +45,19 @@ type response struct {
 // retrieval operations, this struct also deduplicates the requests and caches
 // the results to minimize network/database overhead even in complex filtering
 // scenarios.
+// 一个scheduler对象用于调度针对布隆过滤器的某一个比特位的所有查询
 type scheduler struct {
+	// 当前scheduler对象负责处理的布隆过滤器的比特位
 	bit       uint                 // Index of the bit in the bloom filter this scheduler is responsible for
+	// 区块段号=>响应，保存各个区块段的查询的结果
 	responses map[uint64]*response // Currently pending retrieval requests or already cached responses
+	// 用于保护responses变量的锁
 	lock      sync.Mutex           // Lock protecting the responses from concurrent access
 }
 
 // newScheduler creates a new bloom-filter retrieval scheduler for a specific
 // bit index.
+// 创建调度器对象，需要传入这个调度器对象需要负责的布隆过滤器比特位
 func newScheduler(idx uint) *scheduler {
 	return &scheduler{
 		bit:       idx,
@@ -56,6 +68,8 @@ func newScheduler(idx uint) *scheduler {
 // run creates a retrieval pipeline, receiving section indexes from sections and
 // returning the results in the same order through the done channel. Concurrent
 // runs of the same scheduler are allowed, leading to retrieval task deduplication.
+// 调度器的启动函数
+// 从sections管道接收各个要被查询的区块段号，然后将查询到的位集发送到done管道
 func (s *scheduler) run(sections chan uint64, dist chan *request, done chan []byte, quit chan struct{}, wg *sync.WaitGroup) {
 	// Create a forwarder channel between requests and responses of the same size as
 	// the distribution channel (since that will block the pipeline anyway).
@@ -105,6 +119,7 @@ func (s *scheduler) scheduleRequests(reqs chan uint64, dist chan *request, pend 
 				return
 			}
 			// Deduplicate retrieval requests
+			// 用于标识是否是新的请求
 			unique := false
 
 			s.lock.Lock()
@@ -176,13 +191,17 @@ func (s *scheduler) scheduleDeliveries(pend chan uint64, done chan []byte, quit 
 }
 
 // deliver is called by the request distributor when a reply to a request arrives.
+// sections[i]对应data[i]
+// 交付sections里面各个部分的数据
 func (s *scheduler) deliver(sections []uint64, data [][]byte) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	for i, section := range sections {
 		if res := s.responses[section]; res != nil && res.cached == nil { // Avoid non-requests and double deliveries
+			// 将数据保存下来
 			res.cached = data[i]
+			// 通知scheduleDeliveries数据已经到达
 			close(res.done)
 		}
 	}
