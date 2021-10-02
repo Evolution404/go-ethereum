@@ -69,10 +69,14 @@ func newScheduler(idx uint) *scheduler {
 // returning the results in the same order through the done channel. Concurrent
 // runs of the same scheduler are allowed, leading to retrieval task deduplication.
 // 调度器的启动函数
-// 从sections管道接收各个要被查询的区块段号，然后将查询到的位集发送到done管道
+// 内部启动两个协程分别用于处理客户端和服务端
+// 1.从sections管道接收各个要被查询的区块段号
+// 2.对请求去重且没有缓存结果，构造request对象发送到dist管道，服务端接收到request对象执行真正的查询
+// 3.服务端查询完成，将查询到的位集发送到done管道
 func (s *scheduler) run(sections chan uint64, dist chan *request, done chan []byte, quit chan struct{}, wg *sync.WaitGroup) {
 	// Create a forwarder channel between requests and responses of the same size as
 	// the distribution channel (since that will block the pipeline anyway).
+	// 保存已经发送给服务端还没返回结果的查询的区块段号
 	pend := make(chan uint64, cap(dist))
 
 	// Start the pipeline schedulers to forward between user -> distributor -> user
@@ -84,6 +88,7 @@ func (s *scheduler) run(sections chan uint64, dist chan *request, done chan []by
 // reset cleans up any leftovers from previous runs. This is required before a
 // restart to ensure the no previously requested but never delivered state will
 // cause a lockup.
+// 重置调度器
 func (s *scheduler) reset() {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -98,8 +103,10 @@ func (s *scheduler) reset() {
 // scheduleRequests reads section retrieval requests from the input channel,
 // deduplicates the stream and pushes unique retrieval tasks into the distribution
 // channel for a database or network layer to honour.
+// 调度客户端发送的查询请求
+// reqs管道是客户端发送的各个要查询的区块段号
+// dist是要发送给服务端的真正要执行的查询请求
 // 从reqs管道接收请求,对请求去重后发送到dist中
-// 发送到dist和pend管道中的数据一一对应
 func (s *scheduler) scheduleRequests(reqs chan uint64, dist chan *request, pend chan uint64, quit chan struct{}, wg *sync.WaitGroup) {
 	// Clean up the goroutine and pipeline when done
 	defer wg.Done()
@@ -111,10 +118,10 @@ func (s *scheduler) scheduleRequests(reqs chan uint64, dist chan *request, pend 
 		case <-quit:
 			return
 
-		// 监听reqs的输入
+		// 读取客户端要查询的区块段号
 		case section, ok := <-reqs:
 			// New section retrieval requested
-			// 请求管道已经关闭,直接结束函数
+			// 客户端关闭了发送管道，直接结束函数
 			if !ok {
 				return
 			}
@@ -123,6 +130,7 @@ func (s *scheduler) scheduleRequests(reqs chan uint64, dist chan *request, pend 
 			unique := false
 
 			s.lock.Lock()
+			// 第一次查询这个区块段，构造reponse对象等待服务端返回
 			if s.responses[section] == nil {
 				s.responses[section] = &response{
 					done: make(chan struct{}),
@@ -132,7 +140,9 @@ func (s *scheduler) scheduleRequests(reqs chan uint64, dist chan *request, pend 
 			s.lock.Unlock()
 
 			// Schedule the section for retrieval and notify the deliverer to expect this section
-			// 向dist和pend管道发送数据
+			// 处理向dist和pend管道发送的数据
+
+			// 只有首次查询的数据，才发送到dist管道，让服务端查询
 			if unique {
 				select {
 				case <-quit:
@@ -140,6 +150,7 @@ func (s *scheduler) scheduleRequests(reqs chan uint64, dist chan *request, pend 
 				case dist <- &request{bit: s.bit, section: section}:
 				}
 			}
+			// 所有的客户端请求都转发给scheduleDeliveries，让他内部来判断是返回缓存还是等待查询结果
 			select {
 			case <-quit:
 				return
@@ -151,7 +162,8 @@ func (s *scheduler) scheduleRequests(reqs chan uint64, dist chan *request, pend 
 
 // scheduleDeliveries reads section acceptance notifications and waits for them
 // to be delivered, pushing them into the output data buffer.
-// pend管道代表查询任务,等待查询任务结束向done管道发送查询结果
+// 调度服务端提交的查询结果
+// pend管道代表发送给服务端还没有返回的查询任务,等待查询任务结束向done管道发送查询结果
 func (s *scheduler) scheduleDeliveries(pend chan uint64, done chan []byte, quit chan struct{}, wg *sync.WaitGroup) {
 	// Clean up the goroutine and pipeline when done
 	defer wg.Done()
@@ -163,7 +175,7 @@ func (s *scheduler) scheduleDeliveries(pend chan uint64, done chan []byte, quit 
 		case <-quit:
 			return
 
-		// 监听pend管道,每收到一项代表有一个查询请求已经发出
+		// 从pend中读取一个正在查询的区块段号，等待此查询完成将结果发送给客户端
 		case idx, ok := <-pend:
 			// New section retrieval pending
 			if !ok {
@@ -173,14 +185,16 @@ func (s *scheduler) scheduleDeliveries(pend chan uint64, done chan []byte, quit 
 			s.lock.Lock()
 			res := s.responses[idx]
 			s.lock.Unlock()
-			// 等待查询完成
+			// 服务端调用deliver提交数据后对应response对象的done管道就会关闭
+			// 如果服务端正在查询，这里就相当于等待查询完成
+			// 如果是之前查询过的数据，由于done管道已经关闭将会立刻通过，相当于命中缓存直接返回
 			select {
 			case <-quit:
 				return
 			case <-res.done:
 			}
 			// Deliver the result
-			// 将查询数据发送到done管道
+			// 将查询数据done管道发送给客户端
 			select {
 			case <-quit:
 				return
@@ -191,12 +205,13 @@ func (s *scheduler) scheduleDeliveries(pend chan uint64, done chan []byte, quit 
 }
 
 // deliver is called by the request distributor when a reply to a request arrives.
-// sections[i]对应data[i]
-// 交付sections里面各个部分的数据
+// 服务器调用deliver来提交查询结果，一次调用可以提交多个区块段的数据
+// sections[i]代表区块段号，data[i]代表区块段sections[i]得数据
 func (s *scheduler) deliver(sections []uint64, data [][]byte) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
+	// 遍历所有区块段号保存他们的查询结果
 	for i, section := range sections {
 		if res := s.responses[section]; res != nil && res.cached == nil { // Avoid non-requests and double deliveries
 			// 将数据保存下来

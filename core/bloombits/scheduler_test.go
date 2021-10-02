@@ -123,7 +123,10 @@ func TestMyScheduler(t *testing.T) {
 		var i uint64
 		// 发送9次请求,并接收查询结果
 		for i = 1; i < 10; i++ {
-			sections <- i
+			// 9次不同的请求
+			// sections <- i
+			// 9次相同的请求
+			sections <- 10
 			fmt.Println(<-done)
 		}
 		// 结束关闭sections管道
@@ -132,6 +135,7 @@ func TestMyScheduler(t *testing.T) {
 	// 启动服务端，每接收一个请求就提交一次结果，结果就是请求的区块段号
 	go func() {
 		for req := range dist {
+			fmt.Println("server search")
 			s.deliver([]uint64{req.section}, [][]byte{new(big.Int).SetUint64(req.section).Bytes()})
 		}
 	}()
