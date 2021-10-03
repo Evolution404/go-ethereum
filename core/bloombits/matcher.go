@@ -52,9 +52,15 @@ func calcBloomIndexes(b []byte) bloomIndexes {
 // matchers have already found potential matches. Subsequent sub-matchers will
 // binary AND their matches with this vector. If vector is nil, it represents a
 // section to be processed by the first sub-matcher.
+// 描述一个区块段中所有区块经过若干个过滤器后的匹配状态
 type partialMatches struct {
+	// 当前的区块段号
 	section uint64
-	bitset  []byte
+	// 每一位代表该区块段的一个区块的匹配状态
+	// 初始化的时候所有比特位被设置为1（4096个1）
+	// 随着不断经过各个过滤器，被设置为1的比特位越来越少
+	// 经过最后一个过滤器后，最终还是1的比特位就对应了通过了过滤器组的区块
+	bitset []byte
 }
 
 // Retrieval represents a request for retrieval task assignments for a given
@@ -63,10 +69,14 @@ type partialMatches struct {
 //
 // The contest and error fields are used by the light client to terminate matching
 // early if an error is encountered on some path of the pipeline.
+// 代表需要服务端执行的一次查询任务
 type Retrieval struct {
-	Bit      uint
+	// 要查询区块段中区块的布隆过滤器的哪个比特位
+	Bit uint
+	// 要查询哪些区块段
 	Sections []uint64
-	Bitsets  [][]byte
+	// 服务端查询完成后将多个位集结果保存在这里
+	Bitsets [][]byte
 
 	Context context.Context
 	Error   error
@@ -78,7 +88,9 @@ type Retrieval struct {
 type Matcher struct {
 	sectionSize uint64 // Size of the data batches to filter on
 
-	filters    [][]bloomIndexes    // Filter the system is matching for
+	// 保存匹配器的过滤器组
+	filters [][]bloomIndexes // Filter the system is matching for
+	// 调度器负责的比特位=>调度器 的映射，保存匹配器内部使用的调度器
 	schedulers map[uint]*scheduler // Retrieval schedulers for loading bloom bits
 
 	retrievers chan chan uint       // Retriever processes waiting for bit allocations
@@ -86,6 +98,7 @@ type Matcher struct {
 	retrievals chan chan *Retrieval // Retriever processes waiting for task allocations
 	deliveries chan *Retrieval      // Retriever processes waiting for task response deliveries
 
+	// 标记当前的匹配器是否正调用Start函数
 	running uint32 // Atomic flag whether a session is live or not
 }
 
@@ -103,19 +116,25 @@ func NewMatcher(sectionSize uint64, filters [][][]byte) *Matcher {
 		deliveries:  make(chan *Retrieval),
 	}
 	// Calculate the bloom bit indexes for the groups we're interested in
+	// 接下来要将用户输入的原始过滤器组转化为过滤器组
 	m.filters = nil
 
+	// 遍历原始过滤器组中的各条原始过滤器
 	for _, filter := range filters {
 		// Gather the bit indexes of the filter rule, special casing the nil filter
+		// 原始过滤器中没有要查询的数据，直接跳过
 		if len(filter) == 0 {
 			continue
 		}
+		// 用来保存原始过滤器转化后的真实过滤器，每个条件被转化为一个位置标记组
 		bloomBits := make([]bloomIndexes, len(filter))
+		// 遍历原始过滤器中的各条数据，clause就是每条数据
 		for i, clause := range filter {
 			if clause == nil {
 				bloomBits = nil
 				break
 			}
+			// 将查询数据转化为位置标记组
 			bloomBits[i] = calcBloomIndexes(clause)
 		}
 		// Accumulate the filter rules if no nil rule was within
@@ -148,19 +167,23 @@ func (m *Matcher) addScheduler(idx uint) {
 // Start starts the matching process and returns a stream of bloom matches in
 // a given range of blocks. If there are no more matches in the range, the result
 // channel is closed.
+// 客户端启动一个查询过程，指定了开始和结束的区块号，从results中接收查询结果
 func (m *Matcher) Start(ctx context.Context, begin, end uint64, results chan uint64) (*MatcherSession, error) {
 	// Make sure we're not creating concurrent sessions
+	// Start函数不能并发调用
 	if atomic.SwapUint32(&m.running, 1) == 1 {
 		return nil, errors.New("matcher already running")
 	}
 	defer atomic.StoreUint32(&m.running, 0)
 
 	// Initiate a new matching round
+	// 生成MatcherSession对象
 	session := &MatcherSession{
 		matcher: m,
 		quit:    make(chan struct{}),
 		ctx:     ctx,
 	}
+	// 重置所有调度器
 	for _, scheduler := range m.schedulers {
 		scheduler.reset()
 	}
@@ -171,24 +194,29 @@ func (m *Matcher) Start(ctx context.Context, begin, end uint64, results chan uin
 	go func() {
 		defer session.pend.Done()
 		defer close(results)
-
+		// 不断从sink管道中读取经过所有过滤器的中间状态，将中间状态中为1的比特位转换成区块号发送给客户端
 		for {
 			select {
 			case <-session.quit:
 				return
 
+			// 获取一个区块段的查询结果
+			// 找到这个区块段所有在用户查询范围内被设置为1的位置，发送到results管道
 			case res, ok := <-sink:
 				// New match result found
 				if !ok {
 					return
 				}
 				// Calculate the first and last blocks of the section
+				// 返回结果的区块段的开始位置
 				sectionStart := res.section * m.sectionSize
 
+				// 用户真正查询的开始位置
 				first := sectionStart
 				if begin > first {
 					first = begin
 				}
+				// 用户真正查询的结束位置
 				last := sectionStart + m.sectionSize - 1
 				if end < last {
 					last = end
@@ -197,13 +225,18 @@ func (m *Matcher) Start(ctx context.Context, begin, end uint64, results chan uin
 				for i := first; i <= last; i++ {
 					// Skip the entire byte if no matches are found inside (and we're processing an entire byte!)
 					next := res.bitset[(i-sectionStart)/8]
+					// 如果一整个字节都是0，跳过继续查询这个字节
 					if next == 0 {
 						if i%8 == 0 {
+							// 这里本来应该i+=8，但是for循环自身还会i++，所以是i+=7
 							i += 7
 						}
 						continue
 					}
 					// Some bit it set, do the actual submatching
+					// 这个字节内部有一些位是1，判断i对应的位置是不是1
+					// bit变量代表i位置在它的字节里面后面有几个0
+					// next&(1<<bit)也就是取到i位置，判断如果i位置不是0发送到results管道
 					if bit := 7 - i%8; next&(1<<bit) != 0 {
 						select {
 						case <-session.quit:
@@ -230,22 +263,28 @@ func (m *Matcher) run(begin, end uint64, buffer int, session *MatcherSession) ch
 	source := make(chan *partialMatches, buffer)
 
 	session.pend.Add(1)
+	// 为每个区块段创建中间状态
 	go func() {
 		defer session.pend.Done()
 		defer close(source)
 
+		// 为每个区块段生成一个partialMatches对象，发送到source管道中
 		for i := begin / m.sectionSize; i <= end/m.sectionSize; i++ {
 			select {
 			case <-session.quit:
 				return
+			// 没经过任何过滤器默认所有区块都通过，所以partialMatches对象的bitset字段初始化为全1
 			case source <- &partialMatches{i, bytes.Repeat([]byte{0xff}, int(m.sectionSize/8))}:
 			}
 		}
 	}()
 	// Assemble the daisy-chained filtering pipeline
 	next := source
+	// 用于调度器的服务端接收查询请求，在distributor函数中接收请求
 	dist := make(chan *request, buffer)
 
+	// 针对每个过滤器启动一个subMatch
+	// 这些subMatch两两相接，前一个subMatch生成一个管道来与下一个subMatch通信中间状态
 	for _, bloom := range m.filters {
 		next = m.subMatch(next, dist, bloom, session)
 	}
@@ -253,6 +292,7 @@ func (m *Matcher) run(begin, end uint64, buffer int, session *MatcherSession) ch
 	session.pend.Add(1)
 	go m.distributor(dist, session)
 
+	// 返回的是subMatch链最后一个输出管道，从中可以读取满足了整个过滤器组的区块
 	return next
 }
 
@@ -260,10 +300,21 @@ func (m *Matcher) run(begin, end uint64, buffer int, session *MatcherSession) ch
 // binary AND-s the result to the daisy-chain input (source) and forwards it to the daisy-chain output.
 // The matches of each address/topic are calculated by fetching the given sections of the three bloom bit indexes belonging to
 // that address/topic, and binary AND-ing those vectors together.
+// subMatch函数与过滤器一一对应，bloom就是对应的过滤器
+// 从source中接收经过了前一个过滤器后的中间状态
+// dist是调度器服务端接受请求的管道，过滤器中要执行的查询由调度器去重、缓存后都发送到dist中
+// bloom就代表这个subMatch对应的过滤器
 func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloom []bloomIndexes, session *MatcherSession) chan *partialMatches {
 	// Start the concurrent schedulers for each bit required by the bloom filter
+	// 调度器需要客户端准备好发送请求和接收数据的两个管道
+	// 过滤器里的每一个比特位对应一个客户端
+
+	// 客户端发送请求的管道，发送的是区块段号
 	sectionSources := make([][3]chan uint64, len(bloom))
+	// 客户端接收查询结果的管道，接收的是位集
 	sectionSinks := make([][3]chan []byte, len(bloom))
+	// 找到各个客户端对应的管道，调用run函数让调度器调度他们的请求
+	// 这里可能针对一个调度器重复调用run函数，调度器支持调度多个客户端，所以没有问题
 	for i, bits := range bloom {
 		for j, bit := range bits {
 			sectionSources[i][j] = make(chan uint64, cap(source))
@@ -273,16 +324,22 @@ func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloo
 		}
 	}
 
+	// 下面有两个协程要接收source中的中间状态，第一个协程将数据转发到process中供第二个协程接收
 	process := make(chan *partialMatches, cap(source)) // entries from source are forwarded here after fetches have been initiated
 	results := make(chan *partialMatches, cap(source))
 
 	session.pend.Add(2)
+	// 下面启动两个协程，一个用来向调度器发送请求，另一个接收调度器返回的数据
+	// 由于两个协程都需要读取中间状态，所以前一个协程利用process管道向第二个协程转发中间状态
+
+	// 向调度器发送请求的协程
 	go func() {
 		// Tear down the goroutine and terminate all source channels
 		defer session.pend.Done()
 		defer close(process)
 
 		defer func() {
+			// 函数结束时，客户端关闭所有发送请求的管道
 			for _, bloomSources := range sectionSources {
 				for _, bitSource := range bloomSources {
 					close(bitSource)
@@ -290,17 +347,20 @@ func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloo
 			}
 		}()
 		// Read sections from the source channel and multiplex into all bit-schedulers
+		// 从source中读取一个中间状态，让他通过当前的过滤器
 		for {
 			select {
 			case <-session.quit:
 				return
 
+			// 读取到中间状态
 			case subres, ok := <-source:
 				// New subresult from previous link
 				if !ok {
 					return
 				}
 				// Multiplex the section index to all bit-schedulers
+				// 作为调度器的客户端向调度器发送请求
 				for _, bloomSources := range sectionSources {
 					for _, bitSource := range bloomSources {
 						select {
@@ -311,6 +371,7 @@ func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloo
 					}
 				}
 				// Notify the processor that this section will become available
+				// 转发给第二个协程
 				select {
 				case <-session.quit:
 					return
@@ -320,6 +381,7 @@ func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloo
 		}
 	}()
 
+	// 接收调度器返回数据的协程
 	go func() {
 		// Tear down the goroutine and terminate the final sink channel
 		defer session.pend.Done()
@@ -331,31 +393,43 @@ func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloo
 			case <-session.quit:
 				return
 
+			// 接收中间状态，由前一个协程转发过来
 			case subres, ok := <-process:
 				// Notified of a section being retrieved
 				if !ok {
 					return
 				}
 				// Gather all the sub-results and merge them together
+				// 循环结束后为1的比特位，代表对应的区块保存了过滤器中的任意一条数据
 				var orVector []byte
+				// 遍历各个接收管道来接收数据
+				// 一层循环进入各个条件的三个接收管道
 				for _, bloomSinks := range sectionSinks {
+					// 二层循环获得真正的调度器客户端，三个比特位都是1才能说明数据存在，所以这里是与关系
+
+					// 循环结束后还为1的比特位，代表位置标记组三个比特位都是1
 					var andVector []byte
 					for _, bitSink := range bloomSinks {
 						var data []byte
 						select {
 						case <-session.quit:
 							return
+						// 实际接收数据的位置
 						case data = <-bitSink:
 						}
+						// 如果是在判断位置标记组的第一个比特位，直接将查询结果拷贝过来
 						if andVector == nil {
 							andVector = make([]byte, int(m.sectionSize/8))
 							copy(andVector, data)
+							// 如果是第二个或者第三个比特位，直接与计算，最终得到3个比特位都是1的位置
 						} else {
 							bitutil.ANDBytes(andVector, andVector, data)
 						}
 					}
+					// 如果是查询完了第一个位置标记组，满足条件的就是andVector里面的
 					if orVector == nil {
 						orVector = andVector
+						// 查询之后的位置标记组都与之前的结果取或
 					} else {
 						bitutil.ORBytes(orVector, orVector, andVector)
 					}
@@ -364,9 +438,12 @@ func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloo
 				if orVector == nil {
 					orVector = make([]byte, int(m.sectionSize/8))
 				}
+				// 已经找到了能够通过当前过滤器的区块，与通过之前过滤器的结果相与得到通过新增过滤器的区块
 				if subres.bitset != nil {
 					bitutil.ANDBytes(orVector, orVector, subres.bitset)
 				}
+				// 如果经过这个过滤器后还有存活的区块，继续发送中间状态由下一个过滤器处理
+				// 如果经过这个过滤器没有存活的区块了，这里不会发送，中间状态在subMatch链上的传递中断在此处
 				if bitutil.TestBytes(orVector) {
 					select {
 					case <-session.quit:
@@ -382,19 +459,27 @@ func (m *Matcher) subMatch(source chan *partialMatches, dist chan *request, bloo
 
 // distributor receives requests from the schedulers and queues them into a set
 // of pending requests, which are assigned to retrievers wanting to fulfil them.
+// 从dist管道接收调度器发出来的最终需要执行的查询请求，distributor用来处理多个服务端查询请求的分发
 func (m *Matcher) distributor(dist chan *request, session *MatcherSession) {
 	defer session.pend.Done()
 
 	var (
-		requests   = make(map[uint][]uint64) // Per-bit list of section requests, ordered by section number
-		unallocs   = make(map[uint]struct{}) // Bits with pending requests but not allocated to any retriever
-		retrievers chan chan uint            // Waiting retrievers (toggled to nil if unallocs is empty)
-		allocs     int                       // Number of active allocations to handle graceful shutdown requests
-		shutdown   = session.quit            // Shutdown request channel, will gracefully wait for pending requests
+		// 比特位=>区块段号数组，保存了各个比特位对应的请求队列，每个请求队列按照区块段号的大小排序
+		requests = make(map[uint][]uint64) // Per-bit list of section requests, ordered by section number
+		// 保存未被分配的比特位，使用map是便于删除元素
+		unallocs = make(map[uint]struct{}) // Bits with pending requests but not allocated to any retriever
+		// 用于与allocateRetrieval沟通，allocateRetrieval发送fetcher，本函数再向fetcher发送分配的比特位
+		retrievers chan chan uint // Waiting retrievers (toggled to nil if unallocs is empty)
+		// 记录已经分配了多少个比特位，用于退出过程
+		allocs     int            // Number of active allocations to handle graceful shutdown requests
+		shutdown   = session.quit // Shutdown request channel, will gracefully wait for pending requests
 	)
 
 	// assign is a helper method fo try to assign a pending bit an actively
 	// listening servicer, or schedule it up for later when one arrives.
+	// 用来分配一个比特位，分配过程有两种可能
+	//   retrievers管道正好接收到了来自allocateRetrieval发送的分配请求，直接分配当前比特位
+	//   没有分配请求的话将比特位加入到unallocs变量，等待以后的分配请求
 	assign := func(bit uint) {
 		select {
 		case fetcher := <-m.retrievers:
@@ -402,6 +487,7 @@ func (m *Matcher) distributor(dist chan *request, session *MatcherSession) {
 			fetcher <- bit
 		default:
 			// No retrievers active, start listening for new ones
+			// 下面retrievers分支可能会将这个管道置为nil，这里重新设置一下
 			retrievers = m.retrievers
 			unallocs[bit] = struct{}{}
 		}
@@ -417,47 +503,70 @@ func (m *Matcher) distributor(dist chan *request, session *MatcherSession) {
 				return
 			}
 
+		// 作为调度器的服务端，接收request对象，里面包括请求的区块段号以及请求的比特位
 		case req := <-dist:
 			// New retrieval request arrived to be distributed to some fetcher process
+			// 将新请求的区块段号加入到请求列表中
 			queue := requests[req.bit]
+			// 将新的区块段号按照顺序插入到请求队列中
 			index := sort.Search(len(queue), func(i int) bool { return queue[i] >= req.section })
 			requests[req.bit] = append(queue[:index], append([]uint64{req.section}, queue[index:]...)...)
 
 			// If it's a new bit and we have waiting fetchers, allocate to them
+			// 如果这是一个新的比特位，它需要调用allocateRetrieval函数后分配
 			if len(queue) == 0 {
 				assign(req.bit)
 			}
 
+		// 以下四个情况retrievers,counters,retrievals,deliveries是处理来自MatcherSession的查询
+
+		// 从未分配的比特位中派发一个给allocateRetrieval，派发的是比特位优先级最高的比特位
 		case fetcher := <-retrievers:
 			// New retriever arrived, find the lowest section-ed bit to assign
 			bit, best := uint(0), uint64(math.MaxUint64)
+			// 找到请求队列第一个请求的区块段号最小的那个比特位，也就是比特位优先级最高的比特位
 			for idx := range unallocs {
 				if requests[idx][0] < best {
 					bit, best = idx, requests[idx][0]
 				}
 			}
 			// Stop tracking this bit (and alloc notifications if no more work is available)
+			// 从未分配比特位中删除
 			delete(unallocs, bit)
+			// 未分配比特位长度是0了就冻结这个分支
+			// assign函数里面有可能会重新激活这个分支
 			if len(unallocs) == 0 {
 				retrievers = nil
 			}
+			// 自增已分配的比特位个数
 			allocs++
+			// 将比特位发送给allocateRetrieval
 			fetcher <- bit
 
+		// 为查询 请求队列长度(pendingSections) 提供服务
 		case fetcher := <-m.counters:
 			// New task count request arrives, return number of items
+			// 先接收要查询的比特位，然后将请求队列长度发送过去
 			fetcher <- uint(len(requests[<-fetcher]))
 
+		// allocateSections函数要取得某个比特位的请求队列
 		case fetcher := <-m.retrievals:
 			// New fetcher waiting for tasks to retrieve, assign
 			task := <-fetcher
+			// 要接收的请求个数大于实际队列中的，直接返回整个队列
 			if want := len(task.Sections); want >= len(requests[task.Bit]) {
+				// 填充返回的请求
 				task.Sections = requests[task.Bit]
+				// 所有请求都返回，清空请求队列
 				delete(requests, task.Bit)
+				// 要接收的请求个数小于实际队列中的，返回队列开头的部分
 			} else {
+				// 填充返回的请求
 				task.Sections = append(task.Sections[:0], requests[task.Bit][:want]...)
+				// 移除请求队列前面被返回的部分
 				requests[task.Bit] = append(requests[task.Bit][:0], requests[task.Bit][want:]...)
 			}
+			// 将数据发送回allocateSections
 			fetcher <- task
 
 			// If anything was left unallocated, try to assign to someone else
@@ -465,34 +574,46 @@ func (m *Matcher) distributor(dist chan *request, session *MatcherSession) {
 				assign(task.Bit)
 			}
 
+		// 将服务端提交的数据，通过调度器的deliver方法，提交给调度器
 		case result := <-m.deliveries:
 			// New retrieval task response from fetcher, split out missing sections and
 			// deliver complete ones
 			var (
+				// 保存服务端成功查询的区块段号
 				sections = make([]uint64, 0, len(result.Sections))
-				bitsets  = make([][]byte, 0, len(result.Bitsets))
-				missing  = make([]uint64, 0, len(result.Sections))
+				// 保存与sections里面保存的区块段号对应的位集
+				bitsets = make([][]byte, 0, len(result.Bitsets))
+				// 保存没有查询到数据的区块段号
+				missing = make([]uint64, 0, len(result.Sections))
 			)
+			// 服务端提交的数据中有可能某些区块段是空数据
+			// 过滤掉提交的空数据（bitset中长度为0的项），需要保证sections与bitsets一一对应
 			for i, bitset := range result.Bitsets {
+				// 位集长度是0，说明服务端在这个区块段上没有查询成功
 				if len(bitset) == 0 {
 					missing = append(missing, result.Sections[i])
 					continue
 				}
+				// sections与bitsets一一对应
 				sections = append(sections, result.Sections[i])
 				bitsets = append(bitsets, bitset)
 			}
+			// 向调度器提交过滤后的数据
 			m.schedulers[result.Bit].deliver(sections, bitsets)
 			allocs--
 
 			// Reschedule missing sections and allocate bit if newly available
 			if len(missing) > 0 {
+				// 重新发送没有查询成功的请求
 				queue := requests[result.Bit]
+				// 将缺失数据的区块段重新加入到请求队列中
 				for _, section := range missing {
 					index := sort.Search(len(queue), func(i int) bool { return queue[i] >= section })
 					queue = append(queue[:index], append([]uint64{section}, queue[index:]...)...)
 				}
 				requests[result.Bit] = queue
 
+				// 如果是新建的请求队列需要被分配
 				if len(queue) == len(missing) {
 					assign(result.Bit)
 				}
@@ -518,21 +639,27 @@ type MatcherSession struct {
 	err     error           // Global error to track retrieval failures deep in the chain
 	errLock sync.Mutex
 
+	// 匹配器中每启动一个协程就加一
+	// 用于关闭匹配器时等待协程执行完成
 	pend sync.WaitGroup
 }
 
 // Close stops the matching process and waits for all subprocesses to terminate
 // before returning. The timeout may be used for graceful shutdown, allowing the
 // currently running retrievals to complete before this time.
+// 关闭一个匹配器的匹配过程
 func (s *MatcherSession) Close() {
 	s.closer.Do(func() {
 		// Signal termination and wait for all goroutines to tear down
+		// 通知所有协程关闭
 		close(s.quit)
+		// 等待协程关闭完成
 		s.pend.Wait()
 	})
 }
 
 // Error returns any failure encountered during the matching session.
+// 返回匹配会话中发生的错误
 func (s *MatcherSession) Error() error {
 	s.errLock.Lock()
 	defer s.errLock.Unlock()
@@ -543,6 +670,7 @@ func (s *MatcherSession) Error() error {
 // allocateRetrieval assigns a bloom bit index to a client process that can either
 // immediately request and fetch the section contents assigned to this bit or wait
 // a little while for more sections to be requested.
+// 获取一个还未被分配的比特位
 func (s *MatcherSession) allocateRetrieval() (uint, bool) {
 	fetcher := make(chan uint)
 
@@ -557,6 +685,7 @@ func (s *MatcherSession) allocateRetrieval() (uint, bool) {
 
 // pendingSections returns the number of pending section retrievals belonging to
 // the given bloom bit index.
+// 查询指定比特位的请求队列有多长
 func (s *MatcherSession) pendingSections(bit uint) int {
 	fetcher := make(chan uint)
 
@@ -564,6 +693,7 @@ func (s *MatcherSession) pendingSections(bit uint) int {
 	case <-s.quit:
 		return 0
 	case s.matcher.counters <- fetcher:
+		// 将要查询的比特位发送过去
 		fetcher <- bit
 		return int(<-fetcher)
 	}
@@ -571,6 +701,7 @@ func (s *MatcherSession) pendingSections(bit uint) int {
 
 // allocateSections assigns all or part of an already allocated bit-task queue
 // to the requesting process.
+// 查询指定比特位的请求队列，取回队列的前count个请求
 func (s *MatcherSession) allocateSections(bit uint, count int) []uint64 {
 	fetcher := make(chan *Retrieval)
 
@@ -589,6 +720,7 @@ func (s *MatcherSession) allocateSections(bit uint, count int) []uint64 {
 
 // deliverSections delivers a batch of section bit-vectors for a specific bloom
 // bit index to be injected into the processing pipeline.
+// 提交来自服务端的查询结果，bitsets[i]代表sections[i]这个区块段在bit这个比特位上的位集
 func (s *MatcherSession) deliverSections(bit uint, sections []uint64, bitsets [][]byte) {
 	s.matcher.deliveries <- &Retrieval{Bit: bit, Sections: sections, Bitsets: bitsets}
 }
@@ -599,6 +731,7 @@ func (s *MatcherSession) deliverSections(bit uint, sections []uint64, bitsets []
 // This method will block for the lifetime of the session. Even after termination
 // of the session, any request in-flight need to be responded to! Empty responses
 // are fine though in that case.
+// batch代表一次发送请求的个数，wait代表如果个数不足batch等待的时间
 func (s *MatcherSession) Multiplex(batch int, wait time.Duration, mux chan chan *Retrieval) {
 	for {
 		// Allocate a new bloom bit index to retrieve data for, stopping when done
@@ -607,8 +740,10 @@ func (s *MatcherSession) Multiplex(batch int, wait time.Duration, mux chan chan 
 			return
 		}
 		// Bit allocated, throttle a bit if we're below our batch limit
+		// 如果还没有派发出去的请求没有达到batch的话，就等待用户设置的时间后再派发请求
 		if s.pendingSections(bit) < batch {
 			select {
+			// 检测到退出
 			case <-s.quit:
 				// Session terminating, we can't meaningfully service, abort
 				s.allocateSections(bit, 0)
@@ -621,6 +756,9 @@ func (s *MatcherSession) Multiplex(batch int, wait time.Duration, mux chan chan 
 		}
 		// Allocate as much as we can handle and request servicing
 		sections := s.allocateSections(bit, batch)
+		// 向服务端发送的是一个管道，每次发送请求都要发送新的管道
+		// 发送一个请求包括两步
+		// 创建发送Retrieval对象的管道，向新建的管道发送Retrieval对象
 		request := make(chan *Retrieval)
 
 		select {
@@ -629,10 +767,13 @@ func (s *MatcherSession) Multiplex(batch int, wait time.Duration, mux chan chan 
 			s.deliverSections(bit, sections, make([][]byte, len(sections)))
 			return
 
+		// 向外部发送真正的查询请求
 		case mux <- request:
 			// Retrieval accepted, something must arrive before we're aborting
+			// 发送真正的请求内容
 			request <- &Retrieval{Bit: bit, Sections: sections, Context: s.ctx}
 
+			// 接收服务端返回的结果
 			result := <-request
 			if result.Error != nil {
 				s.errLock.Lock()
@@ -640,6 +781,7 @@ func (s *MatcherSession) Multiplex(batch int, wait time.Duration, mux chan chan 
 				s.errLock.Unlock()
 				s.Close()
 			}
+			// 提交服务端的查询结果
 			s.deliverSections(result.Bit, result.Sections, result.Bitsets)
 		}
 	}
