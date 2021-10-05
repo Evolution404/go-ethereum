@@ -40,6 +40,8 @@ type Node struct {
 
 // New wraps a node record. The record must be valid according to the given
 // identity scheme.
+// 新建一个Node对象, node.id就是IdentityScheme.NodeAddr的返回值
+// 输入的Record必须满足给定的scheme
 func New(validSchemes enr.IdentityScheme, r *enr.Record) (*Node, error) {
 	if err := r.VerifySignature(validSchemes); err != nil {
 		return nil, err
@@ -61,13 +63,21 @@ func MustParse(rawurl string) *Node {
 }
 
 // Parse decodes and verifies a base64-encoded node record.
+// 解析节点链接
+// 输入的格式可能是:
+//   enode://xxx
+//   enr:xxx
+// 创建两种类型的节点真实函数是New和NewV4
+// 分别用来创建enr类型和enode类型
 func Parse(validSchemes enr.IdentityScheme, input string) (*Node, error) {
+	// 区分两种类型的链接
 	if strings.HasPrefix(input, "enode://") {
 		return ParseV4(input)
 	}
 	if !strings.HasPrefix(input, "enr:") {
 		return nil, errMissingPrefix
 	}
+	// 去掉长度为4的enr:前缀,将base64解码
 	bin, err := base64.RawURLEncoding.DecodeString(input[4:])
 	if err != nil {
 		return nil, err
@@ -90,6 +100,7 @@ func (n *Node) Seq() uint64 {
 }
 
 // Incomplete returns true for nodes with no IP address.
+// 如果节点没有ip地址这个就返回true
 func (n *Node) Incomplete() bool {
 	return n.IP() == nil
 }
@@ -146,6 +157,7 @@ func (n *Node) Record() *enr.Record {
 
 // ValidateComplete checks whether n has a valid IP and UDP port.
 // Deprecated: don't use this method.
+// 确保节点保存了ip和udp端口以及节点公钥
 func (n *Node) ValidateComplete() error {
 	if n.Incomplete() {
 		return errors.New("missing IP address")
@@ -163,10 +175,13 @@ func (n *Node) ValidateComplete() error {
 }
 
 // String returns the text representation of the record.
+// 将节点对象还原成原来的链接
 func (n *Node) String() string {
+	// 判断两种类型
 	if isNewV4(n) {
 		return n.URLv4() // backwards-compatibility glue for NewV4 nodes
 	}
+	// enr类型
 	enc, _ := rlp.EncodeToBytes(&n.r) // always succeeds because record is valid
 	b64 := base64.RawURLEncoding.EncodeToString(enc)
 	return "enr:" + b64
@@ -187,6 +202,7 @@ func (n *Node) UnmarshalText(text []byte) error {
 }
 
 // ID is a unique identifier for each node.
+// ID是每个节点的唯一标识,本质是长度32字节的字节数组
 type ID [32]byte
 
 // Bytes returns a byte slice representation of the ID
@@ -195,6 +211,7 @@ func (n ID) Bytes() []byte {
 }
 
 // ID prints as a long hexadecimal number.
+// 将id转换成hex字符串
 func (n ID) String() string {
 	return fmt.Sprintf("%x", n[:])
 }
@@ -215,6 +232,7 @@ func (n ID) MarshalText() ([]byte, error) {
 }
 
 // UnmarshalText implements the encoding.TextUnmarshaler interface.
+// 从hex字符串转化成enode.ID对象,text是hex字符串的字节数组
 func (n *ID) UnmarshalText(text []byte) error {
 	id, err := ParseID(string(text))
 	if err != nil {
@@ -227,6 +245,8 @@ func (n *ID) UnmarshalText(text []byte) error {
 // HexID converts a hex string to an ID.
 // The string may be prefixed with 0x.
 // It panics if the string is not a valid ID.
+// 将hex字符串解析为ID,格式错误将会panic
+// hex字符串有无0x前缀皆可
 func HexID(in string) ID {
 	id, err := ParseID(in)
 	if err != nil {
@@ -235,6 +255,7 @@ func HexID(in string) ID {
 	return id
 }
 
+// 将hex字符串转化成enode.ID对象
 func ParseID(in string) (ID, error) {
 	var id ID
 	b, err := hex.DecodeString(strings.TrimPrefix(in, "0x"))
@@ -250,6 +271,10 @@ func ParseID(in string) (ID, error) {
 // DistCmp compares the distances a->target and b->target.
 // Returns -1 if a is closer to target, 1 if b is closer to target
 // and 0 if they are equal.
+// 比较节点间的距离
+// 返回-1,a与target更近
+// 返回1,b与target更近
+// 返回0, a与b和target一样近
 func DistCmp(target, a, b ID) int {
 	for i := range target {
 		da := a[i] ^ target[i]
@@ -264,6 +289,7 @@ func DistCmp(target, a, b ID) int {
 }
 
 // LogDist returns the logarithmic distance between a and b, log2(a ^ b).
+// 计算a与b距离的以2为底的对数
 func LogDist(a, b ID) int {
 	lz := 0
 	for i := range a {

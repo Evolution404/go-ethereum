@@ -24,6 +24,7 @@ import (
 )
 
 // enrEntry is the ENR entry which advertises `eth` protocol on the discovery.
+// 实现了enr.Entry接口
 type enrEntry struct {
 	ForkID forkid.ID // Fork identifier per EIP-2124
 
@@ -58,6 +59,7 @@ func StartENRUpdater(chain *core.BlockChain, ln *enode.LocalNode) {
 }
 
 // currentENREntry constructs an `eth` ENR entry based on the current state of the chain.
+// 基于现在链的状态,构造一个enrEntry对象
 func currentENREntry(chain *core.BlockChain) *enrEntry {
 	return &enrEntry{
 		ForkID: forkid.NewID(chain.Config(), chain.Genesis().Hash(), chain.CurrentHeader().Number.Uint64()),

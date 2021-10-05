@@ -22,14 +22,28 @@ import (
 	"github.com/ethereum/go-ethereum/common/mclock"
 )
 
+// statements 代表外部节点认为的本地的ip和端口
+// contacts 代表本地向哪个外部ip和端口建立了连接
+
 // IPTracker predicts the external endpoint, i.e. IP address and port, of the local host
 // based on statements made by other hosts.
+// IPTracker用来预测本地节点的外部ip和端口
+// 预测是根据其他节点认为的本地ip和端口
 type IPTracker struct {
-	window          time.Duration
-	contactWindow   time.Duration
-	minStatements   int
-	clock           mclock.Clock
-	statements      map[string]ipStatement
+	// 代表一条statement记录的超时时间,超过该时间在gcStatements中会被回收
+	window time.Duration
+	// 代表一条contact记录的超时时间,超过该时间在gcContact中会被回收
+	contactWindow time.Duration
+	// 必须有超过minStatements个数的节点认为本地的ip是某个ip,才会在PredictEndpoint返回这个ip
+	minStatements int
+	clock         mclock.Clock
+	// statements和contact都是ip到时间的映射
+
+	// statements保存 外部主机ip=>它以为的本地ip 的映射
+	statements map[string]ipStatement
+	// contact记录本地已经发送了其他节点的ip和端口信息到指定的ip
+	// 其他节点的ip和端口=>发送时间 的映射
+	// contact的目的是为了预测nat的类型,便于判断有没有从外部主动建立的连接
 	contact         map[string]mclock.AbsTime
 	lastStatementGC mclock.AbsTime
 	lastContactGC   mclock.AbsTime
@@ -61,11 +75,16 @@ func NewIPTracker(window, contactWindow time.Duration, minStatements int) *IPTra
 // PredictFullConeNAT checks whether the local host is behind full cone NAT. It predicts by
 // checking whether any statement has been received from a node we didn't contact before
 // the statement was made.
+// 判断是不是Full Cone类型的NAT
+// 检测方法是判断有没有从外部主动建立的连接
 func (it *IPTracker) PredictFullConeNAT() bool {
 	now := it.clock.Now()
 	it.gcContact(now)
 	it.gcStatements(now)
 	for host, st := range it.statements {
+		// 如果有从外部主动建立的连接就可以判断是完全锥型
+		// 遍历statements,如果statements里面有contact里面没有的host,就说明是Full Cone
+		// 或者如果有statement的生成时间比contact早,也说明是Full Cone
 		if c, ok := it.contact[host]; !ok || c > st.time {
 			return true
 		}
@@ -74,11 +93,12 @@ func (it *IPTracker) PredictFullConeNAT() bool {
 }
 
 // PredictEndpoint returns the current prediction of the external endpoint.
+// 预测本地节点在其他节点眼里以为的ip
+// 就是计算statements里面保存的哪个endpoint最多
 func (it *IPTracker) PredictEndpoint() string {
-	it.gcStatements(it.clock.Now())
-
 	// The current strategy is simple: find the endpoint with most statements.
 	counts := make(map[string]int)
+	// 循环遍历计算记录次数最多的ip
 	maxcount, max := 0, ""
 	for _, s := range it.statements {
 		c := counts[s.endpoint] + 1
@@ -91,6 +111,8 @@ func (it *IPTracker) PredictEndpoint() string {
 }
 
 // AddStatement records that a certain host thinks our external endpoint is the one given.
+// 添加外部节点认为的本地ip的记录
+// host是外部的地址,endpoint是外部认为的本地地址
 func (it *IPTracker) AddStatement(host, endpoint string) {
 	now := it.clock.Now()
 	it.statements[host] = ipStatement{endpoint, now}
@@ -101,6 +123,7 @@ func (it *IPTracker) AddStatement(host, endpoint string) {
 
 // AddContact records that a packet containing our endpoint information has been sent to a
 // certain host.
+// 本地主动向外部发起连接通过AddContact添加
 func (it *IPTracker) AddContact(host string) {
 	now := it.clock.Now()
 	it.contact[host] = now
@@ -109,6 +132,7 @@ func (it *IPTracker) AddContact(host string) {
 	}
 }
 
+// 回收it.statements中所有超过window时间的记录
 func (it *IPTracker) gcStatements(now mclock.AbsTime) {
 	it.lastStatementGC = now
 	cutoff := now.Add(-it.window)
@@ -119,6 +143,7 @@ func (it *IPTracker) gcStatements(now mclock.AbsTime) {
 	}
 }
 
+// 回收it.contact中所有超过contactWindow时间的记录
 func (it *IPTracker) gcContact(now mclock.AbsTime) {
 	it.lastContactGC = now
 	cutoff := now.Add(-it.contactWindow)

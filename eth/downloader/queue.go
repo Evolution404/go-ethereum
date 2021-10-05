@@ -52,6 +52,7 @@ var (
 )
 
 // fetchRequest is a currently running data retrieval operation.
+// 保存了要查询区块的区块头,用于FetchBodies,FetchReceipts
 type fetchRequest struct {
 	Peer    *peerConnection // Peer to which the request was sent
 	From    uint64          // [eth/62] Requested chain element index (used for skeleton fills only)

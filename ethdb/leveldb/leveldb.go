@@ -18,6 +18,7 @@
 // +build !js
 
 // Package leveldb implements the key-value database layer based on LevelDB.
+// 键值对数据库的levelDB实现
 package leveldb
 
 import (
@@ -41,10 +42,12 @@ import (
 const (
 	// degradationWarnInterval specifies how often warning should be printed if the
 	// leveldb database cannot keep up with requested writes.
+	// 写入延迟超过该时间将发出警告
 	degradationWarnInterval = time.Minute
 
 	// minCache is the minimum amount of memory in megabytes to allocate to leveldb
 	// read and write caching, split half and half.
+	// 单位是兆字节
 	minCache = 16
 
 	// minHandles is the minimum number of files handles to allocate to the open
@@ -63,6 +66,9 @@ type Database struct {
 	fn string      // filename for reporting
 	db *leveldb.DB // LevelDB instance
 
+	// 以下字段用于数据库性能统计
+	// Meter有Mark方法
+	// Gauge有update方法
 	compTimeMeter      metrics.Meter // Meter for measuring the total time spent in database compaction
 	compReadMeter      metrics.Meter // Meter for measuring the data read during compaction
 	compWriteMeter     metrics.Meter // Meter for measuring the data written during compaction
@@ -76,6 +82,7 @@ type Database struct {
 	nonlevel0CompGauge metrics.Gauge // Gauge for tracking the number of table compaction in non0 level
 	seekCompGauge      metrics.Gauge // Gauge for tracking the number of table compaction caused by read opt
 
+	// 退出的时候锁定
 	quitLock sync.Mutex      // Mutex protecting the quit channel access
 	quitChan chan chan error // Quit channel to stop the metrics collection before closing the database
 
@@ -84,9 +91,13 @@ type Database struct {
 
 // New returns a wrapped LevelDB object. The namespace is the prefix that the
 // metrics reporting should use for surfacing internal stats.
+// cache单位是兆字节
+// New函数直接调用NewCustom函数,内部定义了一个修改options的函数
 func New(file string, cache int, handles int, namespace string, readonly bool) (*Database, error) {
 	return NewCustom(file, namespace, func(options *opt.Options) {
+		// 这个内部函数用来对options进行修改
 		// Ensure we have some minimal caching and file guarantees
+		// cache和handles都不能小于设定的最小值
 		if cache < minCache {
 			cache = minCache
 		}
@@ -94,6 +105,7 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 			handles = minHandles
 		}
 		// Set default options
+		// 打开文件的缓存容量
 		options.OpenFilesCacheCapacity = handles
 		options.BlockCacheCapacity = cache / 2 * opt.MiB
 		options.WriteBuffer = cache / 4 * opt.MiB // Two of these are used internally
@@ -106,18 +118,26 @@ func New(file string, cache int, handles int, namespace string, readonly bool) (
 // NewCustom returns a wrapped LevelDB object. The namespace is the prefix that the
 // metrics reporting should use for surfacing internal stats.
 // The customize function allows the caller to modify the leveldb options.
+// 用来创建一个Database对象,封装了LevelDB对象
+// file是保存数据库的位置,namespace是前缀
+// customize是用户定义的函数,用来对LevelDB的选项进行修改,可以传入nil代表使用默认选项
 func NewCustom(file string, namespace string, customize func(options *opt.Options)) (*Database, error) {
 	options := configureOptions(customize)
+	// 每个Database对象有一个logger
+	// 日志最前面加上 database=file
 	logger := log.New("database", file)
 	usedCache := options.GetBlockCacheCapacity() + options.GetWriteBuffer()*2
 	logCtx := []interface{}{"cache", common.StorageSize(usedCache), "handles", options.GetOpenFilesCacheCapacity()}
 	if options.ReadOnly {
 		logCtx = append(logCtx, "readonly", "true")
 	}
+	// 打印数据库分配的缓存和句柄数
 	logger.Info("Allocated cache and file handles", logCtx...)
 
 	// Open the db and recover any potential corruptions
+	// 真正打开数据库的地方
 	db, err := leveldb.OpenFile(file, options)
+	// 尝试进行恢复
 	if _, corrupted := err.(*errors.ErrCorrupted); corrupted {
 		db, err = leveldb.RecoverFile(file, nil)
 	}
@@ -145,19 +165,23 @@ func NewCustom(file string, namespace string, customize func(options *opt.Option
 	ldb.seekCompGauge = metrics.NewRegisteredGauge(namespace+"compact/seek", nil)
 
 	// Start up the metrics gathering and return
+	// 周期性的收集leveldb的运行数据
 	go ldb.meter(metricsGatheringInterval)
 	return ldb, nil
 }
 
 // configureOptions sets some default options, then runs the provided setter.
+// 创建Options对象,customizeFn是对Pptions的一些自定义修改
 func configureOptions(customizeFn func(*opt.Options)) *opt.Options {
 	// Set default options
+	// 生成默认的options
 	options := &opt.Options{
 		Filter:                 filter.NewBloomFilter(10),
 		DisableSeeksCompaction: true,
 	}
 	// Allow caller to make custom modifications to the options
 	if customizeFn != nil {
+		// 然后使用回调函数进行修改
 		customizeFn(options)
 	}
 	return options
@@ -165,20 +189,26 @@ func configureOptions(customizeFn func(*opt.Options)) *opt.Options {
 
 // Close stops the metrics collection, flushes any pending data to disk and closes
 // all io accesses to the underlying key-value store.
+// 关闭数据库
 func (db *Database) Close() error {
 	db.quitLock.Lock()
 	defer db.quitLock.Unlock()
 
+	// 收集错误信息
 	if db.quitChan != nil {
 		errc := make(chan error)
 		db.quitChan <- errc
+		// 通过管道读取外部的错误信息
 		if err := <-errc; err != nil {
 			db.log.Error("Metrics collection failed", "err", err)
 		}
 		db.quitChan = nil
 	}
+	// 关闭数据库
 	return db.db.Close()
 }
+
+// 下面的一系列方法都的选项都设置为nil
 
 // Has retrieves if a key is present in the key-value store.
 func (db *Database) Has(key []byte) (bool, error) {
@@ -188,6 +218,7 @@ func (db *Database) Has(key []byte) (bool, error) {
 // Get retrieves the given key if it's present in the key-value store.
 func (db *Database) Get(key []byte) ([]byte, error) {
 	dat, err := db.db.Get(key, nil)
+	// 如果有错误返回的数据设置为nil
 	if err != nil {
 		return nil, err
 	}
@@ -260,6 +291,7 @@ func (db *Database) Path() string {
 // Read(MB):3895.04860 Write(MB):3654.64712
 func (db *Database) meter(refresh time.Duration) {
 	// Create the counters to store current and previous compaction values
+	// compactions装了两个长度为4的float数组
 	compactions := make([][]float64, 2)
 	for i := 0; i < 2; i++ {
 		compactions[i] = make([]float64, 4)
@@ -291,7 +323,9 @@ func (db *Database) meter(refresh time.Duration) {
 			continue
 		}
 		// Find the compaction table, skip the header
+		// 按照行划分
 		lines := strings.Split(stats, "\n")
+		// 找到Compactions这一行,之前的行都丢弃
 		for len(lines) > 0 && strings.TrimSpace(lines[0]) != "Compactions" {
 			lines = lines[1:]
 		}
@@ -429,6 +463,7 @@ func (db *Database) meter(refresh time.Duration) {
 		db.seekCompGauge.Update(int64(seekComp))
 
 		// Sleep a bit, then repeat the stats collection
+		// 等待三秒进行下一轮查询
 		select {
 		case errc = <-db.quitChan:
 			// Quit requesting, stop hammering the database
@@ -488,6 +523,8 @@ func (b *batch) Replay(w ethdb.KeyValueWriter) error {
 }
 
 // replayer is a small wrapper to implement the correct replay methods.
+// leveldb的Replay方法传入replayer对象
+// 与KeyValueWriter对象不同,leveldb.BatchReplay需要实现的Put和Delete方法没有返回值
 type replayer struct {
 	writer  ethdb.KeyValueWriter
 	failure error

@@ -33,6 +33,8 @@ import (
 )
 
 // freezerdb is a database wrapper that enabled freezer data retrievals.
+// freezerdb内部有两个数据库
+// 初始化的时候要指定两个分别实现了这两个接口的对象
 type freezerdb struct {
 	ethdb.KeyValueStore
 	ethdb.AncientStore
@@ -40,8 +42,11 @@ type freezerdb struct {
 
 // Close implements io.Closer, closing both the fast key-value store as well as
 // the slow ancient tables.
+// 重写了Close方法
+// 关闭freezerdb的时候需要关闭两个数据库
 func (frdb *freezerdb) Close() error {
 	var errs []error
+	// 分别关闭两个数据库
 	if err := frdb.AncientStore.Close(); err != nil {
 		errs = append(errs, err)
 	}
@@ -57,11 +62,13 @@ func (frdb *freezerdb) Close() error {
 // Freeze is a helper method used for external testing to trigger and block until
 // a freeze cycle completes, without having to sleep for a minute to trigger the
 // automatic background run.
+// DatabaseWithFreezer类型的数据库进行冻结数据
 func (frdb *freezerdb) Freeze(threshold uint64) error {
 	if frdb.AncientStore.(*freezer).readonly {
 		return errReadOnly
 	}
 	// Set the freezer threshold to a temporary value
+	// 使用输入的threshold,函数结束时写回之前的threshold
 	defer func(old uint64) {
 		atomic.StoreUint64(&frdb.AncientStore.(*freezer).threshold, old)
 	}(atomic.LoadUint64(&frdb.AncientStore.(*freezer).threshold))
@@ -70,15 +77,18 @@ func (frdb *freezerdb) Freeze(threshold uint64) error {
 	// Trigger a freeze cycle and block until it's done
 	trigger := make(chan struct{}, 1)
 	frdb.AncientStore.(*freezer).trigger <- trigger
+	// 等待freeze结束
 	<-trigger
 	return nil
 }
 
 // nofreezedb is a database wrapper that disables freezer data retrievals.
+// nofreezedb实现了Database接口
 type nofreezedb struct {
 	ethdb.KeyValueStore
 }
 
+// 以下是nofreezedb对象为了实现Database接口编写的一系列方法
 // HasAncient returns an error as we don't have a backing chain freezer.
 func (db *nofreezedb) HasAncient(kind string, number uint64) (bool, error) {
 	return false, errNotSupported
@@ -121,6 +131,7 @@ func (db *nofreezedb) Sync() error {
 
 // NewDatabase creates a high level database on top of a given key-value data
 // store without a freezer moving immutable chain segments into cold storage.
+// 将ethdb.KeyValueStore对象转换为ethdb.Database对象
 func NewDatabase(db ethdb.KeyValueStore) ethdb.Database {
 	return &nofreezedb{KeyValueStore: db}
 }
@@ -128,6 +139,7 @@ func NewDatabase(db ethdb.KeyValueStore) ethdb.Database {
 // NewDatabaseWithFreezer creates a high level database on top of a given key-
 // value data store with a freezer moving immutable chain segments into cold
 // storage.
+// freezer是存储路径,namespace用于metrics通知
 func NewDatabaseWithFreezer(db ethdb.KeyValueStore, freezer string, namespace string, readonly bool) (ethdb.Database, error) {
 	// Create the idle freezer instance
 	frdb, err := newFreezer(freezer, namespace, readonly, freezerTableSize, FreezerNoSnappy)
@@ -156,11 +168,14 @@ func NewDatabaseWithFreezer(db ethdb.KeyValueStore, freezer string, namespace st
 	// If the genesis hash is empty, we have a new key-value store, so nothing to
 	// validate in this method. If, however, the genesis hash is not nil, compare
 	// it to the freezer content.
+	// 获取创世区块的哈希,保证freezer里的创世区块哈希与db里保存的一致
 	if kvgenesis, _ := db.Get(headerHashKey(0)); len(kvgenesis) > 0 {
+		// freezer里面有数据
 		if frozen, _ := frdb.Ancients(); frozen > 0 {
 			// If the freezer already contains something, ensure that the genesis blocks
 			// match, otherwise we might mix up freezers across chains and destroy both
 			// the freezer and the key-value store.
+			// 获取freezer里的创世哈希,确保一致
 			frgenesis, err := frdb.Ancient(freezerHashTable, 0)
 			if err != nil {
 				return nil, fmt.Errorf("failed to retrieve genesis from ancient %v", err)
@@ -181,11 +196,14 @@ func NewDatabaseWithFreezer(db ethdb.KeyValueStore, freezer string, namespace st
 			// Otherwise, key-value store continues where the freezer left off, all is fine.
 			// We might have duplicate blocks (crash after freezer write but before key-value
 			// store deletion, but that's fine).
+		// freezer是空的
 		} else {
 			// If the freezer is empty, ensure nothing was moved yet from the key-value
 			// store, otherwise we'll end up missing data. We check block #1 to decide
 			// if we froze anything previously or not, but do take care of databases with
 			// only the genesis block.
+			// freezer是空的所以如果创世块后有块的话,都应该还在db里面
+			// 只需要判断1号块
 			if ReadHeadHeaderHash(db) != common.BytesToHash(kvgenesis) {
 				// Key-value store contains more data than the genesis block, make sure we
 				// didn't freeze anything yet.
@@ -202,6 +220,7 @@ func NewDatabaseWithFreezer(db ethdb.KeyValueStore, freezer string, namespace st
 	if !frdb.readonly {
 		frdb.wg.Add(1)
 		go func() {
+			// 协程调用freeze定期将db的数据存储到freezer中
 			frdb.freeze(db)
 			frdb.wg.Done()
 		}()
@@ -214,6 +233,7 @@ func NewDatabaseWithFreezer(db ethdb.KeyValueStore, freezer string, namespace st
 
 // NewMemoryDatabase creates an ephemeral in-memory key-value database without a
 // freezer moving immutable chain segments into cold storage.
+// 新建一个内存数据库
 func NewMemoryDatabase() ethdb.Database {
 	return NewDatabase(memorydb.New())
 }
@@ -221,12 +241,14 @@ func NewMemoryDatabase() ethdb.Database {
 // NewMemoryDatabaseWithCap creates an ephemeral in-memory key-value database
 // with an initial starting capacity, but without a freezer moving immutable
 // chain segments into cold storage.
+// 新建一个指定容量的内存数据库,也就是map的大小
 func NewMemoryDatabaseWithCap(size int) ethdb.Database {
 	return NewDatabase(memorydb.NewWithCap(size))
 }
 
 // NewLevelDBDatabase creates a persistent key-value database without a freezer
 // moving immutable chain segments into cold storage.
+// 新建LevelDB的数据库
 func NewLevelDBDatabase(file string, cache int, handles int, namespace string, readonly bool) (ethdb.Database, error) {
 	db, err := leveldb.New(file, cache, handles, namespace, readonly)
 	if err != nil {
@@ -237,6 +259,7 @@ func NewLevelDBDatabase(file string, cache int, handles int, namespace string, r
 
 // NewLevelDBDatabaseWithFreezer creates a persistent key-value database with a
 // freezer moving immutable chain segments into cold storage.
+// 直接新建leveldb和freezer
 func NewLevelDBDatabaseWithFreezer(file string, cache int, handles int, freezer string, namespace string, readonly bool) (ethdb.Database, error) {
 	kvdb, err := leveldb.New(file, cache, handles, namespace, readonly)
 	if err != nil {
@@ -282,6 +305,7 @@ func (s *stat) Count() string {
 
 // InspectDatabase traverses the entire database and checks the size
 // of all different categories of data.
+// 检查所有不同类别数据的大小
 func InspectDatabase(db ethdb.Database, keyPrefix, keyStart []byte) error {
 	it := db.NewIterator(keyPrefix, keyStart)
 	defer it.Release()

@@ -23,6 +23,7 @@ import (
 )
 
 // ReadPreimage retrieves a single preimage of the provided hash.
+// 原像在数据库中有前缀"secure-key-"
 func ReadPreimage(db ethdb.KeyValueReader, hash common.Hash) []byte {
 	data, _ := db.Get(preimageKey(hash))
 	return data
@@ -76,6 +77,7 @@ func DeleteCode(db ethdb.KeyValueWriter, hash common.Hash) {
 }
 
 // ReadTrieNode retrieves the trie node of the provided hash.
+// trieNode在数据库中直接用 hash->node
 func ReadTrieNode(db ethdb.KeyValueReader, hash common.Hash) []byte {
 	data, _ := db.Get(hash.Bytes())
 	return data

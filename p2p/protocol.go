@@ -24,9 +24,11 @@ import (
 )
 
 // Protocol represents a P2P subprotocol implementation.
+// 由外部定义的子协议对象
 type Protocol struct {
 	// Name should contain the official protocol name,
 	// often a three-letter word.
+	// 官方的协议名称,一般是一个三个字母的单词
 	Name string
 
 	// Version should contain the version number of the protocol.
@@ -34,6 +36,8 @@ type Protocol struct {
 
 	// Length should contain the number of message codes used
 	// by the protocol.
+	// 代表不同messsage code的个数,也就是消息的类型总数
+	// 由于message code从0开始,所以所有的message code都必须小于Length
 	Length uint64
 
 	// Run is called in a new goroutine when the protocol has been
@@ -43,6 +47,8 @@ type Protocol struct {
 	// The peer connection is closed when Start returns. It should return
 	// any protocol-level error (such as an I/O error) that is
 	// encountered.
+	// Run 在与一个节点握手成功后调用,在单独协程中执行.
+	// 可以通过rw来接收和发送消息,所有接收的消息的Payload必须被全部读取
 	Run func(peer *Peer, rw MsgReadWriter) error
 
 	// NodeInfo is an optional helper method to retrieve protocol specific metadata
@@ -57,9 +63,11 @@ type Protocol struct {
 	// DialCandidates, if non-nil, is a way to tell Server about protocol-specific nodes
 	// that should be dialed. The server continuously reads nodes from the iterator and
 	// attempts to create connections to them.
+	// 用于为不同的协议指定不同的节点
 	DialCandidates enode.Iterator
 
 	// Attributes contains protocol specific information for the node record.
+	// 节点记录中增加的额外信息
 	Attributes []enr.Entry
 }
 
@@ -68,15 +76,21 @@ func (p Protocol) cap() Cap {
 }
 
 // Cap is the structure of a peer capability.
+// Cap代表一个远程节点协议的能力
+// 通过协议名称和协议版本来描述能力
 type Cap struct {
 	Name    string
 	Version uint
 }
 
+// Cap的打印格式 name/version
+// 例如 protocol/1
 func (cap Cap) String() string {
 	return fmt.Sprintf("%s/%d", cap.Name, cap.Version)
 }
 
+// 排序首先按照Name的字典序排序,Name相同按照Version排序
+// 实现了sort接口
 type capsByNameAndVersion []Cap
 
 func (cs capsByNameAndVersion) Len() int      { return len(cs) }

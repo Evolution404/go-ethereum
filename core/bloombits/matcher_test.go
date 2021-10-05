@@ -109,11 +109,15 @@ func TestWildcardMatcher(t *testing.T) {
 // makeRandomIndexes generates a random filter system, composed on multiple filter
 // criteria, each having one bloom list component for the address and arbitrarily
 // many topic bloom list components.
+// len(lengths)代表了filter的个数
+// lengths[i]内保存了第i个filter的条件个数
 func makeRandomIndexes(lengths []int, max int) [][]bloomIndexes {
+	// len(lengths)代表了filter的个数
 	res := make([][]bloomIndexes, len(lengths))
 	for i, topics := range lengths {
 		res[i] = make([]bloomIndexes, topics)
 		for j := 0; j < topics; j++ {
+			// 生成三个随机数
 			for k := 0; k < len(res[i][j]); k++ {
 				res[i][j][k] = uint(rand.Intn(max-1) + 2)
 			}
@@ -149,7 +153,9 @@ func testMatcherBothModes(t *testing.T, filter [][]bloomIndexes, start, blocks u
 // number of requests made for cross validation between different modes.
 func testMatcher(t *testing.T, filter [][]bloomIndexes, start, blocks uint64, intermittent bool, retrievals uint32, maxReqCount int) uint32 {
 	// Create a new matcher an simulate our explicit random bitsets
+	// 这里的filter已经是三数字类型了,不能通过NewMatcher直接传入
 	matcher := NewMatcher(testSectionSize, nil)
+	// 重复NewMatcher里面的关于filters操作
 	matcher.filters = filter
 
 	for _, rule := range filter {
@@ -250,10 +256,12 @@ func startRetrievers(session *MatcherSession, quit chan struct{}, retrievals *ui
 
 // generateBitset generates the rotated bitset for the given bloom bit and section
 // numbers.
+// 所有块号是bit倍数的位设置为1
 func generateBitset(bit uint, section uint64) []byte {
 	bitset := make([]byte, testSectionSize/8)
 	for i := 0; i < len(bitset); i++ {
 		for b := 0; b < 8; b++ {
+			// i是当前字节,b是当前字节第几个,i和b综合计算当前块号
 			blockIdx := section*testSectionSize + uint64(i*8+b)
 			bitset[i] += bitset[i]
 			if (blockIdx % uint64(bit)) == 0 {
@@ -264,6 +272,13 @@ func generateBitset(bit uint, section uint64) []byte {
 	return bitset
 }
 
+// 以下三个函数逐层嵌套,分别用来检测 条件,filter,filters
+// expMatch1  条件满足(三个比特位都是1)就返回true
+// expMatch2  一个filter内部的任意一个条件满足即可
+// expMatch3  filters里的每个filter都必须为true
+
+// 一个条件里的三个数字都是i的倍数返回true
+// 与generateBitset生成方法对应,用于检测返回结果是否正确
 func expMatch1(filter bloomIndexes, i uint64) bool {
 	for _, ii := range filter {
 		if (i % uint64(ii)) != 0 {
@@ -273,6 +288,7 @@ func expMatch1(filter bloomIndexes, i uint64) bool {
 	return true
 }
 
+// 输入一个filter,内部有任何一个条件满足就返回true
 func expMatch2(filter []bloomIndexes, i uint64) bool {
 	for _, ii := range filter {
 		if expMatch1(ii, i) {
@@ -282,6 +298,7 @@ func expMatch2(filter []bloomIndexes, i uint64) bool {
 	return false
 }
 
+// 输入filters,每个filter都返回true才返回true
 func expMatch3(filter [][]bloomIndexes, i uint64) bool {
 	for _, ii := range filter {
 		if !expMatch2(ii, i) {

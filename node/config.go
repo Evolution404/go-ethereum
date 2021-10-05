@@ -35,7 +35,9 @@ import (
 )
 
 const (
+	// 节点私钥保存的文件
 	datadirPrivateKey      = "nodekey"            // Path within the datadir to the node's private key
+	// 各个账户的私钥文件,这个没有保存在节点的专属文件夹,多个节点共享
 	datadirDefaultKeyStore = "keystore"           // Path within the datadir to the keystore
 	datadirStaticNodes     = "static-nodes.json"  // Path within the datadir to the static node list
 	datadirTrustedNodes    = "trusted-nodes.json" // Path within the datadir to the trusted node list
@@ -45,13 +47,17 @@ const (
 // Config represents a small collection of configuration values to fine tune the
 // P2P network layer of a protocol stack. These values can be further extended by
 // all registered services.
+// P2P字段中可以不指定私钥,不指定私钥将随机生成
 type Config struct {
 	// Name sets the instance name of the node. It must not contain the / character and is
 	// used in the devp2p node identifier. The instance name of geth is "geth". If no
 	// value is specified, the basename of the current executable is used.
+	// 节点的名称,在devp2p作节点的标识
 	Name string `toml:"-"`
 
 	// UserIdent, if set, is used as an additional component in the devp2p node identifier.
+	// 如果设置了,作为附加的标识符
+	// 最终的标识符是 Name/UserIdent 用斜杠连接两个部分
 	UserIdent string `toml:",omitempty"`
 
 	// Version should be set to the version number of the program. It is used
@@ -66,6 +72,7 @@ type Config struct {
 	DataDir string
 
 	// Configuration of peer-to-peer networking.
+	// 这里p2p.Config中可以不指定私钥,不指定私钥将随机生成
 	P2P p2p.Config
 
 	// KeyStoreDir is the file system folder that contains private keys. The directory can
@@ -75,6 +82,8 @@ type Config struct {
 	// If KeyStoreDir is empty, the default location is the "keystore" subdirectory of
 	// DataDir. If DataDir is unspecified and KeyStoreDir is empty, an ephemeral directory
 	// is created by New and destroyed when the node is stopped.
+	// 明确指定了keystore保存的位置,如果是空字符串那么就使用默认位置 DataDir/keystore
+	// 默认位置直接再DataDir下,不在各个节点的专属文件夹,说明keystore被各个节点共享
 	KeyStoreDir string `toml:",omitempty"`
 
 	// ExternalSigner specifies an external URI for a clef-type signer
@@ -101,10 +110,14 @@ type Config struct {
 	// a simple file name, it is placed inside the data directory (or on the root
 	// pipe path on Windows), whereas if it's a resolvable path name (absolute or
 	// relative), then that specific path is enforced. An empty path disables IPC.
+	// 可以直接是文件名,代表保存在DataDir下
+	// 可以是绝对路径
+	// 可以是空字符串,代表禁用IPC
 	IPCPath string
 
 	// HTTPHost is the host interface on which to start the HTTP RPC server. If this
 	// field is empty, no HTTP API endpoint will be started.
+	// http rpc使用的网络接口,如果为空说明不启用
 	HTTPHost string
 
 	// HTTPPort is the TCP port number on which to start the HTTP RPC server. The
@@ -140,6 +153,7 @@ type Config struct {
 
 	// WSHost is the host interface on which to start the websocket RPC server. If
 	// this field is empty, no websocket API endpoint will be started.
+	// websocket使用的网络接口,为空说明不启用websocket
 	WSHost string
 
 	// WSPort is the TCP port number on which to start the websocket RPC server. The
@@ -184,6 +198,7 @@ type Config struct {
 	// Logger is a custom logger to use with the p2p.Server.
 	Logger log.Logger `toml:",omitempty"`
 
+	// 这三个变量分别用于控制各自的警告信息只出现一次
 	staticNodesWarning     bool
 	trustedNodesWarning    bool
 	oldGethResourceWarning bool
@@ -195,8 +210,10 @@ type Config struct {
 // IPCEndpoint resolves an IPC endpoint based on a configured value, taking into
 // account the set data folders as well as the designated platform we're currently
 // running on.
+// 返回ipc文件的绝对路径
 func (c *Config) IPCEndpoint() string {
 	// Short circuit if IPC has not been enabled
+	// IPC是禁用状态
 	if c.IPCPath == "" {
 		return ""
 	}
@@ -218,6 +235,7 @@ func (c *Config) IPCEndpoint() string {
 }
 
 // NodeDB returns the path to the discovery node database.
+// 保存节点发现数据的数据库的路径
 func (c *Config) NodeDB() string {
 	if c.DataDir == "" {
 		return "" // ephemeral
@@ -226,13 +244,17 @@ func (c *Config) NodeDB() string {
 }
 
 // DefaultIPCEndpoint returns the IPC path used by default.
+// 获取默认的ipc文件的路径
+// 就是 DataDir/xxx.ipc
 func DefaultIPCEndpoint(clientIdentifier string) string {
+	// 不指定客户端名称,那就使用可执行文件的名称
 	if clientIdentifier == "" {
 		clientIdentifier = strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
 		if clientIdentifier == "" {
 			panic("empty executable name")
 		}
 	}
+	// 这里IPCPath直接使用文件名,说明保存在DataDir下
 	config := &Config{DataDir: DefaultDataDir(), IPCPath: clientIdentifier + ".ipc"}
 	return config.IPCEndpoint()
 }
@@ -269,30 +291,42 @@ func DefaultWSEndpoint() string {
 
 // ExtRPCEnabled returns the indicator whether node enables the external
 // RPC(http, ws or graphql).
+// 判断是否有外部的RPC启用了
+// 外部是指http,ws或者graphql,相对于内部是进程内通信和进程间通信
 func (c *Config) ExtRPCEnabled() bool {
 	return c.HTTPHost != "" || c.WSHost != ""
 }
 
 // NodeName returns the devp2p node identifier.
+// 计算节点的标识符,完整的标识符如下,其中的UserIdent和Version可能会被省略
+// Geth/Ident/v1.10.4-stable-aa637fd3/linux-amd64/go1.16.4
 func (c *Config) NodeName() string {
 	name := c.name()
 	// Backwards compatibility: previous versions used title-cased "Geth", keep that.
+	// geth客户端的名称设置为Geth
 	if name == "geth" || name == "geth-testnet" {
 		name = "Geth"
 	}
+	// 添加上UserIdent
 	if c.UserIdent != "" {
 		name += "/" + c.UserIdent
 	}
+	// 再加上版本号
 	if c.Version != "" {
 		name += "/v" + c.Version
 	}
+	// linux-amd64
 	name += "/" + runtime.GOOS + "-" + runtime.GOARCH
+	// go1.16.2
 	name += "/" + runtime.Version()
 	return name
 }
 
+// 获取节点的名称
+// 如果Config.Name有值那么就是这个值,否则的话用当前的可执行文件的名称
 func (c *Config) name() string {
 	if c.Name == "" {
+		// 获得可执行文件的名称作为节点名称
 		progname := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
 		if progname == "" {
 			panic("empty executable name, set Config.Name")
@@ -312,7 +346,10 @@ var isOldGethResource = map[string]bool{
 }
 
 // ResolvePath resolves path in the instance directory.
+// 将path与节点的专属路径拼接起来,例如: DataDir/name/path
+// 如果path是绝对路径,那么就直接使用path
 func (c *Config) ResolvePath(path string) string {
+	// 绝对路径就不拼接了,直接返回
 	if filepath.IsAbs(path) {
 		return path
 	}
@@ -321,6 +358,7 @@ func (c *Config) ResolvePath(path string) string {
 	}
 	// Backwards-compatibility: ensure that data directory files created
 	// by geth 1.4 are used if they exist.
+	// nodekey等文件可能直接保存在了DataDir下面,打印一下警告,提醒用户移动到geth目录下面去
 	if warn, isOld := isOldGethResource[path]; isOld {
 		oldpath := ""
 		if c.name() == "geth" {
@@ -336,6 +374,7 @@ func (c *Config) ResolvePath(path string) string {
 	return filepath.Join(c.instanceDir(), path)
 }
 
+// 这个节点的专属文件夹, DataDir/name
 func (c *Config) instanceDir() string {
 	if c.DataDir == "" {
 		return ""
@@ -346,12 +385,17 @@ func (c *Config) instanceDir() string {
 // NodeKey retrieves the currently configured private key of the node, checking
 // first any manually set key, falling back to the one found in the configured
 // data folder. If no key can be found, a new one is generated.
+// 获取节点的私钥
+// Config.P2P.PrivateKey不为nil,就使用这个
+// DataDir为空随机生成一个
+// DataDir不为空从私钥文件中加载,私钥文件不存在就随机生成一个私钥并把这个私钥保存到私钥文件
 func (c *Config) NodeKey() *ecdsa.PrivateKey {
 	// Use any specifically configured key.
 	if c.P2P.PrivateKey != nil {
 		return c.P2P.PrivateKey
 	}
 	// Generate ephemeral key if no datadir is being used.
+	// 没有DataDir所以就使用随机生成的
 	if c.DataDir == "" {
 		key, err := crypto.GenerateKey()
 		if err != nil {
@@ -360,20 +404,24 @@ func (c *Config) NodeKey() *ecdsa.PrivateKey {
 		return key
 	}
 
+	// 从私钥文件中加载私钥
 	keyfile := c.ResolvePath(datadirPrivateKey)
 	if key, err := crypto.LoadECDSA(keyfile); err == nil {
 		return key
 	}
 	// No persistent key found, generate and store a new one.
+	// 从私钥文件中恢复失败,所以现在随机生成一个私钥,然后再将私钥保存到文件中
 	key, err := crypto.GenerateKey()
 	if err != nil {
 		log.Crit(fmt.Sprintf("Failed to generate node key: %v", err))
 	}
+	// 计算要保存私钥的文件夹,将这一路径创建出来
 	instanceDir := filepath.Join(c.DataDir, c.name())
 	if err := os.MkdirAll(instanceDir, 0700); err != nil {
 		log.Error(fmt.Sprintf("Failed to persist node key: %v", err))
 		return key
 	}
+	// 保存私钥文件
 	keyfile = filepath.Join(instanceDir, datadirPrivateKey)
 	if err := crypto.SaveECDSA(keyfile, key); err != nil {
 		log.Error(fmt.Sprintf("Failed to persist node key: %v", err))
@@ -382,17 +430,21 @@ func (c *Config) NodeKey() *ecdsa.PrivateKey {
 }
 
 // StaticNodes returns a list of node enode URLs configured as static nodes.
+// 获取static-nodes.json中保存的节点列表
 func (c *Config) StaticNodes() []*enode.Node {
 	return c.parsePersistentNodes(&c.staticNodesWarning, c.ResolvePath(datadirStaticNodes))
 }
 
 // TrustedNodes returns a list of node enode URLs configured as trusted nodes.
+// 获取trusted-nodes.json中保存的节点列表
 func (c *Config) TrustedNodes() []*enode.Node {
 	return c.parsePersistentNodes(&c.trustedNodesWarning, c.ResolvePath(datadirTrustedNodes))
 }
 
 // parsePersistentNodes parses a list of discovery node URLs loaded from a .json
 // file from within the data directory.
+// 将path路径代表的json文件解析成一组节点对象
+// 用于解析static-nodes.json和trusted-nodes.json,这里输入的路径是绝对路径
 func (c *Config) parsePersistentNodes(w *bool, path string) []*enode.Node {
 	// Short circuit if no node config is present
 	if c.DataDir == "" {
@@ -401,15 +453,18 @@ func (c *Config) parsePersistentNodes(w *bool, path string) []*enode.Node {
 	if _, err := os.Stat(path); err != nil {
 		return nil
 	}
+	// 现在使用toml的配置文件了
 	c.warnOnce(w, "Found deprecated node list file %s, please use the TOML config file instead.", path)
 
 	// Load the nodes from the config file.
+	// 从文件中加载出来enode://xxx字符串
 	var nodelist []string
 	if err := common.LoadJSON(path, &nodelist); err != nil {
 		log.Error(fmt.Sprintf("Can't load node list file: %v", err))
 		return nil
 	}
 	// Interpret the list as a discovery node array
+	// 解析url,生成enode.Node对象
 	var nodes []*enode.Node
 	for _, url := range nodelist {
 		if url == "" {
@@ -426,6 +481,8 @@ func (c *Config) parsePersistentNodes(w *bool, path string) []*enode.Node {
 }
 
 // KeyDirConfig determines the settings for keydirectory
+// 返回scryptN,scryptP,keydir,err
+// keydir代表keystore保存的目录
 func (c *Config) KeyDirConfig() (string, error) {
 	var (
 		keydir string
@@ -472,6 +529,7 @@ func getKeyStoreDir(conf *Config) (string, bool, error) {
 
 var warnLock sync.Mutex
 
+// 控制w为true的时候就不打印了
 func (c *Config) warnOnce(w *bool, format string, args ...interface{}) {
 	warnLock.Lock()
 	defer warnLock.Unlock()

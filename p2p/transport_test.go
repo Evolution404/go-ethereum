@@ -49,6 +49,7 @@ func TestProtocolHandshake(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		defer fd0.Close()
+		// 握手的发起方
 		frame := newRLPX(fd0, &prv1.PublicKey)
 		rpubkey, err := frame.doEncHandshake(prv0)
 		if err != nil {
@@ -75,6 +76,7 @@ func TestProtocolHandshake(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		defer fd1.Close()
+		// 握手的接收方
 		rlpx := newRLPX(fd1, nil)
 		rpubkey, err := rlpx.doEncHandshake(prv1)
 		if err != nil {

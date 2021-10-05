@@ -31,6 +31,8 @@ import (
 )
 
 // apis returns the collection of built-in RPC APIs.
+// 获得内置的RPC APIs
+// 所有创建的节点都默认拥有这些RPC调用
 func (n *Node) apis() []rpc.API {
 	return []rpc.API{
 		{
@@ -127,6 +129,7 @@ func (api *privateAdminAPI) RemoveTrustedPeer(url string) (bool, error) {
 
 // PeerEvents creates an RPC subscription which receives peer events from the
 // node's p2p.Server
+// 订阅了内部p2p.Server对象发送的事件,然后转发到外部RPC的调用者
 func (api *privateAdminAPI) PeerEvents(ctx context.Context) (*rpc.Subscription, error) {
 	// Make sure the server is running, fail otherwise
 	server := api.node.Server()
@@ -142,6 +145,7 @@ func (api *privateAdminAPI) PeerEvents(ctx context.Context) (*rpc.Subscription, 
 	rpcSub := notifier.CreateSubscription()
 
 	go func() {
+		// 节点事件将会被发送到events管道
 		events := make(chan *p2p.PeerEvent)
 		sub := server.SubscribeEvents(events)
 		defer sub.Unsubscribe()

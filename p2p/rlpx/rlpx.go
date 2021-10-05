@@ -47,7 +47,10 @@ import (
 // Before sending messages, a handshake must be performed by calling the Handshake method.
 // This type is not generally safe for concurrent use, but reading and writing of messages
 // may happen concurrently after the handshake.
+// Conn代表了基于RLPx协议的网络连接
+// 内部封装了net.Conn对象实现真正的传输层通信
 type Conn struct {
+	// diaDest代表远程节点的公钥
 	dialDest *ecdsa.PublicKey
 	conn     net.Conn
 	session  *sessionState
@@ -60,7 +63,9 @@ type Conn struct {
 
 // sessionState contains the session keys.
 type sessionState struct {
+	// 用于加密发送的消息的aes ctr模式的流
 	enc cipher.Stream
+	// 用于解密接收的消息的aes ctr模式的流
 	dec cipher.Stream
 
 	egressMAC  hashMAC
@@ -91,6 +96,8 @@ func newHashMAC(cipher cipher.Block, h hash.Hash) hashMAC {
 
 // NewConn wraps the given network connection. If dialDest is non-nil, the connection
 // behaves as the initiator during the handshake.
+// dialDest不为nil说明本地是握手的发起方
+// dialDest是nil说明本地是握手的接收方
 func NewConn(conn net.Conn, dialDest *ecdsa.PublicKey) *Conn {
 	return &Conn{
 		dialDest: dialDest,
@@ -112,22 +119,27 @@ func (c *Conn) SetSnappy(snappy bool) {
 }
 
 // SetReadDeadline sets the deadline for all future read operations.
+// 超过指定时间后不能再Read
 func (c *Conn) SetReadDeadline(time time.Time) error {
 	return c.conn.SetReadDeadline(time)
 }
 
 // SetWriteDeadline sets the deadline for all future write operations.
+// 超过指定时间后不能再Write
 func (c *Conn) SetWriteDeadline(time time.Time) error {
 	return c.conn.SetWriteDeadline(time)
 }
 
 // SetDeadline sets the deadline for all future read and write operations.
+// 超过指定时间后不能再Read和Write
 func (c *Conn) SetDeadline(time time.Time) error {
 	return c.conn.SetDeadline(time)
 }
 
 // Read reads a message from the connection.
 // The returned data buffer is valid until the next call to Read.
+// 通过网络读取一个消息,获取code和消息内的数据
+// 从链路中读取一个帧,返回code和真实的数据,以及通过链路传输的数据的长度
 func (c *Conn) Read() (code uint64, data []byte, wireSize int, err error) {
 	if c.session == nil {
 		panic("can't ReadMsg before handshake")
@@ -137,13 +149,16 @@ func (c *Conn) Read() (code uint64, data []byte, wireSize int, err error) {
 	if err != nil {
 		return 0, nil, 0, err
 	}
+	// 帧数据是code和data两个部分
 	code, data, err = rlp.SplitUint64(frame)
 	if err != nil {
 		return 0, nil, 0, fmt.Errorf("invalid message code: %v", err)
 	}
+	// 代表通过网络传输的数据
 	wireSize = len(data)
 
 	// If snappy is enabled, verify and decompress message.
+	// 如果启用了压缩,就将获取的数据进行解压
 	if c.snappyReadBuffer != nil {
 		var actualSize int
 		actualSize, err = snappy.DecodedLen(data)
@@ -208,6 +223,8 @@ func (h *sessionState) readFrame(conn io.Reader) ([]byte, error) {
 //
 // Write returns the written size of the message data. This may be less than or equal to
 // len(data) depending on whether snappy compression is enabled.
+// 通过网络发送一个消息,指定code和数据
+// 返回进行网络传输的数据长度,不使用压缩时就等于data的长度,压缩的话可能小于data的长度
 func (c *Conn) Write(code uint64, data []byte) (uint32, error) {
 	if c.session == nil {
 		panic("can't WriteMsg before handshake")
@@ -228,6 +245,10 @@ func (c *Conn) Write(code uint64, data []byte) (uint32, error) {
 	return wireSize, err
 }
 
+// 将输入的数据封装成帧写入到conn中
+// 帧分为四个部分,这四个部分长度都是16字节的整数倍,对于header和frame-data都是不足16字节进行补零
+// frame = header-ciphertext(16字节) || header-mac(16字节) || frame-data-ciphertext || frame-mac(16字节)
+// header = frame-size(3字节) || header-data(现在使用zeroHeader,填充了3字节) || header-padding
 func (h *sessionState) writeFrame(conn io.Writer, code uint64, data []byte) error {
 	h.wbuf.reset()
 
@@ -297,6 +318,8 @@ func (m *hashMAC) compute(sum1, seed []byte) []byte {
 
 // Handshake performs the handshake. This must be called before any data is written
 // or read from the connection.
+// 执行两个节点间的握手,调用NewConn后就应该执行Handshake
+// 在执行Handshake之前不能进行任何数据传输
 func (c *Conn) Handshake(prv *ecdsa.PrivateKey) (*ecdsa.PublicKey, error) {
 	var (
 		sec Secrets
@@ -311,6 +334,7 @@ func (c *Conn) Handshake(prv *ecdsa.PrivateKey) (*ecdsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 设置c.handshake
 	c.InitWithSecrets(sec)
 	c.session.rbuf = h.rbuf
 	c.session.wbuf = h.wbuf
@@ -319,6 +343,8 @@ func (c *Conn) Handshake(prv *ecdsa.PrivateKey) (*ecdsa.PublicKey, error) {
 
 // InitWithSecrets injects connection secrets as if a handshake had
 // been performed. This cannot be called after the handshake.
+// 用于模拟握手完成,不执行真正的握手过程,直接需要握手过程共享的秘密保存到Conn中
+// 就是用Secrets对象生成handshakeState对象
 func (c *Conn) InitWithSecrets(sec Secrets) {
 	if c.session != nil {
 		panic("can't handshake twice")
@@ -333,6 +359,7 @@ func (c *Conn) InitWithSecrets(sec Secrets) {
 	}
 	// we use an all-zeroes IV for AES because the key used
 	// for encryption is ephemeral.
+	// 使用的IV是16字节的全零数组,因为每次通信的密钥都不同所以IV可以一样
 	iv := make([]byte, encc.BlockSize())
 	c.session = &sessionState{
 		enc:        cipher.NewCTR(encc, iv),
@@ -369,16 +396,26 @@ var (
 
 // Secrets represents the connection secrets which are negotiated during the handshake.
 type Secrets struct {
+	// AES和MAC长度都是32字节,作为AES-256算法的密钥
 	AES, MAC              []byte
 	EgressMAC, IngressMAC hash.Hash
 	remote                *ecdsa.PublicKey
 }
 
 // handshakeState contains the state of the encryption handshake.
+// 代表握手过程的状态
 type handshakeState struct {
+	// 标记本地是连接的发起方还是接收方
 	initiator            bool
+	// remote代表远程节点的公钥
+	//   发送方通过Conn.diaDest在initiatorEncHandshake设置remote
+	//   接收方在receiverEncHandshake根据收到的authMsg解析出来remote
 	remote               *ecies.PublicKey  // remote-pubk
+	// initNonce: 发起方在makeAuthMsg中生成,接收方在handleAuthMsg中解析出来
+	// respNonce: 发起方在handleAuthResp中解析出来,接收方在makeAuthResp中生成
 	initNonce, respNonce []byte            // nonce
+	// 握手过程中双方都成一对随机的公私钥
+	// 本地保存自己随机生成的私钥,通过握手能得到远程节点随机生成的公钥
 	randomPrivKey        *ecies.PrivateKey // ecdhe-random
 	remoteRandomPub      *ecies.PublicKey  // ecdhe-random-pubk
 
@@ -387,11 +424,23 @@ type handshakeState struct {
 }
 
 // RLPx v4 handshake auth (defined in EIP-8).
+// 握手过程中总共发送两条消息,分别是发起方发送authMsg和接收方接收后回复authResp
+// 发起方调用initiatorEncHandshake处理握手
+//   内部调用了makeAuthMsg发送消息,然后调用handleAuthResp处理接收方的回复
+// 接收方调用receiverEncHandshake处理握手
+//   内部调用了handleAuthMsg处理发起方的消息,然后调用makeAuthResp回复发起方
+
 type authMsgV4 struct {
+	// 双方的静态公私钥可以推导出共享秘密token
+	// 使用发送方生成的随机私钥对 Nonce与token 的异或结果进行签名
+	// 接收方有Nonce和token可以推导出发送方的随机公钥
 	Signature       [sigLen]byte
+	// 发送方的静态公钥
 	InitiatorPubkey [pubLen]byte
-	Nonce           [shaLen]byte
-	Version         uint
+	// 发送authMsg生成的随机数
+	Nonce [shaLen]byte
+	// 当前一定是4
+	Version uint
 
 	// Ignore additional fields (forward-compatibility)
 	Rest []rlp.RawValue `rlp:"tail"`
@@ -399,9 +448,12 @@ type authMsgV4 struct {
 
 // RLPx v4 handshake response (defined in EIP-8).
 type authRespV4 struct {
+	// 接收方生成的随机公钥
 	RandomPubkey [pubLen]byte
-	Nonce        [shaLen]byte
-	Version      uint
+	// 接收方生成的随机Nonce
+	Nonce [shaLen]byte
+	// 当前一定是4
+	Version uint
 
 	// Ignore additional fields (forward-compatibility)
 	Rest []rlp.RawValue `rlp:"tail"`
@@ -412,6 +464,7 @@ type authRespV4 struct {
 //
 // prv is the local client's private key.
 func (h *handshakeState) runRecipient(conn io.ReadWriter, prv *ecdsa.PrivateKey) (s Secrets, err error) {
+	// 从网络字节流中解析出来authMsg对象,authPacket代表authMsg的rlp编码
 	authMsg := new(authMsgV4)
 	authPacket, err := h.readMsg(authMsg, prv, conn)
 	if err != nil {
@@ -421,6 +474,7 @@ func (h *handshakeState) runRecipient(conn io.ReadWriter, prv *ecdsa.PrivateKey)
 		return s, err
 	}
 
+	// 接收方收到authMsg后开始发送authResp
 	authRespMsg, err := h.makeAuthResp()
 	if err != nil {
 		return s, err
@@ -429,6 +483,7 @@ func (h *handshakeState) runRecipient(conn io.ReadWriter, prv *ecdsa.PrivateKey)
 	if err != nil {
 		return s, err
 	}
+	// 将数据发送给发送方
 	if _, err = conn.Write(authRespPacket); err != nil {
 		return s, err
 	}
@@ -447,6 +502,7 @@ func (h *handshakeState) handleAuthMsg(msg *authMsgV4, prv *ecdsa.PrivateKey) er
 
 	// Generate random keypair for ECDH.
 	// If a private key is already set, use it instead of generating one (for testing).
+	// 生成接收方的随机私钥
 	if h.randomPrivKey == nil {
 		h.randomPrivKey, err = ecies.GenerateKey(rand.Reader, crypto.S256(), nil)
 		if err != nil {
@@ -455,11 +511,15 @@ func (h *handshakeState) handleAuthMsg(msg *authMsgV4, prv *ecdsa.PrivateKey) er
 	}
 
 	// Check the signature.
+	// 校验authMsg里的签名是否正确
+	// 首先生成共享秘密token
 	token, err := h.staticSharedSecret(prv)
 	if err != nil {
 		return err
 	}
+	// token与nonce异或
 	signedMsg := xor(token, h.initNonce)
+	// 使用signedMsg和签名恢复出来发送方生成的随机公钥
 	remoteRandomPub, err := crypto.Ecrecover(signedMsg, msg.Signature[:])
 	if err != nil {
 		return err
@@ -470,6 +530,7 @@ func (h *handshakeState) handleAuthMsg(msg *authMsgV4, prv *ecdsa.PrivateKey) er
 
 // secrets is called after the handshake is completed.
 // It extracts the connection secrets from the handshake values.
+// 利用握手过程中发送的两个数据包构建租出Secrets对象
 func (h *handshakeState) secrets(auth, authResp []byte) (Secrets, error) {
 	ecdheSecret, err := h.randomPrivKey.GenerateShared(h.remoteRandomPub, sskLen, sskLen)
 	if err != nil {
@@ -492,6 +553,7 @@ func (h *handshakeState) secrets(auth, authResp []byte) (Secrets, error) {
 	mac2 := sha3.NewLegacyKeccak256()
 	mac2.Write(xor(s.MAC, h.initNonce))
 	mac2.Write(authResp)
+	// 发送方和接收方的egress和ingress正好相反
 	if h.initiator {
 		s.EgressMAC, s.IngressMAC = mac1, mac2
 	} else {
@@ -514,16 +576,17 @@ func (h *handshakeState) staticSharedSecret(prv *ecdsa.PrivateKey) ([]byte, erro
 func (h *handshakeState) runInitiator(conn io.ReadWriter, prv *ecdsa.PrivateKey, remote *ecdsa.PublicKey) (s Secrets, err error) {
 	h.initiator = true
 	h.remote = ecies.ImportECDSAPublic(remote)
-
 	authMsg, err := h.makeAuthMsg(prv)
 	if err != nil {
 		return s, err
 	}
+	// 对authMsg对象进行编码
 	authPacket, err := h.sealEIP8(authMsg)
 	if err != nil {
 		return s, err
 	}
 
+	// 将数据发送出去
 	if _, err = conn.Write(authPacket); err != nil {
 		return s, err
 	}
@@ -541,30 +604,38 @@ func (h *handshakeState) runInitiator(conn io.ReadWriter, prv *ecdsa.PrivateKey,
 }
 
 // makeAuthMsg creates the initiator handshake message.
+// 创建消息发起方的握手信息
+// 发起方生成了initNonce
 func (h *handshakeState) makeAuthMsg(prv *ecdsa.PrivateKey) (*authMsgV4, error) {
 	// Generate random initiator nonce.
+	// 生成随机的initNonce
 	h.initNonce = make([]byte, shaLen)
 	_, err := rand.Read(h.initNonce)
 	if err != nil {
 		return nil, err
 	}
 	// Generate random keypair to for ECDH.
+	// 生成临时随机私钥
 	h.randomPrivKey, err = ecies.GenerateKey(rand.Reader, crypto.S256(), nil)
 	if err != nil {
 		return nil, err
 	}
 
 	// Sign known message: static-shared-secret ^ nonce
+	// 利用本地的静态私钥和对方的静态公钥计算双方共享的秘密token
 	token, err := h.staticSharedSecret(prv)
 	if err != nil {
 		return nil, err
 	}
+	// 将共享秘密token与生成的随机数异或,得到signed
 	signed := xor(token, h.initNonce)
+	// 使用本地的随机私钥对signed签名
 	signature, err := crypto.Sign(signed, h.randomPrivKey.ExportECDSA())
 	if err != nil {
 		return nil, err
 	}
 
+	// 构造authMsg
 	msg := new(authMsgV4)
 	copy(msg.Signature[:], signature)
 	copy(msg.InitiatorPubkey[:], crypto.FromECDSAPub(&prv.PublicKey)[1:])
@@ -579,6 +650,8 @@ func (h *handshakeState) handleAuthResp(msg *authRespV4) (err error) {
 	return err
 }
 
+// 构造authRespV4对象
+// 生成随机的Nonce,利用handleAuthMsg生成的随机私钥导出公钥保存的msg中
 func (h *handshakeState) makeAuthResp() (msg *authRespV4, err error) {
 	// Generate random nonce.
 	h.respNonce = make([]byte, shaLen)
@@ -641,6 +714,7 @@ func (h *handshakeState) sealEIP8(msg interface{}) ([]byte, error) {
 }
 
 // importPublicKey unmarshals 512 bit public keys.
+// 通过字节数组恢复出来公钥
 func importPublicKey(pubKey []byte) (*ecies.PublicKey, error) {
 	var pubKey65 []byte
 	switch len(pubKey) {
@@ -660,6 +734,7 @@ func importPublicKey(pubKey []byte) (*ecies.PublicKey, error) {
 	return ecies.ImportECDSAPublic(pub), nil
 }
 
+// 编码公钥到字节数组
 func exportPubkey(pub *ecies.PublicKey) []byte {
 	if pub == nil {
 		panic("nil pubkey")
@@ -667,6 +742,7 @@ func exportPubkey(pub *ecies.PublicKey) []byte {
 	return elliptic.Marshal(pub.Curve, pub.X, pub.Y)[1:]
 }
 
+// 计算one与other异或的结果,返回结果的长度是one的长度
 func xor(one, other []byte) (xor []byte) {
 	xor = make([]byte, len(one))
 	for i := 0; i < len(one); i++ {

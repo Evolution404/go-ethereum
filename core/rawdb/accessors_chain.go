@@ -15,6 +15,7 @@
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
 package rawdb
+// 提供一系列数据库操作的方法
 
 import (
 	"bytes"
@@ -34,15 +35,19 @@ import (
 )
 
 // ReadCanonicalHash retrieves the hash assigned to a canonical block number.
+// 根据块号查询块哈希
 func ReadCanonicalHash(db ethdb.Reader, number uint64) common.Hash {
+	// 先从冻结数据查
 	data, _ := db.Ancient(freezerHashTable, number)
 	if len(data) == 0 {
+		// 再从leveldb查
 		data, _ = db.Get(headerHashKey(number))
 		// In the background freezer is moving data from leveldb to flatten files.
 		// So during the first check for ancient db, the data is not yet in there,
 		// but when we reach into leveldb, the data was already moved. That would
 		// result in a not found error.
 		if len(data) == 0 {
+			// leveldb没查到,再尝试从冻结数据查
 			data, _ = db.Ancient(freezerHashTable, number)
 		}
 	}
@@ -53,6 +58,7 @@ func ReadCanonicalHash(db ethdb.Reader, number uint64) common.Hash {
 }
 
 // WriteCanonicalHash stores the hash assigned to a canonical block number.
+// 向数据库写入 块号->块哈希
 func WriteCanonicalHash(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 	if err := db.Put(headerHashKey(number), hash.Bytes()); err != nil {
 		log.Crit("Failed to store number to hash mapping", "err", err)
@@ -60,6 +66,7 @@ func WriteCanonicalHash(db ethdb.KeyValueWriter, hash common.Hash, number uint64
 }
 
 // DeleteCanonicalHash removes the number to hash canonical mapping.
+// 删除 块号->块哈希
 func DeleteCanonicalHash(db ethdb.KeyValueWriter, number uint64) {
 	if err := db.Delete(headerHashKey(number)); err != nil {
 		log.Crit("Failed to delete number to hash mapping", "err", err)
@@ -68,15 +75,19 @@ func DeleteCanonicalHash(db ethdb.KeyValueWriter, number uint64) {
 
 // ReadAllHashes retrieves all the hashes assigned to blocks at a certain heights,
 // both canonical and reorged forks included.
+// 查询leveldb中指定区块号对应的区块哈希,由于分叉可能导致一个区块号对应多个区块哈希
+// 该函数不会查询冻结数据
 func ReadAllHashes(db ethdb.Iteratee, number uint64) []common.Hash {
 	prefix := headerKeyPrefix(number)
 
+	// 初始容量为1,大部分情况只会查询到一个结果
 	hashes := make([]common.Hash, 0, 1)
 	it := db.NewIterator(prefix, nil)
 	defer it.Release()
 
 	for it.Next() {
 		if key := it.Key(); len(key) == len(prefix)+32 {
+			// 哈希值是最后32个字节
 			hashes = append(hashes, common.BytesToHash(key[len(key)-32:]))
 		}
 	}
@@ -117,6 +128,8 @@ func ReadAllHashesInRange(db ethdb.Iteratee, first, last uint64) []*NumberHash {
 // ReadAllCanonicalHashes retrieves all canonical number and hash mappings at the
 // certain chain range. If the accumulated entries reaches the given threshold,
 // abort the iteration and return the semi-finish result.
+// 查询从from块开始到to块的块号和块哈希
+// 最多查询limit个
 func ReadAllCanonicalHashes(db ethdb.Iteratee, from uint64, to uint64, limit int) ([]uint64, []common.Hash) {
 	// Short circuit if the limit is 0.
 	if limit == 0 {
@@ -132,9 +145,11 @@ func ReadAllCanonicalHashes(db ethdb.Iteratee, from uint64, to uint64, limit int
 	defer it.Release()
 
 	for it.Next() {
+		// 一直循环到end位置
 		if bytes.Compare(it.Key(), end) >= 0 {
 			break
 		}
+		// +8是uint64,+1是后缀
 		if key := it.Key(); len(key) == len(headerPrefix)+8+1 && bytes.Equal(key[len(key)-1:], headerHashSuffix) {
 			numbers = append(numbers, binary.BigEndian.Uint64(key[len(headerPrefix):len(headerPrefix)+8]))
 			hashes = append(hashes, common.BytesToHash(it.Value()))
@@ -148,6 +163,7 @@ func ReadAllCanonicalHashes(db ethdb.Iteratee, from uint64, to uint64, limit int
 }
 
 // ReadHeaderNumber returns the header number assigned to a hash.
+// 块哈希->块号
 func ReadHeaderNumber(db ethdb.KeyValueReader, hash common.Hash) *uint64 {
 	data, _ := db.Get(headerNumberKey(hash))
 	if len(data) != 8 {
@@ -174,6 +190,7 @@ func DeleteHeaderNumber(db ethdb.KeyValueWriter, hash common.Hash) {
 }
 
 // ReadHeadHeaderHash retrieves the hash of the current canonical head header.
+// 读取最新的块的哈希
 func ReadHeadHeaderHash(db ethdb.KeyValueReader) common.Hash {
 	data, _ := db.Get(headHeaderKey)
 	if len(data) == 0 {
@@ -259,6 +276,7 @@ func ReadFastTrieProgress(db ethdb.KeyValueReader) uint64 {
 
 // WriteFastTrieProgress stores the fast sync trie process counter to support
 // retrieving it across restarts.
+// 写入当前fast模式下状态树同步的进度
 func WriteFastTrieProgress(db ethdb.KeyValueWriter, count uint64) {
 	if err := db.Put(fastTrieProgressKey, new(big.Int).SetUint64(count).Bytes()); err != nil {
 		log.Crit("Failed to store fast sync trie progress", "err", err)
@@ -303,11 +321,14 @@ func WriteFastTxLookupLimit(db ethdb.KeyValueWriter, number uint64) {
 }
 
 // ReadHeaderRLP retrieves a block header in its raw RLP database encoding.
+// 输入块哈希和块号获取区块头的原始信息
 func ReadHeaderRLP(db ethdb.Reader, hash common.Hash, number uint64) rlp.RawValue {
 	// First try to look up the data in ancient database. Extra hash
 	// comparison is necessary since ancient database only maintains
 	// the canonical data.
+	// 从冻结数据中读取
 	data, _ := db.Ancient(freezerHeaderTable, number)
+	// 计算以下哈希是否一致
 	if len(data) > 0 && crypto.Keccak256Hash(data) == hash {
 		return data
 	}
@@ -320,6 +341,8 @@ func ReadHeaderRLP(db ethdb.Reader, hash common.Hash, number uint64) rlp.RawValu
 	// So during the first check for ancient db, the data is not yet in there,
 	// but when we reach into leveldb, the data was already moved. That would
 	// result in a not found error.
+	// 有可能在查询leveldb的过程中这个区块的信息被移动到了冻结数据库
+	// 所以在结束的时候再查询一遍冻结数据库
 	data, _ = db.Ancient(freezerHeaderTable, number)
 	if len(data) > 0 && crypto.Keccak256Hash(data) == hash {
 		return data
@@ -328,6 +351,7 @@ func ReadHeaderRLP(db ethdb.Reader, hash common.Hash, number uint64) rlp.RawValu
 }
 
 // HasHeader verifies the existence of a block header corresponding to the hash.
+// 输入块号和块哈希,判断是否存在指定的块
 func HasHeader(db ethdb.Reader, hash common.Hash, number uint64) bool {
 	if has, err := db.Ancient(freezerHashTable, number); err == nil && common.BytesToHash(has) == hash {
 		return true
@@ -339,6 +363,7 @@ func HasHeader(db ethdb.Reader, hash common.Hash, number uint64) bool {
 }
 
 // ReadHeader retrieves the block header corresponding to the hash.
+// 输入块哈希和块号获取区块头对象
 func ReadHeader(db ethdb.Reader, hash common.Hash, number uint64) *types.Header {
 	data := ReadHeaderRLP(db, hash, number)
 	if len(data) == 0 {
@@ -354,7 +379,12 @@ func ReadHeader(db ethdb.Reader, hash common.Hash, number uint64) *types.Header 
 
 // WriteHeader stores a block header into the database and also stores the hash-
 // to-number mapping.
+// 将区块头对象写入数据库
+// 要操作数据库两次
+// 写入 hash -> number 映射
+// 写入 headerkey -> 区块头数据 映射
 func WriteHeader(db ethdb.KeyValueWriter, header *types.Header) {
+	// 得到区块哈希和区块号
 	var (
 		hash   = header.Hash()
 		number = header.Number.Uint64()
@@ -374,6 +404,9 @@ func WriteHeader(db ethdb.KeyValueWriter, header *types.Header) {
 }
 
 // DeleteHeader removes all block header data associated with a hash.
+// 一个区块头对应两条数据
+// hash -> number
+// headerkey -> data
 func DeleteHeader(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 	deleteHeaderWithoutNumber(db, hash, number)
 	if err := db.Delete(headerNumberKey(hash)); err != nil {
@@ -383,6 +416,7 @@ func DeleteHeader(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 
 // deleteHeaderWithoutNumber removes only the block header but does not remove
 // the hash to number mapping.
+// 删除区块头存储的 headerkey -> data 这条数据
 func deleteHeaderWithoutNumber(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 	if err := db.Delete(headerKey(number, hash)); err != nil {
 		log.Crit("Failed to delete header", "err", err)
@@ -390,6 +424,7 @@ func deleteHeaderWithoutNumber(db ethdb.KeyValueWriter, hash common.Hash, number
 }
 
 // ReadBodyRLP retrieves the block body (transactions and uncles) in RLP encoding.
+// 输入区块哈希和区块号获取区块体的原始数据
 func ReadBodyRLP(db ethdb.Reader, hash common.Hash, number uint64) rlp.RawValue {
 	// First try to look up the data in ancient database. Extra hash
 	// comparison is necessary since ancient database only maintains
@@ -422,6 +457,7 @@ func ReadBodyRLP(db ethdb.Reader, hash common.Hash, number uint64) rlp.RawValue 
 
 // ReadCanonicalBodyRLP retrieves the block body (transactions and uncles) for the canonical
 // block at number, in RLP encoding.
+// 输入区块号获取区块体的原始数据,不校验区块哈希
 func ReadCanonicalBodyRLP(db ethdb.Reader, number uint64) rlp.RawValue {
 	// If it's an ancient one, we don't need the canonical hash
 	data, _ := db.Ancient(freezerBodiesTable, number)
@@ -763,6 +799,7 @@ func ReadBlock(db ethdb.Reader, hash common.Hash, number uint64) *types.Block {
 }
 
 // WriteBlock serializes a block into the database, header and body separately.
+// 写入区块,包括写入区块体和区块头
 func WriteBlock(db ethdb.KeyValueWriter, block *types.Block) {
 	WriteBody(db, block.Hash(), block.NumberU64(), block.Body())
 	WriteHeader(db, block.Header())
@@ -826,6 +863,11 @@ func writeAncientBlock(op ethdb.AncientWriteOp, block *types.Block, header *type
 	return nil
 }
 
+// 一个区块在leveldb中保存了6条数据
+// DeleteBlock删除全部6条数据
+// DeleteBlockWithoutNumber删除5条数据,不删除 区块哈希->区块号 这一条
+//   该函数用在将区块信息移动到冻结数据库的时候,冻结数据库不容易查询 区块哈希->区块号
+
 // DeleteBlock removes all block data associated with a hash.
 func DeleteBlock(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 	DeleteReceipts(db, hash, number)
@@ -836,6 +878,7 @@ func DeleteBlock(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 
 // DeleteBlockWithoutNumber removes all block data associated with a hash, except
 // the hash to number mapping.
+// 删除一个区块哈希对应区块的所有数据,但是不删除 hash -> number 映射
 func DeleteBlockWithoutNumber(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 	DeleteReceipts(db, hash, number)
 	deleteHeaderWithoutNumber(db, hash, number)
@@ -855,12 +898,14 @@ type badBlock struct {
 type badBlockList []*badBlock
 
 func (s badBlockList) Len() int { return len(s) }
+// 判断s[i]的块号是否小于s[j]的块号
 func (s badBlockList) Less(i, j int) bool {
 	return s[i].Header.Number.Uint64() < s[j].Header.Number.Uint64()
 }
 func (s badBlockList) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
 // ReadBadBlock retrieves the bad block with the corresponding block hash.
+// 查询坏块中哈希相同的那一个
 func ReadBadBlock(db ethdb.Reader, hash common.Hash) *types.Block {
 	blob, err := db.Get(badBlockKey)
 	if err != nil {
@@ -880,6 +925,7 @@ func ReadBadBlock(db ethdb.Reader, hash common.Hash) *types.Block {
 
 // ReadAllBadBlocks retrieves all the bad blocks in the database.
 // All returned blocks are sorted in reverse order by number.
+// 读取到的坏块的块号是从大到小
 func ReadAllBadBlocks(db ethdb.Reader) []*types.Block {
 	blob, err := db.Get(badBlockKey)
 	if err != nil {
@@ -898,6 +944,7 @@ func ReadAllBadBlocks(db ethdb.Reader) []*types.Block {
 
 // WriteBadBlock serializes the bad block into the database. If the cumulated
 // bad blocks exceeds the limitation, the oldest will be dropped.
+// 写入坏块,超过上限的最旧的会被清除
 func WriteBadBlock(db ethdb.KeyValueStore, block *types.Block) {
 	blob, err := db.Get(badBlockKey)
 	if err != nil {
@@ -909,6 +956,7 @@ func WriteBadBlock(db ethdb.KeyValueStore, block *types.Block) {
 			log.Crit("Failed to decode old bad blocks", "error", err)
 		}
 	}
+	// 重复了不写
 	for _, b := range badBlocks {
 		if b.Header.Number.Uint64() == block.NumberU64() && b.Header.Hash() == block.Hash() {
 			log.Info("Skip duplicated bad block", "number", block.NumberU64(), "hash", block.Hash())
@@ -920,6 +968,7 @@ func WriteBadBlock(db ethdb.KeyValueStore, block *types.Block) {
 		Body:   block.Body(),
 	})
 	sort.Sort(sort.Reverse(badBlocks))
+	// 坏块的排序顺序是块号从大到小
 	if len(badBlocks) > badBlockToKeep {
 		badBlocks = badBlocks[:badBlockToKeep]
 	}
@@ -933,6 +982,7 @@ func WriteBadBlock(db ethdb.KeyValueStore, block *types.Block) {
 }
 
 // DeleteBadBlocks deletes all the bad blocks from the database
+// 删除所有坏块
 func DeleteBadBlocks(db ethdb.KeyValueWriter) {
 	if err := db.Delete(badBlockKey); err != nil {
 		log.Crit("Failed to delete bad blocks", "err", err)
@@ -940,7 +990,9 @@ func DeleteBadBlocks(db ethdb.KeyValueWriter) {
 }
 
 // FindCommonAncestor returns the last common ancestor of two block headers
+// 查询a,b两个块的最近的共同祖先
 func FindCommonAncestor(db ethdb.Reader, a, b *types.Header) *types.Header {
+	// 前两个循环让a,b处于同一个块号
 	for bn := b.Number.Uint64(); a.Number.Uint64() > bn; {
 		a = ReadHeader(db, a.ParentHash, a.Number.Uint64()-1)
 		if a == nil {
@@ -953,6 +1005,7 @@ func FindCommonAncestor(db ethdb.Reader, a, b *types.Header) *types.Header {
 			return nil
 		}
 	}
+	// a,b同步向前直到哈希相同
 	for a.Hash() != b.Hash() {
 		a = ReadHeader(db, a.ParentHash, a.Number.Uint64()-1)
 		if a == nil {
@@ -967,6 +1020,7 @@ func FindCommonAncestor(db ethdb.Reader, a, b *types.Header) *types.Header {
 }
 
 // ReadHeadHeader returns the current canonical head header.
+// 直接读取当前最新区块的区块头
 func ReadHeadHeader(db ethdb.Reader) *types.Header {
 	headHeaderHash := ReadHeadHeaderHash(db)
 	if headHeaderHash == (common.Hash{}) {
@@ -980,6 +1034,7 @@ func ReadHeadHeader(db ethdb.Reader) *types.Header {
 }
 
 // ReadHeadBlock returns the current canonical head block.
+// 直接读取当前最新区块
 func ReadHeadBlock(db ethdb.Reader) *types.Block {
 	headBlockHash := ReadHeadBlockHash(db)
 	if headBlockHash == (common.Hash{}) {

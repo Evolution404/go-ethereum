@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # Boot a ping-pong network simulation using the HTTP API started by ping-pong.go
+# 创建并启动十个节点,然后将node01与其他九个节点连接起来
 
 set -e
 

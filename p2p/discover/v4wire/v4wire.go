@@ -35,6 +35,7 @@ import (
 )
 
 // RPC packet types
+// 定义了六种包类型
 const (
 	PingPacket = iota + 1 // zero is 'reserved'
 	PongPacket
@@ -45,6 +46,7 @@ const (
 )
 
 // RPC request structures
+// 以下定义了六种包的具体数据结构
 type (
 	Ping struct {
 		Version    uint
@@ -61,7 +63,8 @@ type (
 		// This field should mirror the UDP envelope address
 		// of the ping packet, which provides a way to discover the
 		// the external address (after NAT).
-		To         Endpoint
+		To Endpoint
+		// 保存对应的ping包的哈希
 		ReplyTok   []byte // This contains the hash of the ping packet.
 		Expiration uint64 // Absolute timestamp at which the packet becomes invalid.
 		ENRSeq     uint64 `rlp:"optional"` // Sequence number of local record, added by EIP-868.
@@ -130,11 +133,14 @@ const MaxNeighbors = 12
 type Pubkey [64]byte
 
 // ID returns the node ID corresponding to the public key.
+// 将64字节公钥计算哈希得到节点ID
 func (e Pubkey) ID() enode.ID {
 	return enode.ID(crypto.Keccak256Hash(e[:]))
 }
 
 // Node represents information about a node.
+// 一个节点信息
+// 相比于Endpoint,增加了对方的公钥所以就成为了一个节点
 type Node struct {
 	IP  net.IP // len 4 for IPv4 or 16 for IPv6
 	UDP uint16 // for discovery protocol
@@ -143,6 +149,7 @@ type Node struct {
 }
 
 // Endpoint represents a network endpoint.
+// 一个网络端点,包括对方的ip,UDP端口,TCP端口
 type Endpoint struct {
 	IP  net.IP // len 4 for IPv4 or 16 for IPv6
 	UDP uint16 // for discovery protocol
@@ -160,6 +167,7 @@ func NewEndpoint(addr *net.UDPAddr, tcpPort uint16) Endpoint {
 	return Endpoint{IP: ip, UDP: uint16(addr.Port), TCP: tcpPort}
 }
 
+// v4版本的Packet对象
 type Packet interface {
 	// packet name and type for logging purposes.
 	Name() string
@@ -185,6 +193,8 @@ func (req *ENRResponse) Name() string { return "ENRRESPONSE/v4" }
 func (req *ENRResponse) Kind() byte   { return ENRResponsePacket }
 
 // Expired checks whether the given UNIX time stamp is in the past.
+// 判断输入的时间戳是不是早于现在的时间
+// 返回true也就是说明输入的时间过期了
 func Expired(ts uint64) bool {
 	return time.Unix(int64(ts), 0).Before(time.Now())
 }
@@ -192,8 +202,9 @@ func Expired(ts uint64) bool {
 // Encoder/decoder.
 
 const (
-	macSize  = 32
-	sigSize  = crypto.SignatureLength
+	macSize = 32
+	sigSize = crypto.SignatureLength
+	// 头部长度97字节,哈希32字节,签名65字节
 	headSize = macSize + sigSize // space of packet frame data
 )
 
@@ -206,21 +217,31 @@ var (
 var headSpace = make([]byte, headSize)
 
 // Decode reads a discovery v4 packet.
+// 数据包的结构
+// 32字节哈希 65字节签名 其余数据
+// 其余数据的第一个字节保存了包类型
+// 返回包对象,远程节点的公钥,包中签名和数据整体的哈希,错误
 func Decode(input []byte) (Packet, Pubkey, []byte, error) {
+	// 如果什么数据都没有那么数据包是数据头97字节,还有一字节类型
+	// 显然不能再短于这个了
 	if len(input) < headSize+1 {
 		return nil, Pubkey{}, nil, ErrPacketTooSmall
 	}
+	// 拆分哈希,签名,数据
 	hash, sig, sigdata := input[:macSize], input[macSize:headSize], input[headSize:]
+	// 对签名和数据重新计算哈希,校验数据包最开始的哈希是否正确
 	shouldhash := crypto.Keccak256(input[macSize:])
 	if !bytes.Equal(hash, shouldhash) {
 		return nil, Pubkey{}, nil, ErrBadHash
 	}
+	// 根据数据的哈希和签名恢复出来对方节点的公钥
 	fromKey, err := recoverNodeKey(crypto.Keccak256(input[headSize:]), sig)
 	if err != nil {
 		return nil, fromKey, hash, err
 	}
 
 	var req Packet
+	// 根据实际数据的第一个字节,创建包对象
 	switch ptype := sigdata[0]; ptype {
 	case PingPacket:
 		req = new(Ping)
@@ -237,42 +258,64 @@ func Decode(input []byte) (Packet, Pubkey, []byte, error) {
 	default:
 		return nil, fromKey, hash, fmt.Errorf("unknown type: %d", ptype)
 	}
+	// sigdata第一字节是包类型,不是rlp编码
 	s := rlp.NewStream(bytes.NewReader(sigdata[1:]), 0)
+	// 解码出实际的包
 	err = s.Decode(req)
 	return req, fromKey, hash, err
 }
 
 // Encode encodes a discovery packet.
+// 构造数据包的字节数组,返回的哈希是签名和数据的哈希,就是包字节数组的最开始部分
+// packet = packet-header || packet-data
+// packet-header = hash || signature || packet-type
+// hash = keccak256(signature || packet-type || packet-data)
+// signature = sign(packet-type || packet-data)
+// hash长度32字节,signature长度65字节
+// 1. 留空97字节,写入一字节类型
+// 2. 对数据包进行编码写入bytes.Buffer
+// 3. 对编码计算哈希然后签名填入前面留空的后65字节
+// 4. 对签名和编码计算哈希,填入最开始32字节
 func Encode(priv *ecdsa.PrivateKey, req Packet) (packet, hash []byte, err error) {
 	b := new(bytes.Buffer)
+	// 留空头部的97字节,哈希32,签名65
 	b.Write(headSpace)
+	// 写入一字节的包类型
 	b.WriteByte(req.Kind())
 	if err := rlp.Encode(b, req); err != nil {
 		return nil, nil, err
 	}
 	packet = b.Bytes()
+	// 计算签名,填充到[macSize,headSize]这一段
 	sig, err := crypto.Sign(crypto.Keccak256(packet[headSize:]), priv)
 	if err != nil {
 		return nil, nil, err
 	}
 	copy(packet[macSize:], sig)
 	// Add the hash to the front. Note: this doesn't protect the packet in any way.
+	// 计算签名和数据整体的哈希
 	hash = crypto.Keccak256(packet[macSize:])
+	// 填充到数据包最开始
 	copy(packet, hash)
 	return packet, hash, nil
 }
 
 // recoverNodeKey computes the public key used to sign the given hash from the signature.
+// 从签名和哈希恢复出来远程节点的公钥
+// 这里的哈希是数据包最后数据计算出来的哈希,不包括签名
 func recoverNodeKey(hash, sig []byte) (key Pubkey, err error) {
 	pubkey, err := crypto.Ecrecover(hash, sig)
 	if err != nil {
 		return key, err
 	}
+	// 恢复出来的公钥第一个字节是前缀04
+	// 这里不需要所以去掉
 	copy(key[:], pubkey[1:])
 	return key, nil
 }
 
 // EncodePubkey encodes a secp256k1 public key.
+// 编码公钥对象到64字节数组,去掉固定前缀04
 func EncodePubkey(key *ecdsa.PublicKey) Pubkey {
 	var e Pubkey
 	math.ReadBits(key.X, e[:len(e)/2])
@@ -281,6 +324,7 @@ func EncodePubkey(key *ecdsa.PublicKey) Pubkey {
 }
 
 // DecodePubkey reads an encoded secp256k1 public key.
+// 从65字节数组解码出来公钥对象
 func DecodePubkey(curve elliptic.Curve, e Pubkey) (*ecdsa.PublicKey, error) {
 	p := &ecdsa.PublicKey{Curve: curve, X: new(big.Int), Y: new(big.Int)}
 	half := len(e) / 2

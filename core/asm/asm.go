@@ -25,16 +25,22 @@ import (
 )
 
 // Iterator for disassembled EVM instructions
+// 指令迭代器对象
 type instructionIterator struct {
+	// 保存字节码
 	code    []byte
+	// 当前指令位置
 	pc      uint64
 	arg     []byte
 	op      vm.OpCode
 	error   error
+	// 标记是否是第一次调用Next函数
+	// 第一次调用pc保持是0不变
 	started bool
 }
 
 // Create a new instruction iterator.
+// 输入字节码(code),创建instructionIterator对象
 func NewInstructionIterator(code []byte) *instructionIterator {
 	it := new(instructionIterator)
 	it.code = code
@@ -42,7 +48,9 @@ func NewInstructionIterator(code []byte) *instructionIterator {
 }
 
 // Returns true if there is a next instruction and moves on.
+// 调用Next会将pc指向下一条指令,并且如果有参数的话arg字段会加载参数
 func (it *instructionIterator) Next() bool {
+	// 遇到了错误或者读取到底直接结束并返回false
 	if it.error != nil || uint64(len(it.code)) <= it.pc {
 		// We previously reached an error or the end.
 		return false
@@ -66,8 +74,10 @@ func (it *instructionIterator) Next() bool {
 
 	it.op = vm.OpCode(it.code[it.pc])
 	if it.op.IsPush() {
+		// 判断是PUSH几指令,a就是要压入的元素个数
 		a := uint64(it.op) - uint64(vm.PUSH1) + 1
 		u := it.pc + 1 + a
+		// 判断参数的量是否足够
 		if uint64(len(it.code)) <= it.pc || uint64(len(it.code)) < u {
 			it.error = fmt.Errorf("incomplete push instruction at %v", it.pc)
 			return false
@@ -100,6 +110,7 @@ func (it *instructionIterator) Arg() []byte {
 }
 
 // Pretty-print all disassembled EVM instructions to stdout.
+// 直接打印到stdout上
 func PrintDisassembled(code string) error {
 	script, err := hex.DecodeString(code)
 	if err != nil {
@@ -118,10 +129,12 @@ func PrintDisassembled(code string) error {
 }
 
 // Return all disassembled EVM instructions in human-readable format.
+// 返回字符串
 func Disassemble(script []byte) ([]string, error) {
 	instrs := make([]string, 0)
 
 	it := NewInstructionIterator(script)
+	// 遍历每一条指令,如果有参数的话就把参数也打印上
 	for it.Next() {
 		if it.Arg() != nil && 0 < len(it.Arg()) {
 			instrs = append(instrs, fmt.Sprintf("%05x: %v 0x%x\n", it.PC(), it.Op(), it.Arg()))

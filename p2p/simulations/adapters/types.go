@@ -43,6 +43,10 @@ import (
 // * ExecNode   - A child process node
 // * DockerNode - A Docker container node
 //
+// Node代表在仿真网络中由NodeAdapter创建的节点对象
+// 该接口由SimNode和ExecNode实现
+// SimNode 内存中的节点
+// ExecNode 使用子进程的节点
 type Node interface {
 	// Addr returns the node's address (e.g. an Enode URL)
 	Addr() []byte
@@ -68,6 +72,8 @@ type Node interface {
 }
 
 // NodeAdapter is used to create Nodes in a simulation network
+// NodeAdapter用来在仿真网络中创建节点
+// 有SimAdapter和ExecAdapter
 type NodeAdapter interface {
 	// Name returns the name of the adapter for logging purposes
 	Name() string
@@ -78,6 +84,7 @@ type NodeAdapter interface {
 
 // NodeConfig is the configuration used to start a node in a simulation
 // network
+// 仿真网络中节点的配置选项,在NodeAdapter.NewNode函数中需要传入NodeConfig对象
 type NodeConfig struct {
 	// ID is the node's ID which is used to identify the node in the
 	// simulation network
@@ -85,6 +92,7 @@ type NodeConfig struct {
 
 	// PrivateKey is the node's private key which is used by the devp2p
 	// stack to encrypt communications
+	// 必须指定私钥
 	PrivateKey *ecdsa.PrivateKey
 
 	// Enable peer events for Msgs
@@ -100,6 +108,7 @@ type NodeConfig struct {
 	// starting the node (for SimNodes it should be the names of service lifecycles
 	// contained in SimAdapter.lifecycles, for other nodes it should be
 	// service lifecycles registered by calling the RegisterLifecycle function)
+	// 必须指定至少一个服务名称
 	Lifecycles []string
 
 	// Properties are the names of the properties this node should hold
@@ -114,6 +123,7 @@ type NodeConfig struct {
 	node *enode.Node
 
 	// ENR Record with entries to overwrite
+	// 这里记录的信息优先级低,如果设置了Port会,记录中的端口也会更新
 	Record enr.Record
 
 	// function to sanction or prevent suggesting a peer
@@ -135,6 +145,7 @@ type NodeConfig struct {
 
 // nodeConfigJSON is used to encode and decode NodeConfig as JSON by encoding
 // all fields as strings
+// 将各种字段转化为字符串类型,用于Config对象与jSON格式之间的转换
 type nodeConfigJSON struct {
 	ID              string   `json:"id"`
 	PrivateKey      string   `json:"private_key"`
@@ -149,8 +160,10 @@ type nodeConfigJSON struct {
 
 // MarshalJSON implements the json.Marshaler interface by encoding the config
 // fields as strings
+// 将NodeConfig对象编码为json字符串
 func (n *NodeConfig) MarshalJSON() ([]byte, error) {
 	confJSON := nodeConfigJSON{
+		// id是以hex字符串的格式保存
 		ID:              n.ID.String(),
 		Name:            n.Name,
 		Lifecycles:      n.Lifecycles,
@@ -160,6 +173,7 @@ func (n *NodeConfig) MarshalJSON() ([]byte, error) {
 		LogFile:         n.LogFile,
 		LogVerbosity:    int(n.LogVerbosity),
 	}
+	// 私钥也是以hex字符串保存
 	if n.PrivateKey != nil {
 		confJSON.PrivateKey = hex.EncodeToString(crypto.FromECDSA(n.PrivateKey))
 	}
@@ -168,12 +182,14 @@ func (n *NodeConfig) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements the json.Unmarshaler interface by decoding the json
 // string values into the config fields
+// 将json字符串转化为NodeConfig对象
 func (n *NodeConfig) UnmarshalJSON(data []byte) error {
 	var confJSON nodeConfigJSON
 	if err := json.Unmarshal(data, &confJSON); err != nil {
 		return err
 	}
 
+	// ID和PrivateKey需要特殊处理,其他的字段直接赋值
 	if confJSON.ID != "" {
 		if err := n.ID.UnmarshalText([]byte(confJSON.ID)); err != nil {
 			return err
@@ -210,6 +226,7 @@ func (n *NodeConfig) Node() *enode.Node {
 
 // RandomNodeConfig returns node configuration with a randomly generated ID and
 // PrivateKey
+// 构造一个NodeConfig对象,随机生成节点的ID和私钥
 func RandomNodeConfig() *NodeConfig {
 	prvkey, err := crypto.GenerateKey()
 	if err != nil {
@@ -221,17 +238,21 @@ func RandomNodeConfig() *NodeConfig {
 		panic("unable to assign tcp port")
 	}
 
+	// 通过随机生成的私钥对应的公钥计算出ID
 	enodId := enode.PubkeyToIDV4(&prvkey.PublicKey)
+	// 生成NodeConfig对象
 	return &NodeConfig{
 		PrivateKey:      prvkey,
 		ID:              enodId,
 		Name:            fmt.Sprintf("node_%s", enodId.String()),
 		Port:            port,
 		EnableMsgEvents: true,
+		// 默认日志等级是INFO
 		LogVerbosity:    log.LvlInfo,
 	}
 }
 
+// 获取一个空闲的端口
 func assignTCPPort() (uint16, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -268,13 +289,16 @@ type RPCDialer interface {
 // LifecycleConstructor allows a Lifecycle to be constructed during node start-up.
 // While the service-specific package usually takes care of Lifecycle creation and registration,
 // for testing purposes, it is useful to be able to construct a Lifecycle on spot.
+// LifecycleConstructor在节点启动的时候用来构造Lifecycle对象
 type LifecycleConstructor func(ctx *ServiceContext, stack *node.Node) (node.Lifecycle, error)
 
 // LifecycleConstructors stores LifecycleConstructor functions to call during node start-up.
+// 使用一个map封装多个服务的构造方法, string->LifecycleConstructor代表服务的名称->该服务的构造函数
 type LifecycleConstructors map[string]LifecycleConstructor
 
 // lifecycleConstructorFuncs is a map of registered services which are used to boot devp2p
 // nodes
+// 保存Exec或者Docker类型的节点注册的服务,该变量在RegisterLifecycles函数中设置
 var lifecycleConstructorFuncs = make(LifecycleConstructors)
 
 // RegisterLifecycles registers the given Services which can then be used to
@@ -282,6 +306,8 @@ var lifecycleConstructorFuncs = make(LifecycleConstructors)
 //
 // It should be called in an init function so that it has the opportunity to
 // execute the services before main() is called.
+// 为Exec或者Docker类型注册多个服务,这里注册的服务不对Sim类型生效
+// Sim类型注册服务在创建适配器的时候进行,adapters.NewSimAdapter(services)
 func RegisterLifecycles(lifecycles LifecycleConstructors) {
 	for name, f := range lifecycles {
 		if _, exists := lifecycleConstructorFuncs[name]; exists {
@@ -300,7 +326,9 @@ func RegisterLifecycles(lifecycles LifecycleConstructors) {
 
 // adds the host part to the configuration's ENR, signs it
 // creates and  the corresponding enode object to the configuration
+// 根据输入的ip和端口,初始化NodeConfig.Record和NodeConfig.node字段
 func (n *NodeConfig) initEnode(ip net.IP, tcpport int, udpport int) error {
+	// 先设置n.Record,然后根据Record对象生成enode.Node对象
 	enrIp := enr.IP(ip)
 	n.Record.Set(&enrIp)
 	enrTcpPort := enr.TCP(tcpport)
@@ -308,10 +336,12 @@ func (n *NodeConfig) initEnode(ip net.IP, tcpport int, udpport int) error {
 	enrUdpPort := enr.UDP(udpport)
 	n.Record.Set(&enrUdpPort)
 
+	// 修改了Record后需要重新签名
 	err := enode.SignV4(&n.Record, n.PrivateKey)
 	if err != nil {
 		return fmt.Errorf("unable to generate ENR: %v", err)
 	}
+	// 生成enode.Node对象
 	nod, err := enode.New(enode.V4ID{}, &n.Record)
 	if err != nil {
 		return fmt.Errorf("unable to create enode: %v", err)
@@ -321,6 +351,7 @@ func (n *NodeConfig) initEnode(ip net.IP, tcpport int, udpport int) error {
 	return nil
 }
 
+// 使用127.0.0.1和已经设置的端口初始化NodeConfig.Record和NodeConfig.node字段
 func (n *NodeConfig) initDummyEnode() error {
 	return n.initEnode(net.IPv4(127, 0, 0, 1), int(n.Port), 0)
 }

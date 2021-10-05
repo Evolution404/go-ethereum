@@ -20,14 +20,19 @@ import (
 	"net"
 )
 
+// 实现了两个Pipe方法,Pipe方法用来创建一对net.Conn对象,两者之间能够进行通信
+
 // NetPipe wraps net.Pipe in a signature returning an error
+// 创建一对直接在内存中通信的Conn对象
 func NetPipe() (net.Conn, net.Conn, error) {
 	p1, p2 := net.Pipe()
 	return p1, p2, nil
 }
 
 // TCPPipe creates an in process full duplex pipe based on a localhost TCP socket
+// 创建一对通过本地TCP socket进行通信的Conn对象
 func TCPPipe() (net.Conn, net.Conn, error) {
+	// 这里端口使用0,说明是随机选取一个端口
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, nil, err

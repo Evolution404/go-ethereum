@@ -36,8 +36,11 @@ var (
 // to be used for batched filtering.
 // 用来聚合一组布隆过滤器,可以快速查询这一组过滤器的指定位的结果
 type Generator struct {
+	// 保存了sections个布隆过滤器
+	// blooms[x]保存了这sections个布隆过滤器的第x位的值
 	blooms   [types.BloomBitLength][]byte // Rotated blooms for per-bit matching
 	sections uint                         // Number of sections to batch together
+	// 保存的section的个数,必须保证nextSec<=sections
 	nextSec  uint                         // Next section to set when adding a bloom
 }
 
@@ -50,6 +53,8 @@ func NewGenerator(sections uint) (*Generator, error) {
 	}
 	b := &Generator{sections: sections}
 	for i := 0; i < types.BloomBitLength; i++ {
+		// sections个布隆过滤器总共需要 2048*sections bit
+		// 这里除以8,正好保存所有布隆过滤器
 		b.blooms[i] = make([]byte, sections/8)
 	}
 	return b, nil
@@ -82,7 +87,7 @@ func (b *Generator) AddBloom(index uint, bloom types.Bloom) error {
 		}
 		// base代表截止前一轮已经写入了多少位,代表本轮要从第几位开始
 		base := 8 * byt
-		// 修改各个位
+		// 设置8个比特位
 		b.blooms[base+7][byteIndex] |= ((bloomByte >> 7) & 1) << bitIndex
 		b.blooms[base+6][byteIndex] |= ((bloomByte >> 6) & 1) << bitIndex
 		b.blooms[base+5][byteIndex] |= ((bloomByte >> 5) & 1) << bitIndex
@@ -100,6 +105,7 @@ func (b *Generator) AddBloom(index uint, bloom types.Bloom) error {
 // Bitset returns the bit vector belonging to the given bit index after all
 // blooms have been added.
 // 查询前必须将生成器填充满,要查询的比特位一定是[0,2047]
+// 返回结果第i位就代表第i个布隆过滤器第idx位的结果
 func (b *Generator) Bitset(idx uint) ([]byte, error) {
 	// 容量必须是满的
 	if b.nextSec != b.sections {

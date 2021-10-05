@@ -51,6 +51,7 @@ func init() {
 
 // ExecAdapter is a NodeAdapter which runs simulation nodes by executing the current binary
 // as a child process.
+// 实现了NodeAdapter接口,需要实现Name和NewNode方法
 type ExecAdapter struct {
 	// BaseDir is the directory under which the data directories for each
 	// simulation node are created.
@@ -133,6 +134,7 @@ func (e *ExecAdapter) NewNode(config *NodeConfig) (Node, error) {
 
 // ExecNode starts a simulation node by exec'ing the current binary and
 // running the configured services
+// 由ExecAdapter.NewNode创建的节点就是ExecNode对象
 type ExecNode struct {
 	ID     enode.ID
 	Dir    string
@@ -366,6 +368,8 @@ func (n *ExecNode) Snapshots() (map[string][]byte, error) {
 
 // execNodeConfig is used to serialize the node configuration so it can be
 // passed to the child process as a JSON encoded environment variable
+// execNodeConfig是Exec类型的节点使用的配置类型
+// 可以被转化成json字符串,所以可以通过环境变量的方式传递给子进程
 type execNodeConfig struct {
 	Stack     node.Config       `json:"stack"`
 	Node      *NodeConfig       `json:"node"`
@@ -531,6 +535,7 @@ type SnapshotAPI struct {
 func (api SnapshotAPI) Snapshot() (map[string][]byte, error) {
 	snapshots := make(map[string][]byte)
 	for name, service := range api.services {
+		// 判断这个Lifecycle对象是否实现了Snapshot方法,如果实现了就调用这个方法
 		if s, ok := service.(interface {
 			Snapshot() ([]byte, error)
 		}); ok {

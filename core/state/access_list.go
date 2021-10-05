@@ -33,6 +33,9 @@ func (al *accessList) ContainsAddress(address common.Address) bool {
 
 // Contains checks if a slot within an account is present in the access list, returning
 // separate flags for the presence of the account and the slot respectively.
+// 对于accessList首先将address加入并初始化idx为-1
+// 第二步加入slot,修改address的idx为slot在slots中的下标
+// 判断给定的address和slot在accessList是否存在
 func (al *accessList) Contains(address common.Address, slot common.Hash) (addressPresent bool, slotPresent bool) {
 	idx, ok := al.addresses[address]
 	if !ok {
@@ -55,8 +58,10 @@ func newAccessList() *accessList {
 }
 
 // Copy creates an independent copy of an accessList.
+// 复制一个新的accessList
 func (a *accessList) Copy() *accessList {
 	cp := newAccessList()
+	// 复制addresses
 	for k, v := range a.addresses {
 		cp.addresses[k] = v
 	}
@@ -73,6 +78,8 @@ func (a *accessList) Copy() *accessList {
 
 // AddAddress adds an address to the access list, and returns 'true' if the operation
 // caused a change (addr was not previously in the list).
+// 将地址写入accessList,idx设置为-1
+// 如果之前已经存在返回false,否则返回true
 func (al *accessList) AddAddress(address common.Address) bool {
 	if _, present := al.addresses[address]; present {
 		return false
@@ -86,8 +93,10 @@ func (al *accessList) AddAddress(address common.Address) bool {
 // - address added
 // - slot added
 // For any 'true' value returned, a corresponding journal entry must be made.
+// 对指定地址添加一个slot
 func (al *accessList) AddSlot(address common.Address, slot common.Hash) (addrChange bool, slotChange bool) {
 	idx, addrPresent := al.addresses[address]
+	// address还没有写入或者写入了还没有设置idx
 	if !addrPresent || idx == -1 {
 		// Address not present, or addr present but no slots there
 		al.addresses[address] = len(al.slots)
@@ -97,12 +106,14 @@ func (al *accessList) AddSlot(address common.Address, slot common.Hash) (addrCha
 	}
 	// There is already an (address,slot) mapping
 	slotmap := al.slots[idx]
+	// slotmap还没有保存输入的slot,那么slot是被修改了
 	if _, ok := slotmap[slot]; !ok {
 		slotmap[slot] = struct{}{}
 		// Journal add slot change
 		return false, true
 	}
 	// No changes required
+	// slotmap保存了输入的slot,什么都没改
 	return false, false
 }
 

@@ -31,6 +31,7 @@ import (
 
 const (
 	// Number of codehash->size associations to keep.
+	// 缓存多少条 codehash->size 映射
 	codeSizeCacheSize = 100000
 
 	// Cache size granted for caching clean code.
@@ -38,6 +39,7 @@ const (
 )
 
 // Database wraps access to tries and contract code.
+// 用来访问梅克尔树和合约代码
 type Database interface {
 	// OpenTrie opens the main account trie.
 	OpenTrie(root common.Hash) (Trie, error)
@@ -59,6 +61,7 @@ type Database interface {
 }
 
 // Trie is a Ethereum Merkle Patricia trie.
+// 梅克尔帕特里夏树的接口
 type Trie interface {
 	// GetKey returns the sha3 preimage of a hashed key that was previously used
 	// to store a value.
@@ -127,7 +130,10 @@ func NewDatabaseWithConfig(db ethdb.Database, config *trie.Config) Database {
 
 type cachingDB struct {
 	db            *trie.Database
+	// 缓存代码大小
+	// 通过代码的哈希得到代码的大小
 	codeSizeCache *lru.Cache
+	// 缓存代码
 	codeCache     *fastcache.Cache
 }
 

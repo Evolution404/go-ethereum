@@ -80,6 +80,8 @@ func (s *scheduler) run(sections chan uint64, dist chan *request, done chan []by
 	pend := make(chan uint64, cap(dist))
 
 	// Start the pipeline schedulers to forward between user -> distributor -> user
+	// 增加等待两个协程
+	// 以下两个方法内部都将调用wg.Done()
 	wg.Add(2)
 	go s.scheduleRequests(sections, dist, pend, quit, wg)
 	go s.scheduleDeliveries(pend, done, quit, wg)
@@ -132,6 +134,7 @@ func (s *scheduler) scheduleRequests(reqs chan uint64, dist chan *request, pend 
 			s.lock.Lock()
 			// 第一次查询这个区块段，构造reponse对象等待服务端返回
 			if s.responses[section] == nil {
+				// 第一次查询,在scheduler里面初始化一个response
 				s.responses[section] = &response{
 					done: make(chan struct{}),
 				}

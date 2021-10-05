@@ -20,6 +20,9 @@ import "fmt"
 
 // SyncMode represents the synchronisation mode of the downloader.
 // It is a uint32 as it is used with atomic operations.
+// SyncMode表示四种节点同步方式
+// SyncMode其实就是一个uint32
+// 实现了Stringer,TextMarshaler和TextUnmarshaler接口
 type SyncMode uint32
 
 const (
@@ -34,6 +37,7 @@ func (mode SyncMode) IsValid() bool {
 }
 
 // String implements the stringer interface.
+// 便于打印
 func (mode SyncMode) String() string {
 	switch mode {
 	case FullSync:
@@ -49,6 +53,7 @@ func (mode SyncMode) String() string {
 	}
 }
 
+// 将SyncMode编码成字节数组
 func (mode SyncMode) MarshalText() ([]byte, error) {
 	switch mode {
 	case FullSync:
@@ -64,6 +69,7 @@ func (mode SyncMode) MarshalText() ([]byte, error) {
 	}
 }
 
+// 根据字节数组转换成SyncMode类型
 func (mode *SyncMode) UnmarshalText(text []byte) error {
 	switch string(text) {
 	case "full":

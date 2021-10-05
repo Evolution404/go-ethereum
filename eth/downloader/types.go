@@ -23,9 +23,12 @@ import (
 )
 
 // peerDropFn is a callback type for dropping a peer detected as malicious.
+// 检测到恶意节点后的回调函数
 type peerDropFn func(id string)
 
 // dataPack is a data message returned by a peer for some query.
+// 节点返回的查询结果接口
+// 有headerPack,bodyPack,receiptPack,statePack
 type dataPack interface {
 	PeerId() string
 	Items() int
@@ -33,6 +36,7 @@ type dataPack interface {
 }
 
 // headerPack is a batch of block headers returned by a peer.
+// 保存查询到的区块头列表
 type headerPack struct {
 	peerID  string
 	headers []*types.Header
@@ -43,6 +47,7 @@ func (p *headerPack) Items() int     { return len(p.headers) }
 func (p *headerPack) Stats() string  { return fmt.Sprintf("%d", len(p.headers)) }
 
 // bodyPack is a batch of block bodies returned by a peer.
+// 保存了每个区块对应的交易列表和叔块列表
 type bodyPack struct {
 	peerID       string
 	transactions [][]*types.Transaction
@@ -50,15 +55,18 @@ type bodyPack struct {
 }
 
 func (p *bodyPack) PeerId() string { return p.peerID }
+// 返回交易或者叔块较少的
 func (p *bodyPack) Items() int {
 	if len(p.transactions) <= len(p.uncles) {
 		return len(p.transactions)
 	}
 	return len(p.uncles)
 }
+// x:x,交易数和叔块数
 func (p *bodyPack) Stats() string { return fmt.Sprintf("%d:%d", len(p.transactions), len(p.uncles)) }
 
 // receiptPack is a batch of receipts returned by a peer.
+// 每个区块代表的收据
 type receiptPack struct {
 	peerID   string
 	receipts [][]*types.Receipt

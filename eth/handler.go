@@ -55,21 +55,28 @@ var (
 type txPool interface {
 	// Has returns an indicator whether txpool has a transaction
 	// cached with the given hash.
+	// 判断交易池是否包含这笔交易
 	Has(hash common.Hash) bool
 
 	// Get retrieves the transaction from local txpool with given
 	// tx hash.
+	// 从本地交易池中获取一笔交易
 	Get(hash common.Hash) *types.Transaction
 
 	// AddRemotes should add the given transactions to the pool.
+	// 将给定的一组交易加入到交易池中
 	AddRemotes([]*types.Transaction) []error
 
 	// Pending should return pending transactions.
 	// The slice should be modifiable by the caller.
+	// 返回交易池中所有交易
 	Pending(enforceTips bool) (map[common.Address]types.Transactions, error)
 
 	// SubscribeNewTxsEvent should return an event subscription of
 	// NewTxsEvent and send events to the given channel.
+	// 订阅新交易入池事件
+	// 一旦有一批新的交易加入交易池,就会通过输入的管道通知
+	// 输入的是一个只写管道
 	SubscribeNewTxsEvent(chan<- core.NewTxsEvent) event.Subscription
 }
 

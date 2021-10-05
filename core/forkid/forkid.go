@@ -15,6 +15,9 @@
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
 // Package forkid implements EIP-2124 (https://eips.ethereum.org/EIPS/eip-2124).
+// NewID     获取当前链的ID对象
+// NewFilter 获取一个过滤器
+//   给返回的过滤器输入远程节点的ID对象,如果有err!=nil说明两个节点不匹配
 package forkid
 
 import (
@@ -36,11 +39,13 @@ var (
 	// ErrRemoteStale is returned by the validator if a remote fork checksum is a
 	// subset of our already applied forks, but the announced next fork block is
 	// not on our already passed chain.
+	// 远程节点是之前的版本返回这个错误
 	ErrRemoteStale = errors.New("remote needs update")
 
 	// ErrLocalIncompatibleOrStale is returned by the validator if a remote fork
 	// checksum does not match any local checksum variation, signalling that the
 	// two chains have diverged in the past at some point (possibly at genesis).
+	// 和远程节点的校验和不匹配,而且校验和也不在之前版本中
 	ErrLocalIncompatibleOrStale = errors.New("local incompatible or needs update")
 )
 
@@ -133,6 +138,8 @@ func NewStaticFilter(config *params.ChainConfig, genesis common.Hash) Filter {
 // 输入区块链配置、创世区块哈希和一个获取区块高度的回调函数来生成过滤器
 func newFilter(config *params.ChainConfig, genesis common.Hash, headfn func() uint64) Filter {
 	// Calculate the all the valid fork hash and fork next combos
+	// sums保存了所有分叉历史的校验和
+	// sums[0]保存创世区块的校验和,之后每次分叉增加一项
 	var (
 		forks = gatherForks(config)
 		// 保存从创世区块开始，经过各次分叉后的FORK_HASH
@@ -189,6 +196,7 @@ func newFilter(config *params.ChainConfig, genesis common.Hash, headfn func() ui
 				// locally without the local node being aware of it (rule #1a).
 				// 本地已经越过了远程节点的FORK_NEXT，这时候要报错
 				if id.Next > 0 && head >= id.Next {
+					// 本地版本过期了
 					return ErrLocalIncompatibleOrStale
 				}
 				// Haven't passed locally a remote-only fork, accept the connection (rule #1b).
@@ -205,6 +213,7 @@ func newFilter(config *params.ChainConfig, genesis common.Hash, headfn func() ui
 					if forks[j] != id.Next {
 						return ErrRemoteStale
 					}
+					// 远程节点知道下一个分叉的位置,说明远程节点区块没有同步到下一个分叉
 					return nil
 				}
 			}

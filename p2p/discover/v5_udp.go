@@ -43,6 +43,7 @@ const (
 	totalNodesResponseLimit = 5  // applies in waitForNodes
 	nodesResponseItemLimit  = 3  // applies in sendNodes
 
+	// 一个请求超时的时间是700毫秒
 	respTimeoutV5 = 700 * time.Millisecond
 )
 
@@ -77,16 +78,24 @@ type UDPv5 struct {
 	trhandlers map[string]TalkRequestHandler
 
 	// channels into dispatch
+	// 接收到的数据包通过dispatchReadPacket发送到这个管道
+	// 然后在dispatch函数中接收处理
 	packetInCh    chan ReadPacket
+	// 控制readLoop中读取数据包的速度,处理完成上一个后才能接收下一个数据包
 	readNextCh    chan struct{}
+	// call函数向这里发送请求,dispatch中接收处理请求
 	callCh        chan *callV5
 	callDoneCh    chan *callV5
+	// 发送请求后开始计时,如果一个请求超时这个管道接收到超时的请求
 	respTimeoutCh chan *callTimeout
 
 	// state of dispatch
 	codec            codecV5
+	// 保存针对某个节点正在进行的请求,没有正在进行的请求才能让callQueue中的请求开始执行
 	activeCallByNode map[enode.ID]*callV5
+	// 保存针对某个Nonce正在进行的请求,用于识别WHOAREYOU包
 	activeCallByAuth map[v5wire.Nonce]*callV5
+	// 保存针对某个节点需要进行的所有请求
 	callQueue        map[enode.ID][]*callV5
 
 	// shutdown stuff
@@ -103,19 +112,23 @@ type TalkRequestHandler func(enode.ID, *net.UDPAddr, []byte) []byte
 type callV5 struct {
 	node         *enode.Node
 	packet       v5wire.Packet
+	// 期望返回的数据包类型
 	responseType byte // expected packet type of response
 	reqid        []byte
+	// 远程节点回复的数据包发送到这里
 	ch           chan v5wire.Packet // responses sent here
 	err          chan error         // errors sent here
 
 	// Valid for active calls only:
 	nonce          v5wire.Nonce      // nonce of request packet
+	// 记录这个请求引发的握手次数,也就是收到了多少个nonce一致的WHOAREYOU包 
 	handshakeCount int               // # times we attempted handshake for this call
 	challenge      *v5wire.Whoareyou // last sent handshake challenge
 	timeout        mclock.Timer
 }
 
 // callTimeout is the response timeout event of a call.
+// 一个请求超时后封装成callTimeout发送到respTimeoutCh管道
 type callTimeout struct {
 	c     *callV5
 	timer mclock.Timer
@@ -129,6 +142,7 @@ func ListenV5(conn UDPConn, ln *enode.LocalNode, cfg Config) (*UDPv5, error) {
 	}
 	go t.tab.loop()
 	t.wg.Add(2)
+	// 启动读取和处理数据包的两个协程
 	go t.readLoop()
 	go t.dispatch()
 	return t, nil
@@ -164,6 +178,7 @@ func newUDPv5(conn UDPConn, ln *enode.LocalNode, cfg Config) (*UDPv5, error) {
 		closeCtx:       closeCtx,
 		cancelCloseCtx: cancelCloseCtx,
 	}
+	// 配置中的Bootnodes直接传入Table中
 	tab, err := newTable(t, t.db, cfg.Bootnodes, cfg.Log)
 	if err != nil {
 		return nil, err
@@ -335,11 +350,14 @@ func lookupDistances(target, dest enode.ID) (dists []uint) {
 
 // ping calls PING on a node and waits for a PONG response.
 func (t *UDPv5) ping(n *enode.Node) (uint64, error) {
+	// 构造数据包
 	req := &v5wire.Ping{ENRSeq: t.localNode.Node().Seq()}
+	// 向远程节点发送ping包,期望返回pong包
 	resp := t.call(n, v5wire.PongMsg, req)
 	defer t.callDone(resp)
 
 	select {
+	// 等待远程节点回复的pong包
 	case pong := <-resp.ch:
 		return pong.(*v5wire.Pong).ENRSeq, nil
 	case err := <-resp.err:
@@ -434,6 +452,8 @@ func containsUint(x uint, xs []uint) bool {
 
 // call sends the given call and sets up a handler for response packets (of message type
 // responseType). Responses are dispatched to the call's response channel.
+// 向远程节点node发送数据包packet,期望远程节点发挥responseType类型的数据包
+// call构造callV5对象,并将请求加入到callQueue请求队列中
 func (t *UDPv5) call(node *enode.Node, responseType byte, packet v5wire.Packet) *callV5 {
 	c := &callV5{
 		node:         node,
@@ -444,9 +464,12 @@ func (t *UDPv5) call(node *enode.Node, responseType byte, packet v5wire.Packet) 
 		err:          make(chan error, 1),
 	}
 	// Assign request ID.
+	// 生成随机数填充reqid
 	crand.Read(c.reqid)
+	// 给数据包也设置reqid
 	packet.SetRequestID(c.reqid)
 	// Send call to dispatch.
+	// 将请求发送到dispatch中处理
 	select {
 	case t.callCh <- c:
 	case <-t.closeCtx.Done():
@@ -456,6 +479,7 @@ func (t *UDPv5) call(node *enode.Node, responseType byte, packet v5wire.Packet) 
 }
 
 // callDone tells dispatch that the active call is done.
+// 通知dispatch一个调用完成
 func (t *UDPv5) callDone(c *callV5) {
 	// This needs a loop because further responses may be incoming until the
 	// send to callDoneCh has completed. Such responses need to be discarded
@@ -489,17 +513,22 @@ func (t *UDPv5) dispatch() {
 	defer t.wg.Done()
 
 	// Arm first read.
+	// 允许读取第一个数据包
 	t.readNextCh <- struct{}{}
 
 	for {
 		select {
+		// 接收call函数发送来的请求
 		case c := <-t.callCh:
 			id := c.node.ID()
 			t.callQueue[id] = append(t.callQueue[id], c)
+			// 接收到一个新请求,尝试执行一个请求
 			t.sendNextCall(id)
 
 		case ct := <-t.respTimeoutCh:
 			active := t.activeCallByNode[ct.c.node.ID()]
+			// 通知超时错误
+			// 这里的判断是为了确定还没收到回复,避免又进行了一次请求
 			if ct.c == active && ct.timer == active.timeout {
 				ct.c.err <- errTimeout
 			}
@@ -513,11 +542,14 @@ func (t *UDPv5) dispatch() {
 			c.timeout.Stop()
 			delete(t.activeCallByAuth, c.nonce)
 			delete(t.activeCallByNode, id)
+			// 执行完成一个请求,尝试执行下一个请求
 			t.sendNextCall(id)
 
+		// 处理接收到的数据包
 		case p := <-t.packetInCh:
 			t.handlePacket(p.Data, p.Addr)
 			// Arm next read.
+			// 当前数据包处理完成,允许读取下一个数据包
 			t.readNextCh <- struct{}{}
 
 		case <-t.closeCtx.Done():
@@ -550,6 +582,7 @@ func (t *UDPv5) startResponseTimeout(c *callV5) {
 	timer = t.clock.AfterFunc(respTimeoutV5, func() {
 		<-done
 		select {
+		// 如果超时了通知respTimeoutCh管道
 		case t.respTimeoutCh <- &callTimeout{c, timer}:
 		case <-t.closeCtx.Done():
 		}
@@ -559,13 +592,17 @@ func (t *UDPv5) startResponseTimeout(c *callV5) {
 }
 
 // sendNextCall sends the next call in the call queue if there is no active call.
+// 如果针对这个节点没有正在进行的请求,就取出请求队列中的一个请求执行
 func (t *UDPv5) sendNextCall(id enode.ID) {
 	queue := t.callQueue[id]
+	// 如果当前队列中没有请求,或者对这个节点有正在进行的请求,不发送新的请求
 	if len(queue) == 0 || t.activeCallByNode[id] != nil {
 		return
 	}
+	// 取出队列中第一个请求执行
 	t.activeCallByNode[id] = queue[0]
 	t.sendCall(t.activeCallByNode[id])
+	// 将这个请求从队列中删除
 	if len(queue) == 1 {
 		delete(t.callQueue, id)
 	} else {
@@ -576,6 +613,7 @@ func (t *UDPv5) sendNextCall(id enode.ID) {
 
 // sendCall encodes and sends a request packet to the call's recipient node.
 // This performs a handshake if needed.
+// 向远程节点实际发送请求,数据包的Nonce在真实发送的时候才确定
 func (t *UDPv5) sendCall(c *callV5) {
 	// The call might have a nonce from a previous handshake attempt. Remove the entry for
 	// the old nonce because we're about to generate a new nonce for this call.
@@ -584,9 +622,12 @@ func (t *UDPv5) sendCall(c *callV5) {
 	}
 
 	addr := &net.UDPAddr{IP: c.node.IP(), Port: c.node.UDP()}
+	// 调用send才确定了数据包的Nonce
 	newNonce, _ := t.send(c.node.ID(), addr, c.packet, c.challenge)
 	c.nonce = newNonce
+	// 根据Nonce保存请求
 	t.activeCallByAuth[newNonce] = c
+	// 发送数据包后启动超时设置
 	t.startResponseTimeout(c)
 }
 
@@ -598,6 +639,8 @@ func (t *UDPv5) sendResponse(toID enode.ID, toAddr *net.UDPAddr, packet v5wire.P
 }
 
 // send sends a packet to the given node.
+// 给定远程节点ID和udp地址,向它发送数据包packet
+// c不为nil时发送握手包
 func (t *UDPv5) send(toID enode.ID, toAddr *net.UDPAddr, packet v5wire.Packet, c *v5wire.Whoareyou) (v5wire.Nonce, error) {
 	addr := toAddr.String()
 	enc, nonce, err := t.codec.Encode(toID, addr, packet, c)
@@ -616,7 +659,9 @@ func (t *UDPv5) readLoop() {
 
 	buf := make([]byte, maxPacketSize)
 	for range t.readNextCh {
+		// 读取数据到buf中
 		nbytes, from, err := t.conn.ReadFromUDP(buf)
+		// 处理错误,如果是临时错误跳过这一轮,如果是其他错误结束函数
 		if netutil.IsTemporaryError(err) {
 			// Ignore temporary read errors.
 			t.log.Debug("Temporary UDP read error", "err", err)
@@ -633,6 +678,7 @@ func (t *UDPv5) readLoop() {
 }
 
 // dispatchReadPacket sends a packet into the dispatch loop.
+// 将接收到的数据发送到packetInCh管道中
 func (t *UDPv5) dispatchReadPacket(from *net.UDPAddr, content []byte) bool {
 	select {
 	case t.packetInCh <- ReadPacket{content, from}:
@@ -643,19 +689,26 @@ func (t *UDPv5) dispatchReadPacket(from *net.UDPAddr, content []byte) bool {
 }
 
 // handlePacket decodes and processes an incoming packet from the network.
+// handlePacket用于处理dispatch中接收到的数据包
+// 输入的是数据包的原始字节流和数据包来源的udp地址
 func (t *UDPv5) handlePacket(rawpacket []byte, fromAddr *net.UDPAddr) error {
 	addr := fromAddr.String()
+	// 解码数据包为v5wire.Packet对象,并得到来源节点ID以及它的enode.Node对象
 	fromID, fromNode, packet, err := t.codec.Decode(rawpacket, addr)
 	if err != nil {
 		t.log.Debug("Bad discv5 packet", "id", fromID, "addr", addr, "err", err)
 		return err
 	}
+	// fromNode不为nil说明现在处理的是握手包,将新发现的这个节点记录下来
 	if fromNode != nil {
 		// Handshake succeeded, add to table.
 		t.tab.addSeenNode(wrapNode(fromNode))
 	}
 	if packet.Kind() != v5wire.WhoareyouPacket {
 		// WHOAREYOU logged separately to report errors.
+		// 在这里打印接收了数据包的日志
+		// WHOAREYOU包的日志单独处理,因为WHOAREYOU必须匹配到之前发送过的一个包,如果匹配不到需要打印错误
+		// 也就是WHOAREYOU包matchWithCall可能报错
 		t.log.Trace("<< "+packet.Name(), "id", fromID, "addr", addr)
 	}
 	t.handle(packet, fromID, fromAddr)
@@ -704,6 +757,7 @@ func (t *UDPv5) handle(p v5wire.Packet, fromID enode.ID, fromAddr *net.UDPAddr) 
 		t.handlePing(p, fromID, fromAddr)
 	case *v5wire.Pong:
 		if t.handleCallResponse(fromID, fromAddr, p) {
+			// 收到其他节点的Pong回复,里面保存了它认为的本地ip和端口,增加一条预测信息
 			t.localNode.UDPEndpointStatement(fromAddr, &net.UDPAddr{IP: p.ToIP, Port: int(p.ToPort)})
 		}
 	case *v5wire.Findnode:

@@ -31,14 +31,19 @@ import (
 
 // node represents a host on the network.
 // The fields of Node may not be modified.
+// 将enode.Node外面又增加了两个字段
+// 在Table中使用的节点
 type node struct {
 	enode.Node
-	addedAt        time.Time // time when the node was added to the table
-	livenessChecks uint      // how often liveness was checked
+	addedAt time.Time // time when the node was added to the table
+	// ping通 过多少次
+	livenessChecks uint // how often liveness was checked
 }
 
+// 64字节的公钥 32字节保存X,32字节保存Y
 type encPubkey [64]byte
 
+// 将ecdsa.PublicKey转化成64字节的encPubkey类型
 func encodePubkey(key *ecdsa.PublicKey) encPubkey {
 	var e encPubkey
 	math.ReadBits(key.X, e[:len(e)/2])
@@ -46,6 +51,8 @@ func encodePubkey(key *ecdsa.PublicKey) encPubkey {
 	return e
 }
 
+// 根据曲线和公钥的字节数组e恢复出来PublicKey对象
+// 64字节e中保存横纵坐标X,Y
 func decodePubkey(curve elliptic.Curve, e []byte) (*ecdsa.PublicKey, error) {
 	if len(e) != len(encPubkey{}) {
 		return nil, errors.New("wrong size public key data")
@@ -60,14 +67,17 @@ func decodePubkey(curve elliptic.Curve, e []byte) (*ecdsa.PublicKey, error) {
 	return p, nil
 }
 
+// 对64字节公钥计算一次哈希即可得到id
 func (e encPubkey) id() enode.ID {
 	return enode.ID(crypto.Keccak256Hash(e[:]))
 }
 
+// 将enode.Node封装成discover.node
 func wrapNode(n *enode.Node) *node {
 	return &node{Node: *n}
 }
 
+// 将一组enode.Node封装成discover.node
 func wrapNodes(ns []*enode.Node) []*node {
 	result := make([]*node, len(ns))
 	for i, n := range ns {
@@ -76,10 +86,13 @@ func wrapNodes(ns []*enode.Node) []*node {
 	return result
 }
 
+// discover.Node -> enode.Node
+// 将discover.node去掉封装,取出enode.Node
 func unwrapNode(n *node) *enode.Node {
 	return &n.Node
 }
 
+// 一组discover.Node -> enode.Node
 func unwrapNodes(ns []*node) []*enode.Node {
 	result := make([]*enode.Node, len(ns))
 	for i, n := range ns {
@@ -88,6 +101,7 @@ func unwrapNodes(ns []*node) []*enode.Node {
 	return result
 }
 
+// 获取节点监听的udp地址
 func (n *node) addr() *net.UDPAddr {
 	return &net.UDPAddr{IP: n.IP(), Port: n.UDP()}
 }

@@ -33,6 +33,7 @@ var (
 
 // Encoder is implemented by types that require custom
 // encoding rules or want to encode private fields.
+// 实现了EncodeRLP方法的对象将优先调用该方法进行RLP编码
 type Encoder interface {
 	// EncodeRLP should write the RLP encoding of its receiver to w.
 	// If the implementation is a pointer method, it may also be

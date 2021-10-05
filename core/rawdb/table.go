@@ -19,15 +19,21 @@ package rawdb
 import (
 	"github.com/ethereum/go-ethereum/ethdb"
 )
+// 使用NewTable创建表对象
+// 不同的表对象可以基于同一个键值对数据库对象
+// 不同的表对象可以使用相同的key不会引起冲突
+//   就是在键值对里通过前缀区分,前缀已经在内部封装,外部就相当于可以在不同的表使用相同的key
 
 // table is a wrapper around a database that prefixes each key access with a pre-
 // configured string.
+// 利用键值对模拟表结构,所有存进去的key都有固定的前缀
 type table struct {
 	db     ethdb.Database
 	prefix string
 }
 
 // NewTable returns a database object that prefixes all keys with a given string.
+// 输入数据库对象和前缀,创建一个表格对象
 func NewTable(db ethdb.Database, prefix string) ethdb.Database {
 	return &table{
 		db:     db,
@@ -36,11 +42,13 @@ func NewTable(db ethdb.Database, prefix string) ethdb.Database {
 }
 
 // Close is a noop to implement the Database interface.
+// table对象为了实现Database接口必须实现一个Close方法
 func (t *table) Close() error {
 	return nil
 }
 
 // Has retrieves if a prefixed version of a key is present in the database.
+// 加上前缀再搜索
 func (t *table) Has(key []byte) (bool, error) {
 	return t.db.Has(append([]byte(t.prefix), key...))
 }
@@ -99,11 +107,13 @@ func (t *table) Sync() error {
 
 // Put inserts the given value into the database at a prefixed version of the
 // provided key.
+// Put时自动给key加上前缀
 func (t *table) Put(key []byte, value []byte) error {
 	return t.db.Put(append([]byte(t.prefix), key...), value)
 }
 
 // Delete removes the given prefixed key from the database.
+// 删除也是删除加上key后的键
 func (t *table) Delete(key []byte) error {
 	return t.db.Delete(append([]byte(t.prefix), key...))
 }
@@ -111,7 +121,11 @@ func (t *table) Delete(key []byte) error {
 // NewIterator creates a binary-alphabetical iterator over a subset
 // of database content with a particular key prefix, starting at a particular
 // initial key (or after, if it does not exist).
+// 搜索的是表的前缀再加上输入前缀的key
+// 返回的对象也是表自己实现的迭代器
+// 使用tableIterator的原因在于Key方法要能正确返回去掉表前缀的key
 func (t *table) NewIterator(prefix []byte, start []byte) ethdb.Iterator {
+	// 两个前缀合并
 	innerPrefix := append([]byte(t.prefix), prefix...)
 	iter := t.db.NewIterator(innerPrefix, start)
 	return &tableIterator{
@@ -228,11 +242,15 @@ func (r *tableReplayer) Delete(key []byte) error {
 
 // Replay replays the batch contents.
 func (b *tableBatch) Replay(w ethdb.KeyValueWriter) error {
+	// 直接调用b.batch.Replay(w)的话
+	// 就会往w里面加入或者删除带有前缀的key
+	// 需要再包装一下去掉前缀后再调用KeyValueWriter的Put和Delete方法
 	return b.batch.Replay(&tableReplayer{w: w, prefix: b.prefix})
 }
 
 // tableIterator is a wrapper around a database iterator that prefixes each key access
 // with a pre-configured string.
+// 实现这个对象的目的就是因为Key方法要返回一个去掉表前缀的key
 type tableIterator struct {
 	iter   ethdb.Iterator
 	prefix string
@@ -253,6 +271,7 @@ func (iter *tableIterator) Error() error {
 // Key returns the key of the current key/value pair, or nil if done. The caller
 // should not modify the contents of the returned slice, and its contents may
 // change on the next call to Next.
+// 这里返回的key要去掉表的前缀
 func (iter *tableIterator) Key() []byte {
 	key := iter.iter.Key()
 	if key == nil {

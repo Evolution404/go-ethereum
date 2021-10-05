@@ -25,6 +25,13 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
+// 使用流程
+// api := NewPublicDownloaderAPI()
+// statuses := make(chan interface{})
+// sub := api.SubscribeSyncStatus(statuses)
+// 之后就可以从statuses管道中读取当前同步的进度
+// 调用 sub.Unsubscribe()就会结束向statuses管道输入信息
+
 // PublicDownloaderAPI provides an API which gives information about the current synchronisation status.
 // It offers only methods that operates on data that can be available to anyone without security risks.
 type PublicDownloaderAPI struct {
@@ -53,25 +60,32 @@ func NewPublicDownloaderAPI(d *Downloader, m *event.TypeMux) *PublicDownloaderAP
 
 // eventLoop runs a loop until the event mux closes. It will install and uninstall new
 // sync subscriptions and broadcasts sync status updates to the installed sync subscriptions.
+// 循环监听install和uninstall事件
+// api.mux对象调用Post发送StartEvent事件将会给所有install的对象通知当前同步的进度
 func (api *PublicDownloaderAPI) eventLoop() {
 	var (
+		// sub订阅了三种事件,如果api.mux调用Post方法就会让这里接收到结果
 		sub               = api.mux.Subscribe(StartEvent{}, DoneEvent{}, FailedEvent{})
 		syncSubscriptions = make(map[chan interface{}]struct{})
 	)
 
+	// 循环监听install和uninstall事件
 	for {
 		select {
+		// install就是在syncSubscriptions中添加一项
 		case i := <-api.installSyncSubscription:
 			syncSubscriptions[i] = struct{}{}
 		case u := <-api.uninstallSyncSubscription:
 			delete(syncSubscriptions, u.c)
 			close(u.uninstalled)
+		// 监听api.mux发送的事件
 		case event := <-sub.Chan():
 			if event == nil {
 				return
 			}
 
 			var notification interface{}
+			// 区分Start,Done,Failed三种事件
 			switch event.Data.(type) {
 			case StartEvent:
 				notification = &SyncingResult{
@@ -82,6 +96,7 @@ func (api *PublicDownloaderAPI) eventLoop() {
 				notification = false
 			}
 			// broadcast
+			// 向所有的订阅者发送当前进度的通知
 			for c := range syncSubscriptions {
 				c <- notification
 			}
@@ -143,6 +158,8 @@ type SyncStatusSubscription struct {
 // after this method returns.
 func (s *SyncStatusSubscription) Unsubscribe() {
 	s.unsubOnce.Do(func() {
+		// 这里使用make新建一个管道,作为uninstalled
+		// eventLoop中收到通知后会关闭这个管道
 		req := uninstallSyncSubscriptionRequest{s.c, make(chan interface{})}
 		s.api.uninstallSyncSubscription <- &req
 

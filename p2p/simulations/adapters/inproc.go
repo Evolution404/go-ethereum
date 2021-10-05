@@ -36,9 +36,13 @@ import (
 
 // SimAdapter is a NodeAdapter which creates in-memory simulation nodes and
 // connects them using net.Pipe
+// 用来创建使用net.Pipe进行通信的仿真节点
+// 实现了p2p.NodeDialer,adapters.NodeAdapter,adapters.RPCDialer接口
 type SimAdapter struct {
-	pipe       func() (net.Conn, net.Conn, error)
-	mtx        sync.RWMutex
+	// 用来创建net.Conn对象的函数
+	pipe func() (net.Conn, net.Conn, error)
+	mtx  sync.RWMutex
+	// 保存这个Adapter已经创建的节点
 	nodes      map[enode.ID]*SimNode
 	lifecycles LifecycleConstructors
 }
@@ -47,6 +51,7 @@ type SimAdapter struct {
 // simulation nodes running any of the given services (the services to run on a
 // particular node are passed to the NewNode function in the NodeConfig)
 // the adapter uses a net.Pipe for in-memory simulated network connections
+// 创建SimAdapter需要输入支持的服务,因为SimAdapter不使用RegisterLifecycles中注册的服务
 func NewSimAdapter(services LifecycleConstructors) *SimAdapter {
 	return &SimAdapter{
 		pipe:       pipes.NetPipe,
@@ -61,6 +66,8 @@ func (s *SimAdapter) Name() string {
 }
 
 // NewNode returns a new SimNode using the given config
+// SimAdapter对象使用给定的节点配置创建一个内存型节点
+// 输入的NodeConfig中必须要有PrivateKey和至少一个Lifecycles
 func (s *SimAdapter) NewNode(config *NodeConfig) (Node, error) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
@@ -80,6 +87,7 @@ func (s *SimAdapter) NewNode(config *NodeConfig) (Node, error) {
 	if len(config.Lifecycles) == 0 {
 		return nil, errors.New("node must have at least one service")
 	}
+	// 确保这个节点使用的服务在SimAdapter中已经注册了
 	for _, service := range config.Lifecycles {
 		if _, exists := s.lifecycles[service]; !exists {
 			return nil, fmt.Errorf("unknown node service %q", service)
@@ -113,12 +121,14 @@ func (s *SimAdapter) NewNode(config *NodeConfig) (Node, error) {
 		adapter: s,
 		running: make(map[string]node.Lifecycle),
 	}
+	// 往SimAdapter里保存新创建的节点
 	s.nodes[id] = simNode
 	return simNode, nil
 }
 
 // Dial implements the p2p.NodeDialer interface by connecting to the node using
 // an in-memory net.Pipe
+// 实现p2p.NodeDialer接口
 func (s *SimAdapter) Dial(ctx context.Context, dest *enode.Node) (conn net.Conn, err error) {
 	node, ok := s.GetNode(dest.ID())
 	if !ok {
@@ -129,6 +139,7 @@ func (s *SimAdapter) Dial(ctx context.Context, dest *enode.Node) (conn net.Conn,
 		return nil, fmt.Errorf("node not running: %s", dest.ID())
 	}
 	// SimAdapter.pipe is net.Pipe (NewSimAdapter)
+	// 在这里创建一对连接,其中一个返回给拨号方,另一个通过SetupConn通知到被拨号的节点
 	pipe1, pipe2, err := s.pipe()
 	if err != nil {
 		return nil, err
@@ -151,6 +162,7 @@ func (s *SimAdapter) DialRPC(id enode.ID) (*rpc.Client, error) {
 }
 
 // GetNode returns the node with the given ID if it exists
+// 查找SimAdapter.nodes[id]
 func (s *SimAdapter) GetNode(id enode.ID) (*SimNode, bool) {
 	s.mtx.RLock()
 	defer s.mtx.RUnlock()
@@ -161,14 +173,18 @@ func (s *SimAdapter) GetNode(id enode.ID) (*SimNode, bool) {
 // SimNode is an in-memory simulation node which connects to other nodes using
 // net.Pipe (see SimAdapter.Dial), running devp2p protocols directly over that
 // pipe
+// 由SimAdapter.NewNode创建的节点就是SimNode对象
+// SimNode实现了adapters.Node接口,但是还额外实现了几个函数
+// Close,Node,Server,Service,ServiceMap,Services,SubscribeEvents
 type SimNode struct {
-	lock         sync.RWMutex
-	ID           enode.ID
-	config       *NodeConfig
-	adapter      *SimAdapter
-	node         *node.Node
-	running      map[string]node.Lifecycle
-	client       *rpc.Client
+	lock    sync.RWMutex
+	ID      enode.ID
+	config  *NodeConfig
+	adapter *SimAdapter
+	node    *node.Node
+	running map[string]node.Lifecycle
+	client  *rpc.Client
+	// 确保注册服务的过程只被执行一次
 	registerOnce sync.Once
 }
 
@@ -239,6 +255,7 @@ func (sn *SimNode) Snapshots() (map[string][]byte, error) {
 }
 
 // Start registers the services and starts the underlying devp2p node
+// 为节点注册服务,并启动节点
 func (sn *SimNode) Start(snapshots map[string][]byte) error {
 	// ensure we only register the services once in the case of the node
 	// being stopped and then started again
@@ -252,16 +269,20 @@ func (sn *SimNode) Start(snapshots map[string][]byte) error {
 			if snapshots != nil {
 				ctx.Snapshot = snapshots[name]
 			}
+			// 找到服务对应的构造函数
 			serviceFunc := sn.adapter.lifecycles[name]
+			// 调用构造函数生成服务对象
 			service, err := serviceFunc(ctx, sn.node)
 			if err != nil {
 				regErr = err
 				break
 			}
 			// if the service has already been registered, don't register it again.
+			// 跳过已经注册的服务
 			if _, ok := sn.running[name]; ok {
 				continue
 			}
+			// 将Lifecycle对象保存起来
 			sn.running[name] = service
 		}
 	})
@@ -272,7 +293,6 @@ func (sn *SimNode) Start(snapshots map[string][]byte) error {
 	if err := sn.node.Start(); err != nil {
 		return err
 	}
-
 	// create an in-process RPC client
 	client, err := sn.node.Attach()
 	if err != nil {
@@ -281,7 +301,6 @@ func (sn *SimNode) Start(snapshots map[string][]byte) error {
 	sn.lock.Lock()
 	sn.client = client
 	sn.lock.Unlock()
-
 	return nil
 }
 

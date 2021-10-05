@@ -580,6 +580,8 @@ func startLocalhostV4(t *testing.T, cfg Config) *UDPv4 {
 }
 
 // dgramPipe is a fake UDP socket. It queues all sent datagrams.
+// 模拟的UDPConn对象
+// 发送的消息会缓存在内部的队列中,调用dgramPipe.receive方法可以获取被发送的数据
 type dgramPipe struct {
 	mu      *sync.Mutex
 	cond    *sync.Cond
@@ -650,6 +652,8 @@ func (c *dgramPipe) receive() (dgram, error) {
 	})
 	defer timer.Stop()
 
+	// 如果队列里没有消息那么就在这里等待
+	// 等待时间最长三秒
 	for len(c.queue) == 0 && !c.closed && !timedOut {
 		c.cond.Wait()
 	}

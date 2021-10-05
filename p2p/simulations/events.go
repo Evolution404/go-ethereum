@@ -22,6 +22,8 @@ import (
 )
 
 // EventType is the type of event emitted by a simulation network
+// 代表仿真网络中的事件类型
+// 有三种node,conn以及msg
 type EventType string
 
 const (
@@ -39,11 +41,14 @@ const (
 )
 
 // Event is an event emitted by a simulation network
+// Event代表仿真网络中触发的事件,有三种类型node,conn,msg
 type Event struct {
 	// Type is the type of the event
+	// 用于区分三种不同的类型
 	Type EventType `json:"type"`
 
 	// Time is the time the event happened
+	// 事件触发的时间
 	Time time.Time `json:"time"`
 
 	// Control indicates whether the event is the result of a controlled
@@ -89,6 +94,7 @@ func NewEvent(v interface{}) *Event {
 }
 
 // ControlEvent creates a new control event
+// 创建一个控制事件,与NewEvent区别就是设置Control字段为true
 func ControlEvent(v interface{}) *Event {
 	event := NewEvent(v)
 	event.Control = true

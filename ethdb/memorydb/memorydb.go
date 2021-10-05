@@ -15,6 +15,8 @@
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
 // Package memorydb implements the key-value database layer based on memory maps.
+// 实现了所有接口的内存数据库,只用来进行测试
+// 简而言之就是实现了KeyValueStore接口
 package memorydb
 
 import (
@@ -55,6 +57,7 @@ func New() *Database {
 
 // NewWithCap returns a wrapped map pre-allocated to the provided capcity with
 // all the required database interface methods implemented.
+// 初始化时指定了Cap大小
 func NewWithCap(size int) *Database {
 	return &Database{
 		db: make(map[string][]byte, size),
@@ -72,19 +75,24 @@ func (db *Database) Close() error {
 }
 
 // Has retrieves if a key is present in the key-value store.
+// 判断数据库里是否保存有输入的key
 func (db *Database) Has(key []byte) (bool, error) {
+	// Has需要读取map里的数据所以设置读锁,只能读不能写
+	// 也就是其他地方调用RLock不会阻塞,但是调用Lock的地方会阻塞
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
 	if db.db == nil {
 		return false, errMemorydbClosed
 	}
+	// ok代表map里是否保存了key
 	_, ok := db.db[string(key)]
 	return ok, nil
 }
 
 // Get retrieves the given key if it's present in the key-value store.
 func (db *Database) Get(key []byte) ([]byte, error) {
+	// Get也有读取,增加读锁
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
@@ -94,11 +102,13 @@ func (db *Database) Get(key []byte) ([]byte, error) {
 	if entry, ok := db.db[string(key)]; ok {
 		return common.CopyBytes(entry), nil
 	}
+	// map里没保存这个键
 	return nil, errMemorydbNotFound
 }
 
 // Put inserts the given value into the key-value store.
 func (db *Database) Put(key []byte, value []byte) error {
+	// Put有写操作,要增加写锁
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
@@ -111,6 +121,7 @@ func (db *Database) Put(key []byte, value []byte) error {
 
 // Delete removes the key from the key-value store.
 func (db *Database) Delete(key []byte) error {
+	// Delete也要修改map,所以也是写锁
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
@@ -123,6 +134,7 @@ func (db *Database) Delete(key []byte) error {
 
 // NewBatch creates a write-only key-value store that buffers changes to its host
 // database until a final write is called.
+// 创建一个只写的缓存区域,
 func (db *Database) NewBatch() ethdb.Batch {
 	return &batch{
 		db: db,
@@ -132,18 +144,23 @@ func (db *Database) NewBatch() ethdb.Batch {
 // NewIterator creates a binary-alphabetical iterator over a subset
 // of database content with a particular key prefix, starting at a particular
 // initial key (or after, if it does not exist).
+// 创建一个Iterator对象,内部按照字典顺序保存了符合规则的key和value
 func (db *Database) NewIterator(prefix []byte, start []byte) ethdb.Iterator {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
 	var (
 		pr     = string(prefix)
+		// prefix与start拼接就是开始位置的key
 		st     = string(append(prefix, start...))
+		// 对map调用len返回有多少个key
+		// keys保存map中的所有符合规则的key
 		keys   = make([]string, 0, len(db.db))
 		values = make([][]byte, 0, len(db.db))
 	)
 	// Collect the keys from the memory database corresponding to the given prefix
 	// and start
+	// 搜索所有符合规则的key
 	for key := range db.db {
 		if !strings.HasPrefix(key, pr) {
 			continue
@@ -153,10 +170,12 @@ func (db *Database) NewIterator(prefix []byte, start []byte) ethdb.Iterator {
 		}
 	}
 	// Sort the items and retrieve the associated values
+	// 对key进行排序
 	sort.Strings(keys)
 	for _, key := range keys {
 		values = append(values, db.db[key])
 	}
+	// 迭代器就是按照字典顺序保存key和value
 	return &iterator{
 		keys:   keys,
 		values: values,
@@ -164,6 +183,7 @@ func (db *Database) NewIterator(prefix []byte, start []byte) ethdb.Iterator {
 }
 
 // Stat returns a particular internal stat of the database.
+// 内存数据库读取不到任何状态信息
 func (db *Database) Stat(property string) (string, error) {
 	return "", errors.New("unknown property")
 }
@@ -187,6 +207,7 @@ func (db *Database) Len() int {
 
 // keyvalue is a key-value tuple tagged with a deletion field to allow creating
 // memory-database write batches.
+// 用来记录被删除的键值对
 type keyvalue struct {
 	key    []byte
 	value  []byte
@@ -201,47 +222,58 @@ type batch struct {
 	size   int
 }
 
+// Put和Delete实现KeyValueWriter
 // Put inserts the given value into the batch for later committing.
+// 向batch增加一个键值对
 func (b *batch) Put(key, value []byte) error {
 	b.writes = append(b.writes, keyvalue{common.CopyBytes(key), common.CopyBytes(value), false})
+	// 写入时队列长度就增加value的长度
 	b.size += len(value)
 	return nil
 }
 
 // Delete inserts the a key removal into the batch for later committing.
+// 删除一个key
 func (b *batch) Delete(key []byte) error {
 	b.writes = append(b.writes, keyvalue{common.CopyBytes(key), nil, true})
+	// 删除操作队列长度加一
 	b.size += len(key)
 	return nil
 }
 
 // ValueSize retrieves the amount of data queued up for writing.
+// 获取等待写入数据库的数据量
 func (b *batch) ValueSize() int {
 	return b.size
 }
 
 // Write flushes any accumulated data to the memory database.
+// 将执行的多次Put,Delete真正应用到数据库上
 func (b *batch) Write() error {
 	b.db.lock.Lock()
 	defer b.db.lock.Unlock()
 
 	for _, keyvalue := range b.writes {
+		// 判断是不是删除操作
 		if keyvalue.delete {
 			delete(b.db.db, string(keyvalue.key))
 			continue
 		}
+		// 添加操作
 		b.db.db[string(keyvalue.key)] = keyvalue.value
 	}
 	return nil
 }
 
 // Reset resets the batch for reuse.
+// 清空writes还有size
 func (b *batch) Reset() {
 	b.writes = b.writes[:0]
 	b.size = 0
 }
 
 // Replay replays the batch contents.
+// 将当前Batch对象保存的操作作用到其他的KeyValueWriter上
 func (b *batch) Replay(w ethdb.KeyValueWriter) error {
 	for _, keyvalue := range b.writes {
 		if keyvalue.delete {
@@ -261,6 +293,7 @@ func (b *batch) Replay(w ethdb.KeyValueWriter) error {
 // value store. Internally it is a deep copy of the entire iterated state,
 // sorted by keys.
 type iterator struct {
+	// 标记当前是否被初始化了,调用过一次Next后才能访问内部的元素
 	inited bool
 	keys   []string
 	values [][]byte
@@ -270,12 +303,14 @@ type iterator struct {
 // iterator is exhausted.
 func (it *iterator) Next() bool {
 	// If the iterator was not yet initialized, do it now
+	// inited默认是false
 	if !it.inited {
 		it.inited = true
 		return len(it.keys) > 0
 	}
 	// Iterator already initialize, advance it
 	if len(it.keys) > 0 {
+		// 每次后移直接丢弃之前的内容
 		it.keys = it.keys[1:]
 		it.values = it.values[1:]
 	}
@@ -284,6 +319,7 @@ func (it *iterator) Next() bool {
 
 // Error returns any accumulated error. Exhausting all the key/value pairs
 // is not considered to be an error. A memory iterator cannot encounter errors.
+// 内存数据库的迭代器不会遇到错误
 func (it *iterator) Error() error {
 	return nil
 }
@@ -310,6 +346,7 @@ func (it *iterator) Value() []byte {
 
 // Release releases associated resources. Release should always succeed and can
 // be called multiple times without causing error.
+// 直接让keys,values变成nil
 func (it *iterator) Release() {
 	it.keys, it.values = nil, nil
 }

@@ -26,7 +26,20 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
+// 总共有三种类型的数据包
+// 普通包
+// WHOYOUARE
+// 握手包
+// 普通包和握手包都可以保存消息,统称为消息包
+// 三种包的前39字节结构一致
+//   IV(16)
+//   静态头部 -> 协议号(6) 版本(2) flag(1) nonce(12) authSize(2)
+// flag用来区分包类型,消息包的nonce随机生成,WHOAREYOU的nonce使用前一个解密失败的包nonce
+// 普通包和握手包的AuthData的开始部分都是src-id,也就是消息包需要src-id
+
 // Packet is implemented by all message types.
+// v5版本的Packet对象
+// Packet的实现类型是各种消息
 type Packet interface {
 	Name() string        // Name returns a string corresponding to the message type.
 	Kind() byte          // Kind returns the message type.
@@ -53,6 +66,7 @@ const (
 )
 
 // Protocol messages.
+// 以下是各种消息的对象
 type (
 	// Unknown represents any packet that can't be decrypted.
 	Unknown struct {
@@ -60,14 +74,18 @@ type (
 	}
 
 	// WHOAREYOU contains the handshake challenge.
+	// WHOAREYOU数据包本身没有消息,所以将数据包头部的信息视作一个消息
 	Whoareyou struct {
+		// ChallengeData其实就是收到整个WHOYOUARE数据包解密后的内容
 		ChallengeData []byte   // Encoded challenge
+		// 引起发送Whoareyou包的Nonce,接收Whoareyou包的节点可以根据这个Nonce来得知发送Whoareyou包的节点是哪一个
 		Nonce         Nonce    // Nonce of request packet
 		IDNonce       [16]byte // Identity proof data
 		RecordSeq     uint64   // ENR sequence number of recipient
 
 		// Node is the locally known node record of recipient.
 		// This must be set by the caller of Encode.
+		// Node代表Whoareyou发送方的记录,本地根据Nonce来得知之前发送的请求包,所以就能直到发送给了哪个节点
 		Node *enode.Node
 
 		sent mclock.AbsTime // for handshake GC.
@@ -146,6 +164,7 @@ type (
 )
 
 // DecodeMessage decodes the message body of a packet.
+// 输入消息的rlp编码和类型,解码到Packet对象
 func DecodeMessage(ptype byte, body []byte) (Packet, error) {
 	var dec Packet
 	switch ptype {
@@ -177,6 +196,7 @@ func DecodeMessage(ptype byte, body []byte) (Packet, error) {
 	if err := rlp.DecodeBytes(body, dec); err != nil {
 		return nil, err
 	}
+	// 判断RequestID是不是超过了8字节
 	if dec.RequestID() != nil && len(dec.RequestID()) > 8 {
 		return nil, ErrInvalidReqID
 	}

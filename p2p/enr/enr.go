@@ -43,6 +43,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
+// 一条节点的记录最多不能超过300字节
 const SizeLimit = 300 // maximum encoded size of a node record in bytes
 
 var (
@@ -58,19 +59,25 @@ var (
 
 // An IdentityScheme is capable of verifying record signatures and
 // deriving node addresses.
+// IdentityScheme对象可以验证记录签名的有效性
+// 还能够通过记录计算出地址
+// 实现这个接口的有V4ID,v4CompatID,NullID
 type IdentityScheme interface {
 	Verify(r *Record, sig []byte) error
 	NodeAddr(r *Record) []byte
 }
 
 // SchemeMap is a registry of named identity schemes.
+// 保存多种identity schemes从名字到对象的映射
 type SchemeMap map[string]IdentityScheme
 
 func (m SchemeMap) Verify(r *Record, sig []byte) error {
+	// 获取identity schemes对象
 	s := m[r.IdentityScheme()]
 	if s == nil {
 		return ErrInvalidSig
 	}
+	// 通过identity schemes对象来进行验证
 	return s.Verify(r, sig)
 }
 
@@ -83,14 +90,19 @@ func (m SchemeMap) NodeAddr(r *Record) []byte {
 }
 
 // Record represents a node record. The zero value is an empty record.
+// Record对象了包括三个部分,seq代表记录的序号,pairs记录里的各个键值对,signature记录的签名
+// 其中signature最后生成,在设置好序号和所有键值对后再进行签名
 type Record struct {
-	seq       uint64 // sequence number
+	seq uint64 // sequence number
+	// 这里签名只保存了r和s,总共长度应该是64字节
 	signature []byte // the signature
-	raw       []byte // RLP encoded record
-	pairs     []pair // sorted list of all key/value pairs
+	// 保存记录的完整rlp编码
+	raw   []byte // RLP encoded record
+	pairs []pair // sorted list of all key/value pairs
 }
 
 // pair is a key/value pair in a record.
+// pair用来保存一个键值对
 type pair struct {
 	k string
 	v rlp.RawValue
@@ -104,6 +116,7 @@ func (r *Record) Seq() uint64 {
 // SetSeq updates the record sequence number. This invalidates any signature on the record.
 // Calling SetSeq is usually not required because setting any key in a signed record
 // increments the sequence number.
+// 修改r.seq为输入的值,并清空signature和raw
 func (r *Record) SetSeq(s uint64) {
 	r.signature = nil
 	r.raw = nil
@@ -115,8 +128,11 @@ func (r *Record) SetSeq(s uint64) {
 //
 // Errors returned by Load are wrapped in KeyError. You can distinguish decoding errors
 // from missing keys using the IsNotFound function.
+// 从Record.pairs中读取指定的key到Entry里
 func (r *Record) Load(e Entry) error {
+	// 找到Record.pairs中与输入Entry的key相同的位置
 	i := sort.Search(len(r.pairs), func(i int) bool { return r.pairs[i].k >= e.ENRKey() })
+	// 将pairs[i].v 里保存的的rlp编码解码到e上
 	if i < len(r.pairs) && r.pairs[i].k == e.ENRKey() {
 		if err := rlp.DecodeBytes(r.pairs[i].v, e); err != nil {
 			return &KeyError{Key: e.ENRKey(), Err: err}
@@ -129,26 +145,32 @@ func (r *Record) Load(e Entry) error {
 // Set adds or updates the given entry in the record. It panics if the value can't be
 // encoded. If the record is signed, Set increments the sequence number and invalidates
 // the sequence number.
+// 更新或插入Record.pairs中的一项
 func (r *Record) Set(e Entry) {
 	blob, err := rlp.EncodeToBytes(e)
 	if err != nil {
 		panic(fmt.Errorf("enr: can't encode %s: %v", e.ENRKey(), err))
 	}
+	// 每次增加新的键值对,原来的签名和缓存的rlp编码都失效没有意义了
 	r.invalidate()
 
 	pairs := make([]pair, len(r.pairs))
 	copy(pairs, r.pairs)
 	i := sort.Search(len(pairs), func(i int) bool { return pairs[i].k >= e.ENRKey() })
 	switch {
+	// 是之前存在的key,直接修改
 	case i < len(pairs) && pairs[i].k == e.ENRKey():
 		// element is present at r.pairs[i]
 		pairs[i].v = blob
+	// 之前不存在key,需要插入
 	case i < len(r.pairs):
 		// insert pair before i-th elem
+		// 向第i个位置插入一个pair对象
 		el := pair{e.ENRKey(), blob}
 		pairs = append(pairs, pair{})
 		copy(pairs[i+1:], pairs[i:])
 		pairs[i] = el
+	// 新的key超过所有原有的key,放置到末尾
 	default:
 		// element should be placed at the end of r.pairs
 		pairs = append(pairs, pair{e.ENRKey(), blob})
@@ -156,6 +178,8 @@ func (r *Record) Set(e Entry) {
 	r.pairs = pairs
 }
 
+// 重置Record
+// 清空signature,raw然后让seq自增
 func (r *Record) invalidate() {
 	if r.signature != nil {
 		r.seq++
@@ -165,6 +189,7 @@ func (r *Record) invalidate() {
 }
 
 // Signature returns the signature of the record.
+// 获取签名,是被重新复制的一份
 func (r *Record) Signature() []byte {
 	if r.signature == nil {
 		return nil
@@ -176,7 +201,11 @@ func (r *Record) Signature() []byte {
 
 // EncodeRLP implements rlp.Encoder. Encoding fails if
 // the record is unsigned.
+// 对Record的rlp编码就是写入保存的raw
+// 在SetSig函数中signature和raw字段被同时设置
+// 所以signature不是nil,raw里就保存了rlp编码
 func (r Record) EncodeRLP(w io.Writer) error {
+	// 还没有生成签名的记录不能生成rlp编码
 	if r.signature == nil {
 		return errEncodeUnsigned
 	}
@@ -185,6 +214,9 @@ func (r Record) EncodeRLP(w io.Writer) error {
 }
 
 // DecodeRLP implements rlp.Decoder. Decoding doesn't verify the signature.
+// 从rlp流中解码出一个Record对象
+// Record的rlp编码是一个list
+// 第一项是signature,第二项是seq,后面依次每两个组成一个键值对
 func (r *Record) DecodeRLP(s *rlp.Stream) error {
 	dec, raw, err := decodeRecord(s)
 	if err != nil {
@@ -195,6 +227,9 @@ func (r *Record) DecodeRLP(s *rlp.Stream) error {
 	return nil
 }
 
+// 从输入的rlp流s中解析出来一条记录
+// 首先解析signature,然后是seq
+// 最后是可选的数个键值对,键值对的键必须保证递增且无重复
 func decodeRecord(s *rlp.Stream) (dec Record, raw []byte, err error) {
 	raw, err = s.Raw()
 	if err != nil {
@@ -206,15 +241,18 @@ func decodeRecord(s *rlp.Stream) (dec Record, raw []byte, err error) {
 
 	// Decode the RLP container.
 	s = rlp.NewStream(bytes.NewReader(raw), 0)
+	// 确保rlp编码是一个list
 	if _, err := s.List(); err != nil {
 		return dec, raw, err
 	}
+	// 解码list里的第一个元素为签名
 	if err = s.Decode(&dec.signature); err != nil {
 		if err == rlp.EOL {
 			err = errIncompleteList
 		}
 		return dec, raw, err
 	}
+	// 第二个元素是seq
 	if err = s.Decode(&dec.seq); err != nil {
 		if err == rlp.EOL {
 			err = errIncompleteList
@@ -222,6 +260,8 @@ func decodeRecord(s *rlp.Stream) (dec Record, raw []byte, err error) {
 		return dec, raw, err
 	}
 	// The rest of the record contains sorted k/v pairs.
+	// 剩下的部分是数个键值对
+	// 键值对的键必须逐个递增,且不能重复
 	var prevkey string
 	for i := 0; ; i++ {
 		var kv pair
@@ -237,6 +277,7 @@ func decodeRecord(s *rlp.Stream) (dec Record, raw []byte, err error) {
 			}
 			return dec, raw, err
 		}
+		// 确保key没有重复,并且都是递增
 		if i > 0 {
 			if kv.k == prevkey {
 				return dec, raw, errDuplicateKey
@@ -252,6 +293,7 @@ func decodeRecord(s *rlp.Stream) (dec Record, raw []byte, err error) {
 }
 
 // IdentityScheme returns the name of the identity scheme in the record.
+// 获取Record的pairs中保存的id字段
 func (r *Record) IdentityScheme() string {
 	var id ID
 	r.Load(&id)
@@ -259,6 +301,7 @@ func (r *Record) IdentityScheme() string {
 }
 
 // VerifySignature checks whether the record is signed using the given identity scheme.
+// 验证签名是否有效
 func (r *Record) VerifySignature(s IdentityScheme) error {
 	return s.Verify(r, r.signature)
 }
@@ -270,6 +313,8 @@ func (r *Record) VerifySignature(s IdentityScheme) error {
 // and signature.
 //
 // SetSig panics when either the scheme or the signature (but not both) are nil.
+// SetSig的IdentityScheme和sig可以同时为nil,但是不能只有一个为nil
+// 输入同时为nil可以清除签名信息
 func (r *Record) SetSig(s IdentityScheme, sig []byte) error {
 	switch {
 	// Prevent storing invalid data.
@@ -278,6 +323,7 @@ func (r *Record) SetSig(s IdentityScheme, sig []byte) error {
 	case s != nil && sig == nil:
 		panic("enr: invalid call to SetSig with nil signature but non-nil scheme")
 	// Verify if we have a scheme.
+	// 这种情况是两者都不是nil
 	case s != nil:
 		if err := s.Verify(r, sig); err != nil {
 			return err
@@ -288,6 +334,7 @@ func (r *Record) SetSig(s IdentityScheme, sig []byte) error {
 		}
 		r.signature, r.raw = sig, raw
 	// Reset otherwise.
+	// 两者都为nil
 	default:
 		r.signature, r.raw = nil, nil
 	}
@@ -295,6 +342,8 @@ func (r *Record) SetSig(s IdentityScheme, sig []byte) error {
 }
 
 // AppendElements appends the sequence number and entries to the given slice.
+// 将seq和其他所有键值对拼接到输入的list后面
+// 这个函数如果输入nil,其实就是将Record对象转换成了一个数组,接下来一般是进行rlp编码
 func (r *Record) AppendElements(list []interface{}) []interface{} {
 	list = append(list, r.seq)
 	for _, p := range r.pairs {
@@ -303,10 +352,13 @@ func (r *Record) AppendElements(list []interface{}) []interface{} {
 	return list
 }
 
+// 给定签名,计算Record对象的rlp编码
 func (r *Record) encode(sig []byte) (raw []byte, err error) {
 	list := make([]interface{}, 1, 2*len(r.pairs)+1)
 	list[0] = sig
+	// 构造 sig,seq,k1,v1,k2,v2 这样的一个列表
 	list = r.AppendElements(list)
+	// 然后计算rlp编码
 	if raw, err = rlp.EncodeToBytes(list); err != nil {
 		return nil, err
 	}

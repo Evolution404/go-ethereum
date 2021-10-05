@@ -25,6 +25,11 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
+// 设计SecureTrie的目的
+//   查询一个节点可能会需要许多次IO读取，效率低下
+//   系统易遭受Dos攻击，攻击者可以通过在合约中存储特定的数据，“构造”一棵拥有一条很长路径的树，然后不断地调用SLOAD指令读取该树节点的内容，造成系统执行效率极度下降
+//   所有的key其实是一种明文的形式进行存储
+
 // SecureTrie wraps a trie with key hashing. In a secure trie, all
 // access operations hash the key using keccak256. This prevents
 // calling code from creating long chains of nodes that
@@ -35,9 +40,14 @@ import (
 // the preimage of each key.
 //
 // SecureTrie is not safe for concurrent use.
+// SecureTrie在内部保存的树是对输入的key进行哈希计算后的key
+// Database中保存了每个key的原像preimage
 type SecureTrie struct {
 	trie             Trie
+	// 每次要查询的key都计算哈希
+	// 计算的哈希保存这个缓存中
 	hashKeyBuf       [common.HashLength]byte
+	// 保存hash->key映射,调用Commit方法后会写入到数据库的preimage中
 	secKeyCache      map[string][]byte
 	secKeyCacheOwner *SecureTrie // Pointer to self, replace the key cache on mismatch
 }
@@ -53,6 +63,7 @@ type SecureTrie struct {
 // Loaded nodes are kept around until their 'cache generation' expires.
 // A new cache generation is created by each call to Commit.
 // cachelimit sets the number of past cache generations to keep.
+// 新建一个SecureTrie,必须指定db
 func NewSecure(root common.Hash, db *Database) (*SecureTrie, error) {
 	if db == nil {
 		panic("trie.NewSecure called without a database")
@@ -128,6 +139,7 @@ func (t *SecureTrie) TryUpdate(key, value []byte) error {
 	if err != nil {
 		return err
 	}
+	// 将 hash->key 映射保存到secKeyCache中
 	t.getSecKeyCache()[string(hk)] = common.CopyBytes(key)
 	return nil
 }
@@ -149,6 +161,7 @@ func (t *SecureTrie) TryDelete(key []byte) error {
 
 // GetKey returns the sha3 preimage of a hashed key that was
 // previously used to store a value.
+// 根据sha3的哈希值获取原来的key
 func (t *SecureTrie) GetKey(shaKey []byte) []byte {
 	if key, ok := t.getSecKeyCache()[string(shaKey)]; ok {
 		return key
@@ -163,6 +176,7 @@ func (t *SecureTrie) GetKey(shaKey []byte) []byte {
 // from the database.
 func (t *SecureTrie) Commit(onleaf LeafCallback) (common.Hash, int, error) {
 	// Write all the pre-images to the actual disk database
+	// 首先将 hash->key 的映射写入到数据库中
 	if len(t.getSecKeyCache()) > 0 {
 		if t.trie.db.preimages != nil { // Ugly direct check but avoids the below write lock
 			t.trie.db.lock.Lock()
@@ -198,6 +212,7 @@ func (t *SecureTrie) NodeIterator(start []byte) NodeIterator {
 // hashKey returns the hash of key as an ephemeral buffer.
 // The caller must not hold onto the return value because it will become
 // invalid on the next call to hashKey or secKey.
+// 对输入的key计算哈希,返回哈希结果
 func (t *SecureTrie) hashKey(key []byte) []byte {
 	h := newHasher(false)
 	h.sha.Reset()
@@ -210,6 +225,9 @@ func (t *SecureTrie) hashKey(key []byte) []byte {
 // getSecKeyCache returns the current secure key cache, creating a new one if
 // ownership changed (i.e. the current secure trie is a copy of another owning
 // the actual cache).
+// 获取当前的secKeyCache
+// 如果SecureTrie对象被复制了,就会导致secKeyCacheOwner并不指向当前对象
+// 这种情况下创建一个新的secKeyCache,原来的缓存留给之前的对象使用
 func (t *SecureTrie) getSecKeyCache() map[string][]byte {
 	if t != t.secKeyCacheOwner {
 		t.secKeyCacheOwner = t

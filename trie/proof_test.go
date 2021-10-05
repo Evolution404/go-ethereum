@@ -966,6 +966,7 @@ func randomTrie(n int) (*Trie, map[string]*kv) {
 	return trie, vals
 }
 
+// 生成一个长度n的随机字节数组
 func randBytes(n int) []byte {
 	r := make([]byte, n)
 	crand.Read(r)

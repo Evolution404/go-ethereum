@@ -45,16 +45,21 @@ var (
 // provided disk database on creation in a background thread and will only start
 // returning live results once that's finished.
 type SyncBloom struct {
-	bloom   *bloomfilter.Filter
-	inited  uint32
-	closer  sync.Once
-	closed  uint32
+	bloom *bloomfilter.Filter
+	// init函数执行完毕标记为1,close函数执行后重置为0
+	inited uint32
+	closer sync.Once
+	// close函数中标记为1
+	closed uint32
+	// 在close函数中会等待pend结束
 	pend    sync.WaitGroup
 	closeCh chan struct{}
 }
 
 // NewSyncBloom creates a new bloom filter of the given size (in megabytes) and
 // initializes it from the database. The bloom is hard coded to use 3 filters.
+// 新建一个SyncBloom对象,memory代表布隆过滤使用的空间大小(单位是M)
+// 首先创建布隆过滤器对象,然后调用该对象的init和meter方法
 func NewSyncBloom(memory uint64, database ethdb.Iteratee) *SyncBloom {
 	// Create the bloom filter to track known trie nodes
 	bloom, err := bloomfilter.New(memory*1024*1024*8, 4)
@@ -68,6 +73,7 @@ func NewSyncBloom(memory uint64, database ethdb.Iteratee) *SyncBloom {
 		bloom:   bloom,
 		closeCh: make(chan struct{}),
 	}
+	// 并行初始化
 	b.pend.Add(2)
 	go func() {
 		defer b.pend.Done()
@@ -81,6 +87,9 @@ func NewSyncBloom(memory uint64, database ethdb.Iteratee) *SyncBloom {
 }
 
 // init iterates over the database, pushing every trie hash into the bloom filter.
+// 迭代数据库中的需要的键值对加入到布隆过滤器中
+// 需要的键是 32字节的哈希 或者 一个"c"加上32字节的哈希
+// 也就是所有的节点和合约代码
 func (b *SyncBloom) init(database ethdb.Iteratee) {
 	// Iterate over the database, but restart every now and again to avoid holding
 	// a persistent snapshot since fast sync can push a ton of data concurrently,
@@ -95,18 +104,23 @@ func (b *SyncBloom) init(database ethdb.Iteratee) {
 		start = time.Now()
 		swap  = time.Now()
 	)
+	// 遍历数据库中保存的键值对
+	// 需要的是两种数据 节点哈希->节点rlp编码, codekey->账户代码
 	for it.Next() && atomic.LoadUint32(&b.closed) == 0 {
 		// If the database entry is a trie node, add it to the bloom
 		key := it.Key()
+		// 长度直接就是哈希长度,说明保存了树中的节点
 		if len(key) == common.HashLength {
 			b.bloom.AddHash(binary.BigEndian.Uint64(key))
 			bloomLoadMeter.Mark(1)
+			// "c"+hash就是代码的key
 		} else if ok, hash := rawdb.IsCodeKey(key); ok {
 			// If the database entry is a contract code, add it to the bloom
 			b.bloom.AddHash(binary.BigEndian.Uint64(hash))
 			bloomLoadMeter.Mark(1)
 		}
 		// If enough time elapsed since the last iterator swap, restart
+		// 经过八秒之后使用一个新的Iterator
 		if time.Since(swap) > 8*time.Second {
 			key := common.CopyBytes(it.Key())
 
@@ -121,11 +135,13 @@ func (b *SyncBloom) init(database ethdb.Iteratee) {
 
 	// Mark the bloom filter inited and return
 	log.Info("Initialized state bloom", "items", b.bloom.N(), "errorrate", b.bloom.FalsePosititveProbability(), "elapsed", common.PrettyDuration(time.Since(start)))
+	// 标记完成了init
 	atomic.StoreUint32(&b.inited, 1)
 }
 
 // meter periodically recalculates the false positive error rate of the bloom
 // filter and reports it in a metric.
+// meter周期性的重新计算布隆过滤器的错误率
 func (b *SyncBloom) meter() {
 	// check every second
 	tick := time.NewTicker(1 * time.Second)
@@ -161,6 +177,7 @@ func (b *SyncBloom) Close() error {
 }
 
 // Add inserts a new trie node hash into the bloom filter.
+// 向布隆过滤器加入一个哈希
 func (b *SyncBloom) Add(hash []byte) {
 	if atomic.LoadUint32(&b.closed) == 1 {
 		return
@@ -174,8 +191,11 @@ func (b *SyncBloom) Add(hash []byte) {
 //   - true:  the bloom maybe contains hash
 //
 // While the bloom is being initialized, any query will return true.
+// 检测一个哈希是否在布隆过滤器内
 func (b *SyncBloom) Contains(hash []byte) bool {
 	bloomTestMeter.Mark(1)
+	// 还没有初始化完成,并不能确定任何值是缺失的
+	// 都先返回true
 	if atomic.LoadUint32(&b.inited) == 0 {
 		// We didn't load all the trie nodes from the previous run of Geth yet. As
 		// such, we can't say for sure if a hash is not present for anything. Until

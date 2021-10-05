@@ -98,7 +98,9 @@ type Downloader struct {
 	stateBloom *trie.SyncBloom // Bloom filter for fast trie node and contract code existence checks
 
 	// Statistics
+	// Downloader对象创建的时候开始同步的区块位置
 	syncStatsChainOrigin uint64 // Origin block number where syncing started at
+	// Downloader对象创建的时候其他节点最高的区块
 	syncStatsChainHeight uint64 // Highest block number known when syncing started
 	syncStatsState       stateSyncStats
 	syncStatsLock        sync.RWMutex // Lock protecting the sync stats fields
@@ -111,6 +113,7 @@ type Downloader struct {
 
 	// Status
 	synchroniseMock func(id string, hash common.Hash) error // Replacement for synchronise during testing
+	// 大于0的时候代表在同步进行中
 	synchronising   int32
 	notified        int32
 	committed       int32
@@ -128,6 +131,7 @@ type Downloader struct {
 	pivotHeader *types.Header // Pivot block header to dynamically push the syncing state root
 	pivotLock   sync.RWMutex  // Lock protecting pivot header reads from updates
 
+	// 是否使用snap协议来同步状态
 	snapSync       bool         // Whether to run state sync over the snap protocol
 	SnapSyncer     *snap.Syncer // TODO(karalabe): make private! hack for now
 	stateSyncStart chan *stateSync
@@ -136,6 +140,7 @@ type Downloader struct {
 
 	// Cancellation and termination
 	cancelPeer string         // Identifier of the peer currently being used as the master (cancel on drop)
+	// cancelCh不会发送数据,在cancel函数中会关闭cancelCh管道
 	cancelCh   chan struct{}  // Channel to cancel mid-flight syncs
 	cancelLock sync.RWMutex   // Lock to protect the cancel channel and peer in delivers
 	cancelWg   sync.WaitGroup // Make sure all fetcher goroutines have exited.
@@ -151,6 +156,8 @@ type Downloader struct {
 }
 
 // LightChain encapsulates functions required to synchronise a light chain.
+// 对应syncmode为light
+// light chain只包括关于head的操作,因为light模式下应该不同步区块体
 type LightChain interface {
 	// HasHeader verifies a header's presence in the local chain.
 	HasHeader(common.Hash, uint64) bool
@@ -162,6 +169,7 @@ type LightChain interface {
 	CurrentHeader() *types.Header
 
 	// GetTd returns the total difficulty of a local block.
+	// Td是total difficulty, 从创世区块到当前区块难度的总和
 	GetTd(common.Hash, uint64) *big.Int
 
 	// InsertHeaderChain inserts a batch of headers into the local chain.
@@ -172,6 +180,8 @@ type LightChain interface {
 }
 
 // BlockChain encapsulates functions required to sync a (full or fast) blockchain.
+// 对应syncmode为fast或full
+// BlockChain包括对区块头和区块的操作
 type BlockChain interface {
 	LightChain
 
@@ -185,9 +195,11 @@ type BlockChain interface {
 	GetBlockByHash(common.Hash) *types.Block
 
 	// CurrentBlock retrieves the head block from the local chain.
+	// 同步模式是full的时候用来获取当前区块
 	CurrentBlock() *types.Block
 
 	// CurrentFastBlock retrieves the head fast block from the local chain.
+	// 同步模式是fast的时候用来获取当前区块
 	CurrentFastBlock() *types.Block
 
 	// FastSyncCommitHead directly commits the head block to a certain entity.
@@ -204,6 +216,7 @@ type BlockChain interface {
 }
 
 // New creates a new downloader to fetch hashes and blocks from remote peers.
+// 创建Downloader对象
 func New(checkpoint uint64, stateDb ethdb.Database, stateBloom *trie.SyncBloom, mux *event.TypeMux, chain BlockChain, lightchain LightChain, dropPeer peerDropFn) *Downloader {
 	if lightchain == nil {
 		lightchain = chain
@@ -244,13 +257,16 @@ func New(checkpoint uint64, stateDb ethdb.Database, stateBloom *trie.SyncBloom, 
 // In addition, during the state download phase of fast synchronisation the number
 // of processed and the total number of known states are also returned. Otherwise
 // these are zero.
+// 获取当前同步到的位置
 func (d *Downloader) Progress() ethereum.SyncProgress {
 	// Lock the current stats and return the progress
 	d.syncStatsLock.RLock()
 	defer d.syncStatsLock.RUnlock()
 
+	// current记录当前链已经同步到的区块位置
 	current := uint64(0)
 	mode := d.getMode()
+	// 按照full,fast,light的顺序进行判断
 	switch {
 	case d.blockchain != nil && mode == FullSync:
 		current = d.blockchain.CurrentBlock().NumberU64()
@@ -271,12 +287,14 @@ func (d *Downloader) Progress() ethereum.SyncProgress {
 }
 
 // Synchronising returns whether the downloader is currently retrieving blocks.
+// 获取当前是否在同步中
 func (d *Downloader) Synchronising() bool {
 	return atomic.LoadInt32(&d.synchronising) > 0
 }
 
 // RegisterPeer injects a new download peer into the set of block source to be
 // used for fetching hashes and blocks from.
+// 往d.peers里注册新的peer
 func (d *Downloader) RegisterPeer(id string, version uint, peer Peer) error {
 	var logger log.Logger
 	if len(id) < 16 {
@@ -593,6 +611,7 @@ func (d *Downloader) spawnSync(fetchers []func() error) error {
 // cancel aborts all of the operations and resets the queue. However, cancel does
 // not wait for the running download goroutines to finish. This method should be
 // used when cancelling the downloads from inside the downloader.
+// cancel直接关闭cancelCh管道
 func (d *Downloader) cancel() {
 	// Close the current cancel channel
 	d.cancelLock.Lock()
@@ -1941,21 +1960,25 @@ func (d *Downloader) commitPivotBlock(result *fetchResult) error {
 
 // DeliverHeaders injects a new batch of block headers received from a remote
 // node into the download schedule.
+// 将区块头数据发送到headerCh中
 func (d *Downloader) DeliverHeaders(id string, headers []*types.Header) error {
 	return d.deliver(d.headerCh, &headerPack{id, headers}, headerInMeter, headerDropMeter)
 }
 
 // DeliverBodies injects a new batch of block bodies received from a remote node.
+// 将区块体数据发送到bodyCh中
 func (d *Downloader) DeliverBodies(id string, transactions [][]*types.Transaction, uncles [][]*types.Header) error {
 	return d.deliver(d.bodyCh, &bodyPack{id, transactions, uncles}, bodyInMeter, bodyDropMeter)
 }
 
 // DeliverReceipts injects a new batch of receipts received from a remote node.
+// 将收据信息发送到receiptCh中
 func (d *Downloader) DeliverReceipts(id string, receipts [][]*types.Receipt) error {
 	return d.deliver(d.receiptCh, &receiptPack{id, receipts}, receiptInMeter, receiptDropMeter)
 }
 
 // DeliverNodeData injects a new batch of node state data received from a remote node.
+// 将获取到的node state data写入到stateCh中
 func (d *Downloader) DeliverNodeData(id string, data [][]byte) error {
 	return d.deliver(d.stateCh, &statePack{id, data}, stateInMeter, stateDropMeter)
 }
@@ -1987,6 +2010,8 @@ func (d *Downloader) DeliverSnapPacket(peer *snap.Peer, packet snap.Packet) erro
 }
 
 // deliver injects a new batch of data received from a remote node.
+// 将packet写入到destCh管道中
+// 如果d.cancelCh为nil或者收到数据返回错误errNoSyncActive
 func (d *Downloader) deliver(destCh chan dataPack, packet dataPack, inMeter, dropMeter metrics.Meter) (err error) {
 	// Update the delivery metrics for both good and failed deliveries
 	inMeter.Mark(int64(packet.Items()))
