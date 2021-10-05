@@ -64,6 +64,7 @@ func (i *indexEntry) unmarshalBinary(b []byte) error {
 }
 
 // append adds the encoded entry to the end of b.
+// 将索引项编码成字节流，然后追加到输入的字节数组末尾
 func (i *indexEntry) append(b []byte) []byte {
 	offset := len(b)
 	out := append(b, make([]byte, indexEntrySize)...)
@@ -109,6 +110,7 @@ type freezerTable struct {
 	// to count how many historic items have gone missing.
 	itemOffset uint32 // Offset (number of discarded items)
 
+	// 记录当前数据文件的大小
 	headBytes  int64         // Number of bytes written to the head file
 	readMeter  metrics.Meter // Meter for measuring the effective amount of data read
 	writeMeter metrics.Meter // Meter for measuring the effective amount of data written

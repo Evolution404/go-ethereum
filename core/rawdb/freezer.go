@@ -262,9 +262,11 @@ func (f *freezer) ModifyAncients(fn func(ethdb.AncientWriteOp) error) (writeSize
 	}()
 
 	f.writeBatch.reset()
+	// 调用回调函数，将数据写入到缓存中
 	if err := fn(f.writeBatch); err != nil {
 		return 0, err
 	}
+	// 将缓存中的数据全部写入到磁盘上
 	item, writeSize, err := f.writeBatch.commit()
 	if err != nil {
 		return 0, err
@@ -494,6 +496,7 @@ func (f *freezer) freeze(db ethdb.KeyValueStore) {
 	}
 }
 
+// 将[number,limit]范围的区块写入到冻结数据库中
 func (f *freezer) freezeRange(nfdb *nofreezedb, number, limit uint64) (hashes []common.Hash, err error) {
 	hashes = make([]common.Hash, 0, limit-number)
 

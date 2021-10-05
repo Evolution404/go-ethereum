@@ -132,6 +132,7 @@ func (t *table) Stat(property string) (string, error) {
 // A nil start is treated as a key before all keys in the data store; a nil limit
 // is treated as a key after all keys in the data store. If both is nil then it
 // will compact entire data store.
+// 压缩一张表内的数据，start和limit指定范围
 func (t *table) Compact(start []byte, limit []byte) error {
 	// If no start was specified, use the table prefix as the first value
 	if start == nil {
@@ -141,15 +142,21 @@ func (t *table) Compact(start []byte, limit []byte) error {
 	}
 	// If no limit was specified, use the first element not matching the prefix
 	// as the limit
+	// 如果limit是nil，代表要压缩整张表的数据，需要将limit设置为表的最后一条数据
+	// 最后一条数据其实就是将前缀的最后一个字节加一，但是有可能加一后溢出，所以溢出后要继续将前一个字节加一
 	if limit == nil {
 		limit = []byte(t.prefix)
+		// 从最后一个字节开始挨个尝试加一，
 		for i := len(limit) - 1; i >= 0; i-- {
 			// Bump the current character, stopping if it doesn't overflow
+			// 将当前字节加一
 			limit[i]++
+			// 没有溢出，结束
 			if limit[i] > 0 {
 				break
 			}
 			// Character overflown, proceed to the next or nil if the last
+			// 如果一直溢出到了第一个字节，相当于是一个全是0xff的字节数组，这张表最后一条数据就是数据库的最后一条数据
 			if i == 0 {
 				limit = nil
 			}

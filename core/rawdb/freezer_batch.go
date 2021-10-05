@@ -54,6 +54,7 @@ func (batch *freezerBatch) AppendRaw(kind string, num uint64, item []byte) error
 }
 
 // reset initializes the batch.
+// 重置冻结库缓存，就是调用内部五张表的reset方法
 func (batch *freezerBatch) reset() {
 	for _, tb := range batch.tables {
 		tb.reset()
@@ -62,6 +63,7 @@ func (batch *freezerBatch) reset() {
 
 // commit is called at the end of a write operation and
 // writes all remaining data to tables.
+// 将冻结库缓存写入冻结数据库
 func (batch *freezerBatch) commit() (item uint64, writeSize int64, err error) {
 	// Check that count agrees on all batches.
 	item = uint64(math.MaxUint64)
@@ -73,6 +75,7 @@ func (batch *freezerBatch) commit() (item uint64, writeSize int64, err error) {
 	}
 
 	// Commit all table batches.
+	// 遍历每个冻结表缓存对象，依次调用commit方法，然后记录下来总共写入的数据量
 	for _, tb := range batch.tables {
 		if err := tb.commit(); err != nil {
 			return 0, 0, err
@@ -86,17 +89,25 @@ func (batch *freezerBatch) commit() (item uint64, writeSize int64, err error) {
 type freezerTableBatch struct {
 	t *freezerTable
 
+	// 如果没启用压缩这个字段就是nil
 	sb          *snappyBuffer
+	// RLP编码时使用的缓存
 	encBuffer   writeBuffer
+	// 保存在缓存中的数据
 	dataBuffer  []byte
+	// 在缓存中的数据对应的索引信息
 	indexBuffer []byte
+	// 下一条数据要写入的位置，初始化为冻结数据表的数据条数，随着Batch中不断写入数值不断增加
 	curItem     uint64 // expected index of next append
+	// 记录已经向冻结表缓存中写入了多少字节的数据，在appendItem函数中记录
 	totalBytes  int64  // counts written bytes since reset
 }
 
 // newBatch creates a new batch for the freezer table.
+// 由freezerTable对象创建一个freezerTableBatch
 func (t *freezerTable) newBatch() *freezerTableBatch {
 	batch := &freezerTableBatch{t: t}
+	// 如果是压缩表，需要为压缩数据生成缓存
 	if !t.noCompression {
 		batch.sb = new(snappyBuffer)
 	}
@@ -105,9 +116,11 @@ func (t *freezerTable) newBatch() *freezerTableBatch {
 }
 
 // reset clears the batch for reuse.
+// 重置一个冻结表缓存对象，生成该对象的时候也可以用来初始化
 func (batch *freezerTableBatch) reset() {
 	batch.dataBuffer = batch.dataBuffer[:0]
 	batch.indexBuffer = batch.indexBuffer[:0]
+	// 初始化位置为冻结数据表内的数据条数
 	batch.curItem = atomic.LoadUint64(&batch.t.items)
 	batch.totalBytes = 0
 }
@@ -115,26 +128,32 @@ func (batch *freezerTableBatch) reset() {
 // Append rlp-encodes and adds data at the end of the freezer table. The item number is a
 // precautionary parameter to ensure data correctness, but the table will reject already
 // existing data.
+// 向冻结表缓存中添加一条数据，item是数据的序号起校验作用，data会被编码为RLP编码
 func (batch *freezerTableBatch) Append(item uint64, data interface{}) error {
+	// 校验序号是否正确
 	if item != batch.curItem {
 		return errOutOrderInsertion
 	}
 
 	// Encode the item.
+	// 计算RLP编码
 	batch.encBuffer.Reset()
 	if err := rlp.Encode(&batch.encBuffer, data); err != nil {
 		return err
 	}
 	encItem := batch.encBuffer.data
+	// 将数据压缩
 	if batch.sb != nil {
 		encItem = batch.sb.compress(encItem)
 	}
+	// 将最终的数据写入缓存，等待写入冻结数据库
 	return batch.appendItem(encItem)
 }
 
 // AppendRaw injects a binary blob at the end of the freezer table. The item number is a
 // precautionary parameter to ensure data correctness, but the table will reject already
 // existing data.
+// 向冻结表缓存中添加一条数据，item是数据的序号起校验作用，直接将data的原始内容写入冻结数据库
 func (batch *freezerTableBatch) AppendRaw(item uint64, blob []byte) error {
 	if item != batch.curItem {
 		return errOutOrderInsertion
@@ -149,32 +168,44 @@ func (batch *freezerTableBatch) AppendRaw(item uint64, blob []byte) error {
 
 func (batch *freezerTableBatch) appendItem(data []byte) error {
 	// Check if item fits into current data file.
+	// 新数据的长度
 	itemSize := int64(len(data))
+	// 新数据将要在数据文件上的开始位置：硬盘上数据的长度+缓存中数据的长度
 	itemOffset := batch.t.headBytes + int64(len(batch.dataBuffer))
+	// 判断新加的数据写入后是否需要切换数据文件
 	if itemOffset+itemSize > int64(batch.t.maxFileSize) {
 		// It doesn't fit, go to next file first.
+		// 需要切换数据文件，将之前的数据都写入到磁盘上
 		if err := batch.commit(); err != nil {
 			return err
 		}
+		// 然后切换数据文件
 		if err := batch.t.advanceHead(); err != nil {
 			return err
 		}
+		// 新数据将被写入到全新的数据文件，所以偏移位置是0
 		itemOffset = 0
 	}
 
 	// Put data to buffer.
+	// 将新数据加入缓存
 	batch.dataBuffer = append(batch.dataBuffer, data...)
+	// 记录写入的数据总量
 	batch.totalBytes += itemSize
 
 	// Put index entry to buffer.
+	// 记录新数据的索引信息
 	entry := indexEntry{filenum: batch.t.headId, offset: uint32(itemOffset + itemSize)}
 	batch.indexBuffer = entry.append(batch.indexBuffer)
+	// 表中数据加一
 	batch.curItem++
 
+	// 尝试一下是否需要将缓存写入冻结数据库
 	return batch.maybeCommit()
 }
 
 // maybeCommit writes the buffered data if the buffer is full enough.
+// 判断是否达到了缓存数据的上限，达到上限后写入冻结数据库
 func (batch *freezerTableBatch) maybeCommit() error {
 	if len(batch.dataBuffer) > freezerBatchBufferLimit {
 		return batch.commit()
@@ -183,25 +214,34 @@ func (batch *freezerTableBatch) maybeCommit() error {
 }
 
 // commit writes the batched items to the backing freezerTable.
+// 将缓存中的数据写入到冻结数据库
 func (batch *freezerTableBatch) commit() error {
 	// Write data.
+	// 向数据文件写入缓存的数据
 	_, err := batch.t.head.Write(batch.dataBuffer)
 	if err != nil {
 		return err
 	}
+	// 用于metrics统计
 	dataSize := int64(len(batch.dataBuffer))
+	// 清空数据缓存
 	batch.dataBuffer = batch.dataBuffer[:0]
 
 	// Write index.
+	// 向索引文件写入缓存的索引信息
 	_, err = batch.t.index.Write(batch.indexBuffer)
 	if err != nil {
 		return err
 	}
+	// 用于metrics统计
 	indexSize := int64(len(batch.indexBuffer))
+	// 清空索引缓存
 	batch.indexBuffer = batch.indexBuffer[:0]
 
 	// Update headBytes of table.
+	// 更新冻结数据表中保存的数据文件大小
 	batch.t.headBytes += dataSize
+	// 更新冻结数据表中保存的数据条数
 	atomic.StoreUint64(&batch.t.items, batch.curItem)
 
 	// Update metrics.

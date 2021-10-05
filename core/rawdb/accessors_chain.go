@@ -769,7 +769,8 @@ func WriteBlock(db ethdb.KeyValueWriter, block *types.Block) {
 }
 
 // WriteAncientBlock writes entire block data into ancient store and returns the total written size.
-// blocks保存了各个区块对象，receipts保存了各个区块的收据
+// 输入多个区块的信息，将他们写入到冻结数据库中
+// blocks保存了各个区块对象，receipts保存了各个区块的收据，td是输入的第一个区块的总难度
 func WriteAncientBlocks(db ethdb.AncientWriter, blocks []*types.Block, receipts []types.Receipts, td *big.Int) (int64, error) {
 	var (
 		// 保存截止到每个区块的总难度
