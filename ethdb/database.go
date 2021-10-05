@@ -71,9 +71,11 @@ type KeyValueStore interface {
 type AncientReader interface {
 	// HasAncient returns an indicator whether the specified data exists in the
 	// ancient store.
+	// 判断冻结数据库中的kind表中是否有第number项数据
 	HasAncient(kind string, number uint64) (bool, error)
 
 	// Ancient retrieves an ancient binary blob from the append-only immutable files.
+	// 查询冻结数据库中kind表的第number项数据
 	Ancient(kind string, number uint64) ([]byte, error)
 
 	// ReadAncients retrieves multiple items in sequence, starting from the index 'start'.
@@ -81,12 +83,16 @@ type AncientReader interface {
 	//  - at most 'count' items,
 	//  - at least 1 item (even if exceeding the maxBytes), but will otherwise
 	//   return as many items as fit into maxBytes.
+	// 读取冻结数据库的kind表从start开始的count条数据
+	// maxBytes会限制返回数据的最大占用空间，如果第一条数据就超过了maxBytes，这条数据不受限制，直接返回
 	ReadAncients(kind string, start, count, maxBytes uint64) ([][]byte, error)
 
 	// Ancients returns the ancient item numbers in the ancient store.
+	// 获取冻结数据库的数据总条数
 	Ancients() (uint64, error)
 
 	// AncientSize returns the ancient size of the specified category.
+	// 获取冻结数据库占用的空间大小
 	AncientSize(kind string) (uint64, error)
 }
 
@@ -95,16 +101,20 @@ type AncientWriter interface {
 	// ModifyAncients runs a write operation on the ancient store.
 	// If the function returns an error, any changes to the underlying store are reverted.
 	// The integer return value is the total size of the written data.
+	// 用于向冻结数据库写入数据
 	ModifyAncients(func(AncientWriteOp) error) (int64, error)
 
 	// TruncateAncients discards all but the first n ancient data from the ancient store.
+	// 保留冻结数据库的前n条数据，后面的数据被删除
 	TruncateAncients(n uint64) error
 
 	// Sync flushes all in-memory ancient store data to disk.
+	// 执行过写入操作要进行同步
 	Sync() error
 }
 
 // AncientWriteOp is given to the function argument of ModifyAncients.
+// 作为ModifyAncients传入的回调函数的参数，由core/rawdb/freezer_batch.go文件中的freezerBatch对象实现
 type AncientWriteOp interface {
 	// Append adds an RLP-encoded item.
 	Append(kind string, number uint64, item interface{}) error

@@ -45,6 +45,7 @@ var (
 )
 
 // Blockchain defines all necessary method to build a forkID.
+// 实现了Config、Genesis、CurrentHeader三个方法的对象可以直接生成区块链标识符
 type Blockchain interface {
 	// Config retrieves the chain's fork configuration.
 	Config() *params.ChainConfig
@@ -57,44 +58,58 @@ type Blockchain interface {
 }
 
 // ID is a fork identifier as defined by EIP-2124.
+// 代表一个区块链标识符
 type ID struct {
 	Hash [4]byte // CRC32 checksum of the genesis block and passed fork block numbers
 	Next uint64  // Block number of the next upcoming fork, or 0 if no forks are known
 }
 
 // Filter is a fork id filter to validate a remotely advertised ID.
+// 验证远程节点的区块链标识符是否和本地匹配
 type Filter func(id ID) error
 
 // NewID calculates the Ethereum fork ID from the chain config, genesis hash, and head.
+// 根据区块链配置、创世区块以及当前区块高度创建区块链标识符
 func NewID(config *params.ChainConfig, genesis common.Hash, head uint64) ID {
 	// Calculate the starting checksum from the genesis hash
+	// 先计算创世区块时的标识符，接下要挨个分叉进行更新
 	hash := crc32.ChecksumIEEE(genesis[:])
 
 	// Calculate the current fork checksum and the next fork block
+	// 记录下一次分叉的位置，如果当前高度高于所有分叉next是0
 	var next uint64
+	// 获取所有分叉高度，依次输入小于当前区块高度的分叉来更新区块链标识符
 	for _, fork := range gatherForks(config) {
 		if fork <= head {
 			// Fork already passed, checksum the previous hash and the fork number
 			hash = checksumUpdate(hash, fork)
 			continue
 		}
+		// 由于上面有continue，如果区块高度高于所有分叉，这一句永远不会执行，next也就是0
 		next = fork
 		break
 	}
+	// 返回最终的区块链标识符
 	return ID{Hash: checksumToBytes(hash), Next: next}
 }
 
 // NewIDWithChain calculates the Ethereum fork ID from an existing chain instance.
+// 基于BlockChain对象生成区块链标识符
 func NewIDWithChain(chain Blockchain) ID {
 	return NewID(
 		chain.Config(),
+		// 创世区块对象还要再调用Hash方法转换成哈希类型
 		chain.Genesis().Hash(),
+		// 需要从当前区块头对象中取出当前的区块高度
 		chain.CurrentHeader().Number.Uint64(),
 	)
 }
 
 // NewFilter creates a filter that returns if a fork ID should be rejected or not
 // based on the local chain's status.
+// 生成一个判断远程节点标识符是否匹配的过滤器
+// 生成的过滤器会随着本地区块高度的变化动态的修改返回结果
+// 也就是每次调用过滤器都会返回本地区块链当前状态与远程节点匹配的结果
 func NewFilter(chain Blockchain) Filter {
 	return newFilter(
 		chain.Config(),
@@ -106,6 +121,7 @@ func NewFilter(chain Blockchain) Filter {
 }
 
 // NewStaticFilter creates a filter at block zero.
+// 生成一个永远保持在创世区块的标识符过滤器
 func NewStaticFilter(config *params.ChainConfig, genesis common.Hash) Filter {
 	head := func() uint64 { return 0 }
 	return newFilter(config, genesis, head)
@@ -114,20 +130,25 @@ func NewStaticFilter(config *params.ChainConfig, genesis common.Hash) Filter {
 // newFilter is the internal version of NewFilter, taking closures as its arguments
 // instead of a chain. The reason is to allow testing it without having to simulate
 // an entire blockchain.
+// 输入区块链配置、创世区块哈希和一个获取区块高度的回调函数来生成过滤器
 func newFilter(config *params.ChainConfig, genesis common.Hash, headfn func() uint64) Filter {
 	// Calculate the all the valid fork hash and fork next combos
 	var (
 		forks = gatherForks(config)
+		// 保存从创世区块开始，经过各次分叉后的FORK_HASH
 		sums  = make([][4]byte, len(forks)+1) // 0th is the genesis
 	)
+	// 首先计算创世区块时的FORK_HASH
 	hash := crc32.ChecksumIEEE(genesis[:])
 	sums[0] = checksumToBytes(hash)
+	// 然后遍历各次分叉
 	for i, fork := range forks {
 		hash = checksumUpdate(hash, fork)
 		sums[i+1] = checksumToBytes(hash)
 	}
 	// Add two sentries to simplify the fork checks and don't require special
 	// casing the last one.
+	// 添加一个永远不会越过的分叉高度，避免处理边界情况
 	forks = append(forks, math.MaxUint64) // Last fork will never be passed
 
 	// Create a validator that will filter out incompatible chains
@@ -151,29 +172,36 @@ func newFilter(config *params.ChainConfig, genesis common.Hash, headfn func() ui
 		//        the remote, but at this current point in time we don't have enough
 		//        information.
 		//   4. Reject in all other cases.
+		// 获取当前区块高度
 		head := headfn()
 		for i, fork := range forks {
 			// If our head is beyond this fork, continue to the next (we have a dummy
 			// fork of maxuint64 as the last item to always fail this check eventually).
+			// 一直找到当前区块高度所在的分叉
 			if head >= fork {
 				continue
 			}
 			// Found the first unpassed fork block, check if our current state matches
 			// the remote checksum (rule #1).
+			// 本地和远程的FORK_HASH匹配匹配
 			if sums[i] == id.Hash {
 				// Fork checksum matched, check if a remote future fork block already passed
 				// locally without the local node being aware of it (rule #1a).
+				// 本地已经越过了远程节点的FORK_NEXT，这时候要报错
 				if id.Next > 0 && head >= id.Next {
 					return ErrLocalIncompatibleOrStale
 				}
 				// Haven't passed locally a remote-only fork, accept the connection (rule #1b).
+				// 其他情况都通过
 				return nil
 			}
 			// The local and remote nodes are in different forks currently, check if the
 			// remote checksum is a subset of our local forks (rule #2).
+			// 远程节点是本地的子集，远程节点的FORK_NEXT要与本地匹配
 			for j := 0; j < i; j++ {
 				if sums[j] == id.Hash {
 					// Remote checksum is a subset, validate based on the announced next fork
+					// 远程节点认为的下一个分叉点与本地不一致，要报错
 					if forks[j] != id.Next {
 						return ErrRemoteStale
 					}
@@ -182,6 +210,7 @@ func newFilter(config *params.ChainConfig, genesis common.Hash, headfn func() ui
 			}
 			// Remote chain is not a subset of our local one, check if it's a superset by
 			// any chance, signalling that we're simply out of sync (rule #3).
+			// 本地节点是远程节点的子集
 			for j := i + 1; j < len(sums); j++ {
 				if sums[j] == id.Hash {
 					// Yay, remote checksum is a superset, ignore upcoming forks
@@ -189,6 +218,8 @@ func newFilter(config *params.ChainConfig, genesis common.Hash, headfn func() ui
 				}
 			}
 			// No exact, subset or superset match. We are on differing chains, reject.
+			// 本地节点计算了所有已知的分叉点可能生成的FORK_HASH都不能与远程节点匹配
+			// 此时有可能与远程节点不匹配或者本地软件版本太旧了，不知道最新的分叉位置
 			return ErrLocalIncompatibleOrStale
 		}
 		log.Error("Impossible fork ID validation", "id", id)
@@ -198,6 +229,7 @@ func newFilter(config *params.ChainConfig, genesis common.Hash, headfn func() ui
 
 // checksumUpdate calculates the next IEEE CRC32 checksum based on the previous
 // one and a fork block number (equivalent to CRC32(original-blob || fork)).
+// 已经知道了之前的校验和，计算新增输入的分叉高度后的新的校验和
 func checksumUpdate(hash uint32, fork uint64) uint32 {
 	var blob [8]byte
 	binary.BigEndian.PutUint64(blob[:], fork)
@@ -205,6 +237,7 @@ func checksumUpdate(hash uint32, fork uint64) uint32 {
 }
 
 // checksumToBytes converts a uint32 checksum into a [4]byte array.
+// 将uint32类型的校验和转换成长度为4的字节数组
 func checksumToBytes(hash uint32) [4]byte {
 	var blob [4]byte
 	binary.BigEndian.PutUint32(blob[:], hash)
@@ -212,28 +245,34 @@ func checksumToBytes(hash uint32) [4]byte {
 }
 
 // gatherForks gathers all the known forks and creates a sorted list out of them.
+// 用于从区块链配置中得到所有的分叉高度
 func gatherForks(config *params.ChainConfig) []uint64 {
 	// Gather all the fork block numbers via reflection
 	kind := reflect.TypeOf(params.ChainConfig{})
 	conf := reflect.ValueOf(config).Elem()
 
 	var forks []uint64
+	// 遍历配置信息的所有字段
 	for i := 0; i < kind.NumField(); i++ {
 		// Fetch the next field and skip non-fork rules
 		field := kind.Field(i)
+		// 找到字段是以Block结尾的
 		if !strings.HasSuffix(field.Name, "Block") {
 			continue
 		}
+		// 而且字段的数据类型必须是big.Int
 		if field.Type != reflect.TypeOf(new(big.Int)) {
 			continue
 		}
 		// Extract the fork rule block number and aggregate it
+		// 提取出来分叉的高度
 		rule := conf.Field(i).Interface().(*big.Int)
 		if rule != nil {
 			forks = append(forks, rule.Uint64())
 		}
 	}
 	// Sort the fork block numbers to permit chronological XOR
+	// 将所有分叉高度从小到大排序
 	for i := 0; i < len(forks); i++ {
 		for j := i + 1; j < len(forks); j++ {
 			if forks[i] > forks[j] {
@@ -242,6 +281,7 @@ func gatherForks(config *params.ChainConfig) []uint64 {
 		}
 	}
 	// Deduplicate block numbers applying multiple forks
+	// 去除重复的分叉高度
 	for i := 1; i < len(forks); i++ {
 		if forks[i] == forks[i-1] {
 			forks = append(forks[:i], forks[i+1:]...)
@@ -249,6 +289,7 @@ func gatherForks(config *params.ChainConfig) []uint64 {
 		}
 	}
 	// Skip any forks in block 0, that's the genesis ruleset
+	// 去除高度为0的分叉
 	if len(forks) > 0 && forks[0] == 0 {
 		forks = forks[1:]
 	}
