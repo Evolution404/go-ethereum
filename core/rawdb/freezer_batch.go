@@ -27,6 +27,7 @@ import (
 
 // This is the maximum amount of data that will be buffered in memory
 // for a single freezer table batch.
+// 当冻结数据库中一张表缓存的数据超过2M的时候向硬盘写入数据
 const freezerBatchBufferLimit = 2 * 1024 * 1024
 
 // freezerBatch is a write operation of multiple items on a freezer.
@@ -211,17 +212,21 @@ func (batch *freezerTableBatch) commit() error {
 
 // snappyBuffer writes snappy in block format, and can be reused. It is
 // reset when WriteTo is called.
+// 压缩缓存对象，将压缩的数据保存在内部的字节数组中
+// 每次压缩的数据都复用这个字节数组，可以减少内存分配
 type snappyBuffer struct {
 	dst []byte
 }
 
 // compress snappy-compresses the data.
+// 压缩输入的数据到内部的缓存中
 func (s *snappyBuffer) compress(data []byte) []byte {
 	// The snappy library does not care what the capacity of the buffer is,
 	// but only checks the length. If the length is too small, it will
 	// allocate a brand new buffer.
 	// To avoid that, we check the required size here, and grow the size of the
 	// buffer to utilize the full capacity.
+	// 尽可能地复用内部的dst字节数组，减少内存分配
 	if n := snappy.MaxEncodedLen(len(data)); len(s.dst) < n {
 		if cap(s.dst) < n {
 			s.dst = make([]byte, n)
@@ -234,6 +239,7 @@ func (s *snappyBuffer) compress(data []byte) []byte {
 }
 
 // writeBuffer implements io.Writer for a byte slice.
+// 一个写入缓存，实现了io.Writer接口，可以通过Reset方法复用内部的字节数组，减少内存分配
 type writeBuffer struct {
 	data []byte
 }

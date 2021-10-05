@@ -769,22 +769,30 @@ func WriteBlock(db ethdb.KeyValueWriter, block *types.Block) {
 }
 
 // WriteAncientBlock writes entire block data into ancient store and returns the total written size.
+// blocks保存了各个区块对象，receipts保存了各个区块的收据
 func WriteAncientBlocks(db ethdb.AncientWriter, blocks []*types.Block, receipts []types.Receipts, td *big.Int) (int64, error) {
 	var (
+		// 保存截止到每个区块的总难度
 		tdSum      = new(big.Int).Set(td)
+		// 保存每个区块段收据
 		stReceipts []*types.ReceiptForStorage
 	)
 	return db.ModifyAncients(func(op ethdb.AncientWriteOp) error {
+		// 遍历所有区块
 		for i, block := range blocks {
 			// Convert receipts to storage format and sum up total difficulty.
+			// 每个循环里面清空上个区块保存的收据
 			stReceipts = stReceipts[:0]
+			// 收集当前区块的收据
 			for _, receipt := range receipts[i] {
 				stReceipts = append(stReceipts, (*types.ReceiptForStorage)(receipt))
 			}
 			header := block.Header()
+			// 增加总难度，第一次循环不加，输入的就是第一次的总难度
 			if i > 0 {
 				tdSum.Add(tdSum, header.Difficulty)
 			}
+			// 将每项数据依次写入到冻结数据库中
 			if err := writeAncientBlock(op, block, header, stReceipts, tdSum); err != nil {
 				return err
 			}
@@ -793,7 +801,11 @@ func WriteAncientBlocks(db ethdb.AncientWriter, blocks []*types.Block, receipts 
 	})
 }
 
+// 将一个区块的数据写入到冻结数据库中
+// 四项数据（Block对象可以获取区块哈希），对应五张表
+// 除了区块哈希写入原始内容之外，其他四项数据以RLP编码的形式写入冻结数据库
 func writeAncientBlock(op ethdb.AncientWriteOp, block *types.Block, header *types.Header, receipts []*types.ReceiptForStorage, td *big.Int) error {
+	// 区块号就是冻结数据库中的序号
 	num := block.NumberU64()
 	if err := op.AppendRaw(freezerHashTable, num, block.Hash().Bytes()); err != nil {
 		return fmt.Errorf("can't add block %d hash: %v", num, err)

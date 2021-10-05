@@ -56,13 +56,16 @@ const (
 	// freezerRecheckInterval is the frequency to check the key-value database for
 	// chain progression that might permit new blocks to be frozen into immutable
 	// storage.
+	// 冻结数据库的检查周期，意思是每一分钟检查一次是否需要将数据保存到冻结数据库
 	freezerRecheckInterval = time.Minute
 
 	// freezerBatchLimit is the maximum number of blocks to freeze in one batch
 	// before doing an fsync and deleting it from the key-value store.
+	// 一次最多写入冻结数据库的区块个数
 	freezerBatchLimit = 30000
 
 	// freezerTableSize defines the maximum size of freezer data files.
+	// 冻结数据库的单个数据文件容量的最大值
 	freezerTableSize = 2 * 1000 * 1000 * 1000
 )
 
@@ -73,6 +76,7 @@ const (
 // - The memory mapping ensures we can max out system memory for caching without
 //   reserving it for go-ethereum. This would also reduce the memory requirements
 //   of Geth, and thus also GC overhead.
+// 冻结数据库对象
 type freezer struct {
 	// WARNING: The `frozen` field is accessed atomically. On 32 bit platforms, only
 	// 64-bit aligned fields can be atomic. The struct is guaranteed to be so aligned,
@@ -108,6 +112,7 @@ func newFreezer(datadir string, namespace string, readonly bool, maxTableSize ui
 		sizeGauge  = metrics.NewRegisteredGauge(namespace+"ancient/size", nil)
 	)
 	// Ensure the datadir is not a symbolic link if it exists.
+	// 保证冻结数据库的文件夹不是一个符号链接
 	if info, err := os.Lstat(datadir); !os.IsNotExist(err) {
 		if info.Mode()&os.ModeSymlink != 0 {
 			log.Warn("Symbolic link ancient database is not supported", "path", datadir)
@@ -232,6 +237,7 @@ func (f *freezer) AncientSize(kind string) (uint64, error) {
 }
 
 // ModifyAncients runs the given write operation.
+// 修改冻结数据库的内容
 func (f *freezer) ModifyAncients(fn func(ethdb.AncientWriteOp) error) (writeSize int64, err error) {
 	if f.readonly {
 		return 0, errReadOnly
@@ -240,7 +246,9 @@ func (f *freezer) ModifyAncients(fn func(ethdb.AncientWriteOp) error) (writeSize
 	defer f.writeLock.Unlock()
 
 	// Roll back all tables to the starting position in case of error.
+	// 记录下来写入数据之前的数据条数，如果发生错误回滚到这里
 	prevItem := f.frozen
+	// 如果发生错误将五张表的数据都回滚到操作之前
 	defer func() {
 		if err != nil {
 			// The write operation has failed. Go back to the previous item position.

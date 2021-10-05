@@ -70,6 +70,7 @@ var (
 	fastTxLookupLimitKey = []byte("FastTransactionLookupLimit")
 
 	// badBlockKey tracks the list of bad blocks seen by local
+	// 运行过程中发现的不合法的区块
 	badBlockKey = []byte("InvalidBlock")
 
 	// uncleanShutdownKey tracks the list of local crashes
