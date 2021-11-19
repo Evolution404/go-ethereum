@@ -70,7 +70,7 @@ type txPool interface {
 	// Pending should return pending transactions.
 	// The slice should be modifiable by the caller.
 	// 返回交易池中所有交易
-	Pending(enforceTips bool) (map[common.Address]types.Transactions, error)
+	Pending(enforceTips bool) map[common.Address]types.Transactions
 
 	// SubscribeNewTxsEvent should return an event subscription of
 	// NewTxsEvent and send events to the given channel.

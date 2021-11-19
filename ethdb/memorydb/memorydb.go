@@ -228,7 +228,7 @@ type batch struct {
 func (b *batch) Put(key, value []byte) error {
 	b.writes = append(b.writes, keyvalue{common.CopyBytes(key), common.CopyBytes(value), false})
 	// 写入时队列长度就增加value的长度
-	b.size += len(value)
+	b.size += len(key) + len(value)
 	return nil
 }
 

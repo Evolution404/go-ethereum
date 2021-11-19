@@ -49,7 +49,7 @@ func DeleteSnapshotDisabled(db ethdb.KeyValueWriter) {
 // ReadSnapshotRoot retrieves the root of the block whose state is contained in
 // the persisted snapshot.
 func ReadSnapshotRoot(db ethdb.KeyValueReader) common.Hash {
-	data, _ := db.Get(snapshotRootKey)
+	data, _ := db.Get(SnapshotRootKey)
 	if len(data) != common.HashLength {
 		return common.Hash{}
 	}
@@ -60,7 +60,7 @@ func ReadSnapshotRoot(db ethdb.KeyValueReader) common.Hash {
 // the persisted snapshot.
 // snapshotRoot保存了根的哈希值
 func WriteSnapshotRoot(db ethdb.KeyValueWriter, root common.Hash) {
-	if err := db.Put(snapshotRootKey, root[:]); err != nil {
+	if err := db.Put(SnapshotRootKey, root[:]); err != nil {
 		log.Crit("Failed to store snapshot root", "err", err)
 	}
 }
@@ -70,7 +70,7 @@ func WriteSnapshotRoot(db ethdb.KeyValueWriter, root common.Hash) {
 // be used during updates, so a crash or failure will mark the entire snapshot
 // invalid.
 func DeleteSnapshotRoot(db ethdb.KeyValueWriter) {
-	if err := db.Delete(snapshotRootKey); err != nil {
+	if err := db.Delete(SnapshotRootKey); err != nil {
 		log.Crit("Failed to remove snapshot root", "err", err)
 	}
 }

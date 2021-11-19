@@ -132,7 +132,7 @@ func (batch *freezerTableBatch) reset() {
 func (batch *freezerTableBatch) Append(item uint64, data interface{}) error {
 	// 校验序号是否正确
 	if item != batch.curItem {
-		return errOutOrderInsertion
+		return fmt.Errorf("%w: have %d want %d", errOutOrderInsertion, item, batch.curItem)
 	}
 
 	// Encode the item.
@@ -156,7 +156,7 @@ func (batch *freezerTableBatch) Append(item uint64, data interface{}) error {
 // 向冻结表缓存中添加一条数据，item是数据的序号起校验作用，直接将data的原始内容写入冻结数据库
 func (batch *freezerTableBatch) AppendRaw(item uint64, blob []byte) error {
 	if item != batch.curItem {
-		return errOutOrderInsertion
+		return fmt.Errorf("%w: have %d want %d", errOutOrderInsertion, item, batch.curItem)
 	}
 
 	encItem := blob

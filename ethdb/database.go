@@ -85,14 +85,12 @@ type AncientReader interface {
 	// 查询冻结数据库中kind表的第number项数据
 	Ancient(kind string, number uint64) ([]byte, error)
 
-	// ReadAncients retrieves multiple items in sequence, starting from the index 'start'.
+	// AncientRange retrieves multiple items in sequence, starting from the index 'start'.
 	// It will return
 	//  - at most 'count' items,
 	//  - at least 1 item (even if exceeding the maxBytes), but will otherwise
 	//   return as many items as fit into maxBytes.
-	// 读取冻结数据库的kind表从start开始的count条数据
-	// maxBytes会限制返回数据的最大占用空间，如果第一条数据就超过了maxBytes，这条数据不受限制，直接返回
-	ReadAncients(kind string, start, count, maxBytes uint64) ([][]byte, error)
+	AncientRange(kind string, start, count, maxBytes uint64) ([][]byte, error)
 
 	// Ancients returns the ancient item numbers in the ancient store.
 	// 获取冻结数据库的数据总条数
@@ -101,6 +99,15 @@ type AncientReader interface {
 	// AncientSize returns the ancient size of the specified category.
 	// 获取冻结数据库占用的空间大小
 	AncientSize(kind string) (uint64, error)
+}
+
+// AncientBatchReader is the interface for 'batched' or 'atomic' reading.
+type AncientBatchReader interface {
+	AncientReader
+
+	// ReadAncients runs the given read operation while ensuring that no writes take place
+	// on the underlying freezer.
+	ReadAncients(fn func(AncientReader) error) (err error)
 }
 
 // AncientWriter contains the methods required to write to immutable ancient data.
@@ -135,7 +142,7 @@ type AncientWriteOp interface {
 // Reader对键值数据库和旧数据都能读
 type Reader interface {
 	KeyValueReader
-	AncientReader
+	AncientBatchReader
 }
 
 // Writer contains the methods required to write data to both key-value as well as
@@ -150,7 +157,7 @@ type Writer interface {
 // ancient data stores backing immutable chain data store.
 // 旧数据的读写器
 type AncientStore interface {
-	AncientReader
+	AncientBatchReader
 	AncientWriter
 	io.Closer
 }
