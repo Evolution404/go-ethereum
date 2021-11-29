@@ -83,14 +83,19 @@ func (b *readBuffer) grow(n int) {
 
 // writeBuffer implements buffering for network writes. This is essentially
 // a convenience wrapper around a byte slice.
+// 写入缓冲区，本质是一个字节数组，不断复用内部的字节数组，减少内存分配提高效率
+// 提供reset、appendZero、Write方法
+// TODO: 尝试提供一个预分配空间的方法，将多次内存分配合并
 type writeBuffer struct {
 	data []byte
 }
 
+// 清空缓冲区的所有数据
 func (b *writeBuffer) reset() {
 	b.data = b.data[:0]
 }
 
+// 往缓冲区追加指定个数的空字节
 func (b *writeBuffer) appendZero(n int) []byte {
 	offset := len(b.data)
 	b.data = append(b.data, make([]byte, n)...)
@@ -102,12 +107,16 @@ func (b *writeBuffer) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// 3字节无符号数的上限，用于错误处理
 const maxUint24 = int(^uint32(0) >> 8)
 
+// 输入长度为3的字节数组，转换成uint32
 func readUint24(b []byte) uint32 {
 	return uint32(b[2]) | uint32(b[1])<<8 | uint32(b[0])<<16
 }
 
+// 将uint24转换成长度为3的字节数组
+// uint32的后面24个比特位保存了数据
 func putUint24(v uint32, b []byte) {
 	b[0] = byte(v >> 16)
 	b[1] = byte(v >> 8)
