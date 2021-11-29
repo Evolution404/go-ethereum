@@ -96,6 +96,9 @@ var (
 	// uncleanShutdownKey tracks the list of local crashes
 	uncleanShutdownKey = []byte("unclean-shutdown") // config prefix for the db
 
+	// transitionStatusKey tracks the eth2 transition status.
+	transitionStatusKey = []byte("eth2-transition")
+
 	// Data item prefixes (use single byte to avoid mixing data types, avoid `i`, used for indexes).
 	// h100hash->区块头
 	headerPrefix       = []byte("h") // headerPrefix + num (uint64 big endian) + hash -> header

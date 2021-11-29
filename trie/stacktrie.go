@@ -55,13 +55,11 @@ func returnToPool(st *StackTrie) {
 // into, it will hash it and free up the memory it uses.
 // key按照顺序插入的类型
 type StackTrie struct {
-	// 分别有emptyNode,branchNode,extNode,leafNode,hashedNode五种类型
-	nodeType  uint8                // node type (as in branch, ext, leaf)
-	val       []byte               // value contained by this node if it's a leaf
-	key       []byte               // key chunk covered by this (full|ext) node
-	keyOffset int                  // offset of the key chunk inside a full key
-	children  [16]*StackTrie       // list of children (for fullnodes and exts)
-	db        ethdb.KeyValueWriter // Pointer to the commit db, can be nil
+	nodeType uint8                // node type (as in branch, ext, leaf)
+	val      []byte               // value contained by this node if it's a leaf
+	key      []byte               // key chunk covered by this (leaf|ext) node
+	children [16]*StackTrie       // list of children (for branch and exts)
+	db       ethdb.KeyValueWriter // Pointer to the commit db, can be nil
 }
 
 // NewStackTrie allocates and initializes an empty trie.
@@ -100,15 +98,13 @@ func (st *StackTrie) MarshalBinary() (data []byte, err error) {
 		w = bufio.NewWriter(&b)
 	)
 	if err := gob.NewEncoder(w).Encode(struct {
-		Nodetype  uint8
-		Val       []byte
-		Key       []byte
-		KeyOffset uint8
+		Nodetype uint8
+		Val      []byte
+		Key      []byte
 	}{
 		st.nodeType,
 		st.val,
 		st.key,
-		uint8(st.keyOffset),
 	}); err != nil {
 		return nil, err
 	}
@@ -140,10 +136,9 @@ func (st *StackTrie) UnmarshalBinary(data []byte) error {
 
 func (st *StackTrie) unmarshalBinary(r io.Reader) error {
 	var dec struct {
-		Nodetype  uint8
-		Val       []byte
-		Key       []byte
-		KeyOffset uint8
+		Nodetype uint8
+		Val      []byte
+		Key      []byte
 	}
 	// 使用gob包解码二进制流到dec中
 	gob.NewDecoder(r).Decode(&dec)
@@ -151,7 +146,6 @@ func (st *StackTrie) unmarshalBinary(r io.Reader) error {
 	st.nodeType = dec.Nodetype
 	st.val = dec.Val
 	st.key = dec.Key
-	st.keyOffset = int(dec.KeyOffset)
 
 	var hasChild = make([]byte, 1)
 	for i := range st.children {
@@ -180,24 +174,18 @@ func (st *StackTrie) setDb(db ethdb.KeyValueWriter) {
 	}
 }
 
-// 新建一个leafNode
-// ko代表keyOffset,表示输入key的开始位置
-func newLeaf(ko int, key, val []byte, db ethdb.KeyValueWriter) *StackTrie {
+func newLeaf(key, val []byte, db ethdb.KeyValueWriter) *StackTrie {
 	st := stackTrieFromPool(db)
 	st.nodeType = leafNode
-	st.keyOffset = ko
-	st.key = append(st.key, key[ko:]...)
+	st.key = append(st.key, key...)
 	st.val = val
 	return st
 }
 
-// 指定ko,key和child新建一个extNode
-// 新建的extNode的key就是输入key从ko开始截取的后半部分
-func newExt(ko int, key []byte, child *StackTrie, db ethdb.KeyValueWriter) *StackTrie {
+func newExt(key []byte, child *StackTrie, db ethdb.KeyValueWriter) *StackTrie {
 	st := stackTrieFromPool(db)
 	st.nodeType = extNode
-	st.keyOffset = ko
-	st.key = append(st.key, key[ko:]...)
+	st.key = append(st.key, key...)
 	st.children[0] = child
 	return st
 }
@@ -239,7 +227,6 @@ func (st *StackTrie) Reset() {
 		st.children[i] = nil
 	}
 	st.nodeType = emptyNode
-	st.keyOffset = 0
 }
 
 // Helper function that, given a full key, determines the index
@@ -247,10 +234,12 @@ func (st *StackTrie) Reset() {
 // the same chunk in the full key.
 // 找到st.key第一处与输入的key不一致的地方
 func (st *StackTrie) getDiffIndex(key []byte) int {
-	diffindex := 0
-	for ; diffindex < len(st.key) && st.key[diffindex] == key[st.keyOffset+diffindex]; diffindex++ {
+	for idx, nibble := range st.key {
+		if nibble != key[idx] {
+			return idx
+		}
 	}
-	return diffindex
+	return len(st.key)
 }
 
 // Helper function to that inserts a (key, value) pair into
@@ -261,7 +250,7 @@ func (st *StackTrie) insert(key, value []byte) {
 	// 分支节点的插入是根据key的第一位来判断在children中的位置
 	// 将前面的children就计算哈希,然后递归插入
 	case branchNode: /* Branch */
-		idx := int(key[st.keyOffset])
+		idx := int(key[0])
 		// Unresolve elder siblings
 		// 把之前的节点都计算哈希
 		for i := idx - 1; i >= 0; i-- {
@@ -275,27 +264,10 @@ func (st *StackTrie) insert(key, value []byte) {
 		// Add new child
 		// 插入新的节点
 		if st.children[idx] == nil {
-			st.children[idx] = stackTrieFromPool(st.db)
-			st.children[idx].keyOffset = st.keyOffset + 1
+			st.children[idx] = newLeaf(key[1:], value, st.db)
+		} else {
+			st.children[idx].insert(key[1:], value)
 		}
-		st.children[idx].insert(key, value)
-	// 假设当前extNode保存的key是abcd
-	// 当前节点扩展节点st连接分支节点child
-	// 1. 完全不匹配,例如exxx
-	//    生成新的扩展节点bcd连接原来的child
-	//    st改造为分支节点,连接扩展节点bcd和叶子节点xxx
-	// 2. 有两个或以上字符不匹配,例如axxx,abxxx,以下以axxx为例
-	//    生成新的扩展节点cd连接child
-	//    生成叶子节点xx
-	//    生成分支节点连接cd和xxx
-	//    st保持扩展节点,key修改为a,连接新增分支节点
-	// 3. 仅有末尾一个字符不匹配,例如abcxxx
-	//    生成叶子节点xx
-	//    生成分支节点连接child和xx
-	//    st保持扩展节点,key修改为abc,连接新增分支节点
-	// 4. 完全匹配abcdxxx
-	//    这个扩展节点不做操作,直接向children[0]保存的分支节点插入
-	// 2和3主要的区别在于3少生成一次扩展节点
 	case extNode: /* Ext */
 		// Compare both key chunks and see where they differ
 		diffidx := st.getDiffIndex(key)
@@ -309,7 +281,7 @@ func (st *StackTrie) insert(key, value []byte) {
 		if diffidx == len(st.key) {
 			// Ext key and key segment are identical, recurse into
 			// the child node.
-			st.children[0].insert(key, value)
+			st.children[0].insert(key[diffidx:], value)
 			return
 		}
 		// Save the original part. Depending if the break is
@@ -319,7 +291,7 @@ func (st *StackTrie) insert(key, value []byte) {
 		// n用来记录原来的节点
 		var n *StackTrie
 		if diffidx < len(st.key)-1 {
-			n = newExt(diffidx+1, st.key, st.children[0], st.db)
+			n = newExt(st.key[diffidx+1:], st.children[0], st.db)
 		} else {
 			// Break on the last byte, no need to insert
 			// an extension node: reuse the current node
@@ -348,17 +320,15 @@ func (st *StackTrie) insert(key, value []byte) {
 			// node.
 			st.children[0] = stackTrieFromPool(st.db)
 			st.children[0].nodeType = branchNode
-			st.children[0].keyOffset = st.keyOffset + diffidx
 			p = st.children[0]
 		}
 		// Create a leaf for the inserted part
-		// o用来保存插入的节点
-		o := newLeaf(st.keyOffset+diffidx+1, key, value, st.db)
+		o := newLeaf(key[diffidx+1:], value, st.db)
 
 		// Insert both child leaves where they belong:
 		// 获得应该在分支节点children中的位置
 		origIdx := st.key[diffidx]
-		newIdx := key[diffidx+st.keyOffset]
+		newIdx := key[diffidx]
 		p.children[origIdx] = n
 		p.children[newIdx] = o
 		st.key = st.key[:diffidx]
@@ -399,7 +369,6 @@ func (st *StackTrie) insert(key, value []byte) {
 			st.nodeType = extNode
 			st.children[0] = NewStackTrie(st.db)
 			st.children[0].nodeType = branchNode
-			st.children[0].keyOffset = st.keyOffset + diffidx
 			p = st.children[0]
 		}
 
@@ -408,11 +377,11 @@ func (st *StackTrie) insert(key, value []byte) {
 		// The child leave will be hashed directly in order to
 		// free up some memory.
 		origIdx := st.key[diffidx]
-		p.children[origIdx] = newLeaf(diffidx+1, st.key, st.val, st.db)
+		p.children[origIdx] = newLeaf(st.key[diffidx+1:], st.val, st.db)
 		p.children[origIdx].hash()
 
-		newIdx := key[diffidx+st.keyOffset]
-		p.children[newIdx] = newLeaf(p.keyOffset+1, key, value, st.db)
+		newIdx := key[diffidx]
+		p.children[newIdx] = newLeaf(key[diffidx+1:], value, st.db)
 
 		// Finally, cut off the key part that has been passed
 		// over to the children.
@@ -422,7 +391,7 @@ func (st *StackTrie) insert(key, value []byte) {
 	// 并设置类型为leafNode
 	case emptyNode: /* Empty */
 		st.nodeType = leafNode
-		st.key = key[st.keyOffset:]
+		st.key = key
 		st.val = value
 	case hashedNode:
 		panic("trying to insert into hash")
