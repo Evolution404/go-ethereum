@@ -68,7 +68,9 @@ type sessionState struct {
 	// 用于解密接收的消息的aes ctr模式的流
 	dec cipher.Stream
 
-	egressMAC  hashMAC
+	// 用于验证接收到的消息
+	egressMAC hashMAC
+	// 用于为发送的内容生成消息验证码
 	ingressMAC hashMAC
 	rbuf       readBuffer
 	wbuf       writeBuffer
@@ -76,6 +78,7 @@ type sessionState struct {
 
 // hashMAC holds the state of the RLPx v4 MAC contraption.
 type hashMAC struct {
+  // 指定了MAC密钥的底层块加/解密器
 	cipher     cipher.Block
 	hash       hash.Hash
 	aesBuffer  [16]byte
@@ -174,37 +177,50 @@ func (c *Conn) Read() (code uint64, data []byte, wireSize int, err error) {
 	return code, data, wireSize, err
 }
 
+// 从网络中读取并解析一帧信息，帧结构如下
+// frame = header-ciphertext(16字节) || header-mac(16字节) || frame-data-ciphertext || frame-mac(16字节)
+// header-ciphertext = aes(aes-secret, header)
+// header = frame-size || 固定的3字节zeroHeader || 补齐至16字节
+// frame-ciphertext = aes(aes-secret, frame-data || 补齐至16字节倍数)
 func (h *sessionState) readFrame(conn io.Reader) ([]byte, error) {
 	h.rbuf.reset()
 
 	// Read the frame header.
+  // 读取header-ciphertext以及header-mac
+  // 两个16字节总共32字节
 	header, err := h.rbuf.read(conn, 32)
 	if err != nil {
 		return nil, err
 	}
 
 	// Verify header MAC.
+  // 校验header-mac
 	wantHeaderMAC := h.ingressMAC.computeHeader(header[:16])
 	if !hmac.Equal(wantHeaderMAC, header[16:]) {
 		return nil, errors.New("bad header MAC")
 	}
 
 	// Decrypt the frame header to get the frame size.
+  // 解密头信息
 	h.dec.XORKeyStream(header[:16], header[:16])
+  // 头信息的前3字节代表后面frame的长度
 	fsize := readUint24(header[:16])
 	// Frame size rounded up to 16 byte boundary for padding.
+  // frame的长度是16字节的倍数，补齐缺少的长度
 	rsize := fsize
 	if padding := fsize % 16; padding > 0 {
 		rsize += 16 - padding
 	}
 
 	// Read the frame content.
+  // 读取frame-content
 	frame, err := h.rbuf.read(conn, int(rsize))
 	if err != nil {
 		return nil, err
 	}
 
 	// Validate frame MAC.
+  // 再读取16字节frame-mac并进行校验
 	frameMAC, err := h.rbuf.read(conn, 16)
 	if err != nil {
 		return nil, err
@@ -215,7 +231,9 @@ func (h *sessionState) readFrame(conn io.Reader) ([]byte, error) {
 	}
 
 	// Decrypt the frame data.
+  // 解密帧内容
 	h.dec.XORKeyStream(frame, frame)
+  // 返回帧内容，去除后面补的零
 	return frame[:fsize], nil
 }
 
@@ -248,7 +266,9 @@ func (c *Conn) Write(code uint64, data []byte) (uint32, error) {
 // 将输入的数据封装成帧写入到conn中
 // 帧分为四个部分,这四个部分长度都是16字节的整数倍,对于header和frame-data都是不足16字节进行补零
 // frame = header-ciphertext(16字节) || header-mac(16字节) || frame-data-ciphertext || frame-mac(16字节)
-// header = frame-size(3字节) || header-data(现在使用zeroHeader,填充了3字节) || header-padding
+// header-ciphertext = aes(aes-secret, header)
+// header = frame-size || 固定的3字节zeroHeader || 补齐至16字节
+// frame-ciphertext = aes(aes-secret, frame-data || 补齐至16字节倍数)
 func (h *sessionState) writeFrame(conn io.Writer, code uint64, data []byte) error {
 	h.wbuf.reset()
 
@@ -257,12 +277,15 @@ func (h *sessionState) writeFrame(conn io.Writer, code uint64, data []byte) erro
 	if fsize > maxUint24 {
 		return errPlainMessageTooLarge
 	}
+	// 生成一个16字节的空间用来保存header
 	header := h.wbuf.appendZero(16)
 	putUint24(uint32(fsize), header)
 	copy(header[3:], zeroHeader)
+  // 加密header
 	h.enc.XORKeyStream(header, header)
 
 	// Write header MAC.
+  // 计算并写入header-mac
 	h.wbuf.Write(h.egressMAC.computeHeader(header))
 
 	// Encode and encrypt the frame data.
@@ -283,12 +306,14 @@ func (h *sessionState) writeFrame(conn io.Writer, code uint64, data []byte) erro
 }
 
 // computeHeader computes the MAC of a frame header.
+// 输入header-ciphertext计算MAC
 func (m *hashMAC) computeHeader(header []byte) []byte {
 	sum1 := m.hash.Sum(m.hashBuffer[:0])
 	return m.compute(sum1, header)
 }
 
 // computeFrame computes the MAC of framedata.
+// 输入frame-ciphertext计算MAC
 func (m *hashMAC) computeFrame(framedata []byte) []byte {
 	m.hash.Write(framedata)
 	seed := m.hash.Sum(m.seedBuffer[:0])
@@ -318,14 +343,15 @@ func (m *hashMAC) compute(sum1, seed []byte) []byte {
 
 // Handshake performs the handshake. This must be called before any data is written
 // or read from the connection.
-// 执行两个节点间的握手,调用NewConn后就应该执行Handshake
-// 在执行Handshake之前不能进行任何数据传输
+// 利用本地私钥开始执行握手过程，返回远程节点的临时公钥
+// 握手过程应该在传输任何数据之前，也就是NewConn后立刻执行Handshake
 func (c *Conn) Handshake(prv *ecdsa.PrivateKey) (*ecdsa.PublicKey, error) {
 	var (
 		sec Secrets
 		err error
 		h   handshakeState
 	)
+	// 区分是握手的发起方还是接收方
 	if c.dialDest != nil {
 		sec, err = h.runInitiator(c.conn, prv, c.dialDest)
 	} else {
@@ -349,6 +375,7 @@ func (c *Conn) InitWithSecrets(sec Secrets) {
 	if c.session != nil {
 		panic("can't handshake twice")
 	}
+	// 利用MAC和ENC的密钥，分别创建针对MAC和ENC过程的底层块加/解密器
 	macc, err := aes.NewCipher(sec.MAC)
 	if err != nil {
 		panic("invalid MAC secret: " + err.Error())
@@ -362,6 +389,7 @@ func (c *Conn) InitWithSecrets(sec Secrets) {
 	// 使用的IV是16字节的全零数组,因为每次通信的密钥都不同所以IV可以一样
 	iv := make([]byte, encc.BlockSize())
 	c.session = &sessionState{
+		// 基于底层块加/解密器，创建CTR模式的加/解密器
 		enc:        cipher.NewCTR(encc, iv),
 		dec:        cipher.NewCTR(encc, iv),
 		egressMAC:  newHashMAC(macc, sec.EgressMAC),
@@ -381,6 +409,7 @@ const (
 	pubLen = 64                     // 512 bit pubkey in uncompressed representation without format byte
 	shaLen = 32                     // hash length (for nonce etc)
 
+	// 使用椭圆曲线加密后密文相比明文增加的长度
 	eciesOverhead = 65 /* pubkey */ + 16 /* IV */ + 32 /* MAC */
 )
 
@@ -395,46 +424,44 @@ var (
 )
 
 // Secrets represents the connection secrets which are negotiated during the handshake.
+// Secrets是握手的成果，用于后续消息发送的对称加密
 type Secrets struct {
 	// AES和MAC长度都是32字节,作为AES-256算法的密钥
 	AES, MAC              []byte
 	EgressMAC, IngressMAC hash.Hash
-	remote                *ecdsa.PublicKey
+	// 保存远程节点的公钥
+	remote *ecdsa.PublicKey
 }
 
 // handshakeState contains the state of the encryption handshake.
 // 代表握手过程的状态
 type handshakeState struct {
 	// 标记本地是连接的发起方还是接收方
-	initiator            bool
+	initiator bool
 	// remote代表远程节点的公钥
-	//   发送方通过Conn.diaDest在initiatorEncHandshake设置remote
-	//   接收方在receiverEncHandshake根据收到的authMsg解析出来remote
-	remote               *ecies.PublicKey  // remote-pubk
-	// initNonce: 发起方在makeAuthMsg中生成,接收方在handleAuthMsg中解析出来
-	// respNonce: 发起方在handleAuthResp中解析出来,接收方在makeAuthResp中生成
-	initNonce, respNonce []byte            // nonce
+	remote *ecies.PublicKey // remote-pubk
+	// initNonce: 发送方生成的随机nonce
+	// respNonce: 接收方生成的随机nonce
+	initNonce, respNonce []byte // nonce
 	// 握手过程中双方都成一对随机的公私钥
 	// 本地保存自己随机生成的私钥,通过握手能得到远程节点随机生成的公钥
-	randomPrivKey        *ecies.PrivateKey // ecdhe-random
-	remoteRandomPub      *ecies.PublicKey  // ecdhe-random-pubk
+	randomPrivKey   *ecies.PrivateKey // ecdhe-random
+	remoteRandomPub *ecies.PublicKey  // ecdhe-random-pubk
 
 	rbuf readBuffer
 	wbuf writeBuffer
 }
 
 // RLPx v4 handshake auth (defined in EIP-8).
-// 握手过程中总共发送两条消息,分别是发起方发送authMsg和接收方接收后回复authResp
-// 发起方调用initiatorEncHandshake处理握手
-//   内部调用了makeAuthMsg发送消息,然后调用handleAuthResp处理接收方的回复
-// 接收方调用receiverEncHandshake处理握手
-//   内部调用了handleAuthMsg处理发起方的消息,然后调用makeAuthResp回复发起方
+// 握手过程中总共发送两条消息,分别是发起方发送auth包和接收方接收后回复ack包
+// auth包对应了authMsgV4对象,ack包对应authRespV4对象
 
+// 用于描述auth包
 type authMsgV4 struct {
 	// 双方的静态公私钥可以推导出共享秘密token
 	// 使用发送方生成的随机私钥对 Nonce与token 的异或结果进行签名
 	// 接收方有Nonce和token可以推导出发送方的随机公钥
-	Signature       [sigLen]byte
+	Signature [sigLen]byte
 	// 发送方的静态公钥
 	InitiatorPubkey [pubLen]byte
 	// 发送authMsg生成的随机数
@@ -447,6 +474,7 @@ type authMsgV4 struct {
 }
 
 // RLPx v4 handshake response (defined in EIP-8).
+// 用于描述ack包
 type authRespV4 struct {
 	// 接收方生成的随机公钥
 	RandomPubkey [pubLen]byte
@@ -463,6 +491,7 @@ type authRespV4 struct {
 // it should be called on the listening side of the connection.
 //
 // prv is the local client's private key.
+// 接收方接收auth包并发送ack包的函数
 func (h *handshakeState) runRecipient(conn io.ReadWriter, prv *ecdsa.PrivateKey) (s Secrets, err error) {
 	// 从网络字节流中解析出来authMsg对象,authPacket代表authMsg的rlp编码
 	authMsg := new(authMsgV4)
@@ -491,6 +520,7 @@ func (h *handshakeState) runRecipient(conn io.ReadWriter, prv *ecdsa.PrivateKey)
 	return h.secrets(authPacket, authRespPacket)
 }
 
+// 接收方处理auth包的函数
 func (h *handshakeState) handleAuthMsg(msg *authMsgV4, prv *ecdsa.PrivateKey) error {
 	// Import the remote identity.
 	rpub, err := importPublicKey(msg.InitiatorPubkey[:])
@@ -511,15 +541,15 @@ func (h *handshakeState) handleAuthMsg(msg *authMsgV4, prv *ecdsa.PrivateKey) er
 	}
 
 	// Check the signature.
-	// 校验authMsg里的签名是否正确
+	// 利用签名信息恢复出来发送方的临时公钥
 	// 首先生成共享秘密token
 	token, err := h.staticSharedSecret(prv)
 	if err != nil {
 		return err
 	}
-	// token与nonce异或
+	// 计算被签名的信息：token与nonce异或
 	signedMsg := xor(token, h.initNonce)
-	// 使用signedMsg和签名恢复出来发送方生成的随机公钥
+	// 使用被签名的信息和签名恢复出来发送方的临时公钥
 	remoteRandomPub, err := crypto.Ecrecover(signedMsg, msg.Signature[:])
 	if err != nil {
 		return err
@@ -530,14 +560,16 @@ func (h *handshakeState) handleAuthMsg(msg *authMsgV4, prv *ecdsa.PrivateKey) er
 
 // secrets is called after the handshake is completed.
 // It extracts the connection secrets from the handshake values.
-// 利用握手过程中发送的两个数据包构建租出Secrets对象
+// 利用握手过程中发送的两个数据包构建出Secrets对象
 func (h *handshakeState) secrets(auth, authResp []byte) (Secrets, error) {
+	// 计算临时共享秘密
 	ecdheSecret, err := h.randomPrivKey.GenerateShared(h.remoteRandomPub, sskLen, sskLen)
 	if err != nil {
 		return Secrets{}, err
 	}
 
 	// derive base secrets from ephemeral key agreement
+	// 利用临时共享秘密以及发送方和接收方生成的随机nonce生成AES和MAC使用的密钥
 	sharedSecret := crypto.Keccak256(ecdheSecret, crypto.Keccak256(h.respNonce, h.initNonce))
 	aesSecret := crypto.Keccak256(ecdheSecret, sharedSecret)
 	s := Secrets{
@@ -547,6 +579,7 @@ func (h *handshakeState) secrets(auth, authResp []byte) (Secrets, error) {
 	}
 
 	// setup sha3 instances for the MACs
+  // 初始化发送方和接收方的MAC计算流
 	mac1 := sha3.NewLegacyKeccak256()
 	mac1.Write(xor(s.MAC, h.respNonce))
 	mac1.Write(auth)
@@ -573,6 +606,7 @@ func (h *handshakeState) staticSharedSecret(prv *ecdsa.PrivateKey) ([]byte, erro
 // it should be called on the dialing side of the connection.
 //
 // prv is the local client's private key.
+// 发送方发送auth包并接收ack包的函数
 func (h *handshakeState) runInitiator(conn io.ReadWriter, prv *ecdsa.PrivateKey, remote *ecdsa.PublicKey) (s Secrets, err error) {
 	h.initiator = true
 	h.remote = ecies.ImportECDSAPublic(remote)
@@ -667,11 +701,14 @@ func (h *handshakeState) makeAuthResp() (msg *authRespV4, err error) {
 }
 
 // readMsg reads an encrypted handshake message, decoding it into msg.
+// 从r中读取包内容，并解码到msg对象中
+// msg对象可以是authMsgV4或者authRespV4类型
 func (h *handshakeState) readMsg(msg interface{}, prv *ecdsa.PrivateKey, r io.Reader) ([]byte, error) {
 	h.rbuf.reset()
 	h.rbuf.grow(512)
 
 	// Read the size prefix.
+	// auth包和ack包的最开始两字节代表后面加密数据的长度
 	prefix, err := h.rbuf.read(r, 2)
 	if err != nil {
 		return nil, err
