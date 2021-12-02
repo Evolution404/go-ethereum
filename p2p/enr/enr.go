@@ -369,7 +369,7 @@ func (r *Record) AppendElements(list []interface{}) []interface{} {
 // 计算[sig,seq,k1,v1,k2,v2]这个列表的rlp编码
 func (r *Record) encode(sig []byte) (raw []byte, err error) {
 	// 创建即将被rlp编码的数组,长度1是第一项为签名,容量是每个键值对两项以及额外的签名和序号
-	list := make([]interface{}, 1, 2*len(r.pairs)+1)
+	list := make([]interface{}, 1, 2*len(r.pairs)+2)
 	list[0] = sig
 	// 构造 sig,seq,k1,v1,k2,v2 这样的一个列表
 	// 先将第一项设置为输入的签名
