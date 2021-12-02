@@ -54,7 +54,7 @@ func SignV4(r *enr.Record, privkey *ecdsa.PrivateKey) error {
 	cpy.Set(Secp256k1(privkey.PublicKey))
 
 	h := sha3.NewLegacyKeccak256()
-	// 计算cpy的rlp编码
+	// 计算节点记录的rlp编码
 	rlp.Encode(h, cpy.AppendElements(nil))
 	// 对rlp编码的哈希进行签名
 	sig, err := crypto.Sign(h.Sum(nil), privkey)
@@ -63,6 +63,7 @@ func SignV4(r *enr.Record, privkey *ecdsa.PrivateKey) error {
 	}
 	// 去掉签名末尾的v,转换成64字节格式
 	sig = sig[:len(sig)-1] // remove v
+	// 签名已经计算出来了,通过SetSig方法注册到Record对象内部
 	if err = cpy.SetSig(V4ID{}, sig); err == nil {
 		*r = cpy
 	}

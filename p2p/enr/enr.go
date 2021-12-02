@@ -93,11 +93,13 @@ func (m SchemeMap) NodeAddr(r *Record) []byte {
 // Record对象了包括三个部分,seq代表记录的序号,pairs记录里的各个键值对,signature记录的签名
 // 其中signature最后生成,在设置好序号和所有键值对后再进行签名
 type Record struct {
+	// 表示记录的序号
 	seq uint64 // sequence number
-	// 这里签名只保存了r和s,总共长度应该是64字节
+	// 这里签名只保存了r和s,长度64字节
 	signature []byte // the signature
 	// 保存记录的完整rlp编码
-	raw   []byte // RLP encoded record
+	raw []byte // RLP encoded record
+	// 保存记录中的各个条目
 	pairs []pair // sorted list of all key/value pairs
 }
 
@@ -117,6 +119,7 @@ func (r *Record) Seq() uint64 {
 // Calling SetSeq is usually not required because setting any key in a signed record
 // increments the sequence number.
 // 修改r.seq为输入的值,并清空signature和raw
+// 由于修改了序号,缓存的rlp编码和原来的签名都无效了
 func (r *Record) SetSeq(s uint64) {
 	r.signature = nil
 	r.raw = nil
@@ -201,8 +204,9 @@ func (r *Record) Signature() []byte {
 
 // EncodeRLP implements rlp.Encoder. Encoding fails if
 // the record is unsigned.
+// 对Record对象进行rlp编码,未签名的Record对象不能编码
 // 对Record的rlp编码就是写入保存的raw
-// 在SetSig函数中signature和raw字段被同时设置
+// 因为在SetSig函数中signature和raw字段被同时设置
 // 所以signature不是nil,raw里就保存了rlp编码
 func (r Record) EncodeRLP(w io.Writer) error {
 	// 还没有生成签名的记录不能生成rlp编码
@@ -313,25 +317,33 @@ func (r *Record) VerifySignature(s IdentityScheme) error {
 // and signature.
 //
 // SetSig panics when either the scheme or the signature (but not both) are nil.
-// SetSig的IdentityScheme和sig可以同时为nil,但是不能只有一个为nil
-// 输入同时为nil可以清除签名信息
+// SeqSig用于为Record对象设置签名
+// 参数要求: 需要传入身份模式和签名,两者要么同时为nil,要么都不为nil
+// 同时为nil: 用于清空Record对象的签名和缓存的rlp编码
+// 都不为nil:
 func (r *Record) SetSig(s IdentityScheme, sig []byte) error {
 	switch {
 	// Prevent storing invalid data.
+	// 身份模式和签名不能只有一个是nil，这种情况直接panic
 	case s == nil && sig != nil:
 		panic("enr: invalid call to SetSig with non-nil signature but nil scheme")
 	case s != nil && sig == nil:
 		panic("enr: invalid call to SetSig with nil signature but non-nil scheme")
 	// Verify if we have a scheme.
-	// 这种情况是两者都不是nil
+	// 两者都不是nil的情况
+	// 1. 验证签名是否有效
+	// 2. 如果签名有效, 对Record对象进行rlp编码
 	case s != nil:
+		// 验证签名是否有效
 		if err := s.Verify(r, sig); err != nil {
 			return err
 		}
+		// 计算[sig,seq,k1,v1,k2,v2]列表的rlp编码
 		raw, err := r.encode(sig)
 		if err != nil {
 			return err
 		}
+		// 保存签名和rlp编码
 		r.signature, r.raw = sig, raw
 	// Reset otherwise.
 	// 两者都为nil
@@ -342,21 +354,27 @@ func (r *Record) SetSig(s IdentityScheme, sig []byte) error {
 }
 
 // AppendElements appends the sequence number and entries to the given slice.
-// 将seq和其他所有键值对拼接到输入的list后面
+// 将Record对象转换成[seq,k1,v1,k2,v2]形式的列表,追加到输入的列表后面
 // 这个函数如果输入nil,其实就是将Record对象转换成了一个数组,接下来一般是进行rlp编码
 func (r *Record) AppendElements(list []interface{}) []interface{} {
+	// 追加的内容第一项是seq
 	list = append(list, r.seq)
+	// 依次追加后面的键值对
 	for _, p := range r.pairs {
 		list = append(list, p.k, p.v)
 	}
 	return list
 }
 
-// 给定签名,计算Record对象的rlp编码
+// 计算[sig,seq,k1,v1,k2,v2]这个列表的rlp编码
 func (r *Record) encode(sig []byte) (raw []byte, err error) {
+	// 创建即将被rlp编码的数组,长度1是第一项为签名,容量是每个键值对两项以及额外的签名和序号
 	list := make([]interface{}, 1, 2*len(r.pairs)+1)
 	list[0] = sig
 	// 构造 sig,seq,k1,v1,k2,v2 这样的一个列表
+	// 先将第一项设置为输入的签名
+	list[0] = sig
+	// 然后将Record中的其他内容追加到后面
 	list = r.AppendElements(list)
 	// 然后计算rlp编码
 	if raw, err = rlp.EncodeToBytes(list); err != nil {

@@ -29,8 +29,8 @@ import (
 // To define a new entry that is to be included in a node record,
 // create a Go type that satisfies this interface. The type should
 // also implement rlp.Decoder if additional checks are needed on the value.
-// Entry代表已知的键值对,也可以使用WithEntry创建通用的键值对
-// 例如TCP,TCP6,UDP,UDP6,ID,IP,IPv4,IPv6
+// Entry代表Record对象中的一条记录, 记录类型包括预定义类型和通用类型
+// 预定义类型: ID,Secp256k1,IP,IPv4,IPv6,TCP,TCP6,UDP,UDP6
 type Entry interface {
 	ENRKey() string
 }
