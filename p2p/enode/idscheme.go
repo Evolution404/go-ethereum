@@ -29,11 +29,12 @@ import (
 )
 
 // List of known secure identity schemes.
-// 包括了所有目前已知的节点标识模型
+// 当前正常使用的所有节点标识模型
 var ValidSchemes = enr.SchemeMap{
 	"v4": V4ID{},
 }
 
+// 正常使用的以及用于测试的节点标识模型
 var ValidSchemesForTesting = enr.SchemeMap{
 	"v4":   V4ID{},
 	"null": NullID{},
@@ -90,10 +91,9 @@ func (V4ID) Verify(r *enr.Record, sig []byte) error {
 	return nil
 }
 
-// 输入enr.Record对象计算出节点的id
-// 节点地址就是公钥的X,Y拼在一起变成64字节的buf
-// 然后对buf求哈希得到32字节的id
-// 该函数用来实现IdentityScheme接口
+// 利用节点记录enr.Record对象,计算出节点ID
+// 节点ID计算规则: keccak256(pub.X || pub.Y)
+// 节点地址就是将公钥的X,Y拼在一起变成64字节的buf,然后对buf求哈希
 func (V4ID) NodeAddr(r *enr.Record) []byte {
 	var pubkey Secp256k1
 	// 解析出来原始的公钥,未经压缩的
@@ -101,26 +101,30 @@ func (V4ID) NodeAddr(r *enr.Record) []byte {
 	if err != nil {
 		return nil
 	}
+	// 将公钥的X和Y坐标拼接起来成64字节
 	buf := make([]byte, 64)
 	math.ReadBits(pubkey.X, buf[:32])
 	math.ReadBits(pubkey.Y, buf[32:])
+	// 对64字节拼接结果求哈希
 	return crypto.Keccak256(buf)
 }
 
 // Secp256k1 is the "secp256k1" key, which holds a public key.
 // 代表键值对中的公钥键值对
-// 公钥在记录中是以压缩格式保存,从EncodeRLP函数中可以看出
+// 公钥在记录中是以压缩格式保存
 type Secp256k1 ecdsa.PublicKey
 
 func (v Secp256k1) ENRKey() string { return "secp256k1" }
 
 // EncodeRLP implements rlp.Encoder.
+// 对公钥压缩后进行rlp编码
 func (v Secp256k1) EncodeRLP(w io.Writer) error {
 	// 保存压缩格式公钥
 	return rlp.Encode(w, crypto.CompressPubkey((*ecdsa.PublicKey)(&v)))
 }
 
 // DecodeRLP implements rlp.Decoder.
+// 解码rlp编码,将解析出来的内容进行解压
 func (v *Secp256k1) DecodeRLP(s *rlp.Stream) error {
 	buf, err := s.Bytes()
 	if err != nil {
@@ -150,6 +154,7 @@ type v4CompatID struct {
 	V4ID
 }
 
+// 验证过程只尝试加载公钥
 func (v4CompatID) Verify(r *enr.Record, sig []byte) error {
 	var pubkey Secp256k1
 	return r.Load(&pubkey)

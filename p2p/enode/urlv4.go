@@ -35,7 +35,7 @@ var (
 	// (?i)代表不区分大小写
 	// 正则表达式后面包括了两个分组
 	// (?:enode://)? 用来匹配链接前缀,里面的?:代表这个分组不被捕获,也就是FindStringSubmatch返回的数组中不包括这个分组的匹配
-  // ([0-9a-f]+)   用来匹配节点的公钥
+	// ([0-9a-f]+)   用来匹配节点的公钥
 	incompleteNodeURL = regexp.MustCompile("(?i)^(?:enode://)?([0-9a-f]+)$")
 	lookupIPFunc      = net.LookupIP
 )
@@ -231,11 +231,13 @@ func (n *Node) URLv4() string {
 }
 
 // PubkeyToIDV4 derives the v4 node address from the given public key.
-// 从ecda.PublicKey对象转换成64字节的公钥字节数组,然后取一次哈希
-// 这个格式其实是省略了第一个字节前缀04,然后计算哈希的结果
+// 将公钥转换成节点ID
+// 计算方法: keccak256(pub.X || pub.Y)
 func PubkeyToIDV4(key *ecdsa.PublicKey) ID {
+	// 公钥的X填充前32字节,Y填充后32字节
 	e := make([]byte, 64)
 	math.ReadBits(key.X, e[:len(e)/2])
 	math.ReadBits(key.Y, e[len(e)/2:])
+	// 对64字节内容计算哈希就是最终的节点ID
 	return ID(crypto.Keccak256Hash(e))
 }
