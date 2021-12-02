@@ -60,7 +60,7 @@ const (
 	dbNodeExpiration = 24 * time.Hour // Time after which an unseen node should be dropped.
 	dbCleanupCycle   = time.Hour      // Time period for running the expiration task.
 	// nodedb的版本
-	dbVersion        = 9
+	dbVersion = 9
 )
 
 var (
@@ -72,11 +72,11 @@ var zeroIP = make(net.IP, 16)
 // DB is the node database, storing previously seen nodes and any collected metadata about
 // them for QoS purposes.
 type DB struct {
-	lvl    *leveldb.DB   // Interface to the database itself
+	lvl *leveldb.DB // Interface to the database itself
 	// expirer函数运行在协程中,这个runner在ensureExpirer函数用于确保expirer只启动一次
-	runner sync.Once     // Ensures we can start at most one expirer
+	runner sync.Once // Ensures we can start at most one expirer
 	// expirer函数在后台一直运行,quit管道用于通知expirer函数结束
-	quit   chan struct{} // Channel to signal the expiring thread to stop
+	quit chan struct{} // Channel to signal the expiring thread to stop
 }
 
 // OpenDB opens a node database for storing and retrieving infos about known peers in the
@@ -132,10 +132,12 @@ func newPersistentDB(path string) (*DB, error) {
 			return nil, err
 		}
 
+	// 判断版本是否匹配,如果不匹配删除所有数据库文件,重新创建
 	case nil:
 		// Version present, flush if different
 		if !bytes.Equal(blob, currentVer) {
 			db.Close()
+			// 删除所有文件,然后重新创建数据库
 			if err = os.RemoveAll(path); err != nil {
 				return nil, err
 			}
@@ -385,7 +387,7 @@ func (db *DB) expireNodes() {
 		threshold    = time.Now().Add(-dbNodeExpiration).Unix()
 		youngestPong int64
 		// atEnd用来标记迭代器是不是还有下一个元素,没有元素了就为true
-		atEnd        = false
+		atEnd = false
 	)
 	for !atEnd {
 		// 找到记录节点回复pong的时间
@@ -522,13 +524,13 @@ func (db *DB) QuerySeeds(n int, maxAge time.Duration) []*Node {
 		now   = time.Now()
 		nodes = make([]*Node, 0, n)
 		// 用来遍历整个数据库
-		it    = db.lvl.NewIterator(nil, nil)
-		id    ID
+		it = db.lvl.NewIterator(nil, nil)
+		id ID
 	)
 	defer it.Release()
 
 seek:
-  // seeks用来记录这个循环运行的次数,为了避免运行过久这个循环最多运行n*5次
+	// seeks用来记录这个循环运行的次数,为了避免运行过久这个循环最多运行n*5次
 	for seeks := 0; len(nodes) < n && seeks < n*5; seeks++ {
 		// Seek to a random entry. The first byte is incremented by a
 		// random amount each time in order to increase the likelihood
