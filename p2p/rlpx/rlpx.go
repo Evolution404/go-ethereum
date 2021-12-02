@@ -111,6 +111,7 @@ func NewConn(conn net.Conn, dialDest *ecdsa.PublicKey) *Conn {
 // SetSnappy enables or disables snappy compression of messages. This is usually called
 // after the devp2p Hello message exchange when the negotiated version indicates that
 // compression is available on both ends of the connection.
+// 用于设置此连接上是否启用数据压缩
 func (c *Conn) SetSnappy(snappy bool) {
 	if snappy {
 		c.snappyReadBuffer = []byte{}
@@ -307,6 +308,8 @@ func (h *sessionState) writeFrame(conn io.Writer, code uint64, data []byte) erro
 
 // computeHeader computes the MAC of a frame header.
 // 输入header-ciphertext计算MAC
+// 1. 计算当前状态哈希
+// 2. 将16字节的头数据作为种子
 func (m *hashMAC) computeHeader(header []byte) []byte {
 	sum1 := m.hash.Sum(m.hashBuffer[:0])
 	return m.compute(sum1, header)
@@ -314,6 +317,9 @@ func (m *hashMAC) computeHeader(header []byte) []byte {
 
 // computeFrame computes the MAC of framedata.
 // 输入frame-ciphertext计算MAC
+// 1. 将帧数据写入当前哈希状态
+// 2. 计算写入帧数据后的哈希
+// 3. 将当前哈希前16字节作为种子
 func (m *hashMAC) computeFrame(framedata []byte) []byte {
 	m.hash.Write(framedata)
 	seed := m.hash.Sum(m.seedBuffer[:0])
@@ -327,6 +333,11 @@ func (m *hashMAC) computeFrame(framedata []byte) []byte {
 // taken again. The first 16 bytes of the resulting sum are the MAC value.
 //
 // This MAC construction is a horrible, legacy thing.
+// 利用当前哈希和种子来计算MAC
+// 1. 利用MAC密钥加密当前哈希
+// 2. 将加密哈希与种子异或
+// 3. 将异或结果写入哈希状态
+// 4. 重新计算哈希，取前16字节作为MAC
 func (m *hashMAC) compute(sum1, seed []byte) []byte {
 	if len(seed) != len(m.aesBuffer) {
 		panic("invalid MAC seed")
@@ -598,6 +609,7 @@ func (h *handshakeState) secrets(auth, authResp []byte) (Secrets, error) {
 
 // staticSharedSecret returns the static shared secret, the result
 // of key agreement between the local and remote static node key.
+// 利用本地私钥和远程节点公钥计算出来共享秘密
 func (h *handshakeState) staticSharedSecret(prv *ecdsa.PrivateKey) ([]byte, error) {
 	return ecies.ImportECDSA(prv).GenerateShared(h.remote, sskLen, sskLen)
 }
@@ -732,26 +744,33 @@ func (h *handshakeState) readMsg(msg interface{}, prv *ecdsa.PrivateKey, r io.Re
 }
 
 // sealEIP8 encrypts a handshake message.
+// 将握手包对象转换成RLP编码，然后利用远程节点公钥进行加密
 func (h *handshakeState) sealEIP8(msg interface{}) ([]byte, error) {
 	h.wbuf.reset()
 
 	// Write the message plaintext.
+  // 消息对象编码成RLP编码
 	if err := rlp.Encode(&h.wbuf, msg); err != nil {
 		return nil, err
 	}
 	// Pad with random amount of data. the amount needs to be at least 100 bytes to make
 	// the message distinguishable from pre-EIP-8 handshakes.
+  // 往RLP编码后面填充100-200个随机0字节
 	h.wbuf.appendZero(mrand.Intn(100) + 100)
 
+  // 握手数据包前两字节保存后面加密数据的长度
 	prefix := make([]byte, 2)
+  // 加密数据长度=原始数据长度+非对称加密额外增加的长度
 	binary.BigEndian.PutUint16(prefix, uint16(len(h.wbuf.data)+eciesOverhead))
 
+  // 使用远程节点公钥进行非对称加密
 	enc, err := ecies.Encrypt(rand.Reader, h.remote, h.wbuf.data, nil, prefix)
 	return append(prefix, enc...), err
 }
 
 // importPublicKey unmarshals 512 bit public keys.
 // 通过字节数组恢复出来公钥
+// 输入的公钥有可能有两种形式: 65字节, 64字节(去掉04前缀)
 func importPublicKey(pubKey []byte) (*ecies.PublicKey, error) {
 	var pubKey65 []byte
 	switch len(pubKey) {
