@@ -35,12 +35,12 @@ type Iterator interface {
 // ReadNodes reads at most n nodes from the given iterator. The return value contains no
 // duplicates and no nil values. To prevent looping indefinitely for small repeating node
 // sequences, this function calls Next at most n times.
-// 从迭代器中读取最多n个节点返回,返回的节点不存在重复节点也没有nil
-// 这个函数最多调用迭代器的Next函数n次
+// 从迭代器中读取n个节点,并对结果进行去重,读取过程中迭代器到底直接返回
 func ReadNodes(it Iterator, n int) []*Node {
-	// 节点id=>节点对象的映射,使用节点id来去重
 	// seen记录所有遍历到的节点
+	// 节点id=>节点对象的映射,使用节点id来去重
 	seen := make(map[ID]*Node, n)
+	// 依次迭代节点,并对结果去重
 	for i := 0; i < n && it.Next(); i++ {
 		// Remove duplicates, keeping the node with higher seq.
 		node := it.Node()
@@ -51,6 +51,7 @@ func ReadNodes(it Iterator, n int) []*Node {
 		}
 		seen[node.ID()] = node
 	}
+	// 将map转换成数组返回
 	result := make([]*Node, 0, len(seen))
 	for _, node := range seen {
 		result = append(result, node)
@@ -154,13 +155,14 @@ type FairMix struct {
 	// timeout指最多等待某个来源的时间,使用负数将禁用超时
 	timeout time.Duration
 	// 保存当前的Node
-	cur     *Node
+	cur *Node
 
-	mu      sync.Mutex
-	closed  chan struct{}
+	mu     sync.Mutex
+	closed chan struct{}
+	// 保存迭代节点的所有来源
 	sources []*mixSource
 	// 记录当前选取的sources中的位置
-	last    int
+	last int
 }
 
 // 代表FairMix对象内部的一个节点来源
@@ -199,8 +201,10 @@ func (m *FairMix) AddSource(it Iterator) {
 		return
 	}
 	m.wg.Add(1)
+	// 在迭代器中添加一项来源
 	source := &mixSource{it, make(chan *Node), m.timeout}
 	m.sources = append(m.sources, source)
+	// 启动这个来源开始迭代节点
 	go m.runSource(m.closed, source)
 }
 
@@ -247,13 +251,17 @@ func (m *FairMix) Next() bool {
 		case n, ok := <-source.next:
 			if ok {
 				m.cur = n
+				// 一个来源成功读取节点的话,就恢复他的超时时间为默认时间
+				// 避免之前超时时间被减半了
 				source.timeout = m.timeout
 				return true
 			}
 			// This source has ended.
 			m.deleteSource(source)
+		// 当前来源超时,那么降低他的信任度,让超时时间减半
 		case <-timeout:
 			source.timeout /= 2
+			// 超时的话,从任意一个来源获取一个节点信息
 			return m.nextFromAny()
 		}
 	}
@@ -266,7 +274,7 @@ func (m *FairMix) Node() *Node {
 
 // nextFromAny is used when there are no sources or when the 'fair' choice
 // doesn't turn up a node quickly enough.
-// 从fromAny管道获取一个节点保存的m.cur中
+// 从任意一个已经读取完成的来源中获取一个节点
 func (m *FairMix) nextFromAny() bool {
 	n, ok := <-m.fromAny
 	if ok {
