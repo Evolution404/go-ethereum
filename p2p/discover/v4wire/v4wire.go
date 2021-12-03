@@ -49,10 +49,14 @@ const (
 // 以下定义了六种包的具体数据结构
 type (
 	Ping struct {
-		Version    uint
-		From, To   Endpoint
+		// 协议版本，就是4
+		Version uint
+		// ping包的发送方和接收方的ip、端口信息
+		From, To Endpoint
+		// ping包的过期时间
 		Expiration uint64
-		ENRSeq     uint64 `rlp:"optional"` // Sequence number of local record, added by EIP-868.
+		// 本地节点的记录序号
+		ENRSeq uint64 `rlp:"optional"` // Sequence number of local record, added by EIP-868.
 
 		// Ignore additional fields (for forward compatibility).
 		Rest []rlp.RawValue `rlp:"tail"`
@@ -63,8 +67,9 @@ type (
 		// This field should mirror the UDP envelope address
 		// of the ping packet, which provides a way to discover the
 		// the external address (after NAT).
+		// Pong包返回的目的地址
 		To Endpoint
-		// 保存对应的ping包的哈希
+		// 这个pong包对应的ping包的哈希
 		ReplyTok   []byte // This contains the hash of the ping packet.
 		Expiration uint64 // Absolute timestamp at which the packet becomes invalid.
 		ENRSeq     uint64 `rlp:"optional"` // Sequence number of local record, added by EIP-868.
@@ -75,6 +80,7 @@ type (
 
 	// Findnode is a query for nodes close to the given target.
 	Findnode struct {
+		// 要查询与Target最近的节点
 		Target     Pubkey
 		Expiration uint64
 		// Ignore additional fields (for forward compatibility).
@@ -83,6 +89,7 @@ type (
 
 	// Neighbors is the reply to findnode.
 	Neighbors struct {
+		// 查询到的结果
 		Nodes      []Node
 		Expiration uint64
 		// Ignore additional fields (for forward compatibility).
@@ -98,6 +105,7 @@ type (
 
 	// enrResponse is the reply to enrRequest.
 	ENRResponse struct {
+		// 响应的ENRRequest包的哈希
 		ReplyTok []byte // Hash of the enrRequest packet.
 		Record   enr.Record
 		// Ignore additional fields (for forward compatibility).
@@ -202,7 +210,9 @@ func Expired(ts uint64) bool {
 // Encoder/decoder.
 
 const (
+	// 数据包头最开始的32字节哈希用于校验
 	macSize = 32
+	// 数据包头的第二部分是65字节签名
 	sigSize = crypto.SignatureLength
 	// 头部长度97字节,哈希32字节,签名65字节
 	headSize = macSize + sigSize // space of packet frame data
@@ -214,9 +224,11 @@ var (
 	ErrBadPoint       = errors.New("invalid curve point")
 )
 
+// 用于占位,还不知道头部数据的内容时先填充一个全零空间
 var headSpace = make([]byte, headSize)
 
 // Decode reads a discovery v4 packet.
+// 输入v4数据包的字节数组,解码出来数据包对象和远程节点公钥
 // 数据包的结构
 // 32字节哈希 65字节签名 其余数据
 // 其余数据的第一个字节保存了包类型
@@ -301,8 +313,7 @@ func Encode(priv *ecdsa.PrivateKey, req Packet) (packet, hash []byte, err error)
 }
 
 // recoverNodeKey computes the public key used to sign the given hash from the signature.
-// 从签名和哈希恢复出来远程节点的公钥
-// 这里的哈希是数据包最后数据计算出来的哈希,不包括签名
+// 从签名和数据部分的哈希恢复出来远程节点的公钥
 func recoverNodeKey(hash, sig []byte) (key Pubkey, err error) {
 	pubkey, err := crypto.Ecrecover(hash, sig)
 	if err != nil {
@@ -324,7 +335,7 @@ func EncodePubkey(key *ecdsa.PublicKey) Pubkey {
 }
 
 // DecodePubkey reads an encoded secp256k1 public key.
-// 从65字节数组解码出来公钥对象
+// 输入曲线和64字节数组解码出来公钥对象
 func DecodePubkey(curve elliptic.Curve, e Pubkey) (*ecdsa.PublicKey, error) {
 	p := &ecdsa.PublicKey{Curve: curve, X: new(big.Int), Y: new(big.Int)}
 	half := len(e) / 2
