@@ -60,14 +60,16 @@ const (
 	// 整个表内同一个子网的节点个数最多10个
 	tableIPLimit, tableSubnet = 10, 24
 
-	refreshInterval    = 30 * time.Minute
+	refreshInterval = 30 * time.Minute
 	// 每次重新检测一个节点的时间间隔是10s内的随机数值
 	revalidateInterval = 10 * time.Second
 	copyNodesInterval  = 30 * time.Second
 	// 在表内存储超过5分钟且ping通的节点会被保存到数据库中
-	seedMinTableTime   = 5 * time.Minute
-	seedCount          = 30
-	seedMaxAge         = 5 * 24 * time.Hour
+	seedMinTableTime = 5 * time.Minute
+	// 一次从数据库中读取30个节点
+	seedCount = 30
+	// 从数据库中读取的节点距离当前最多五天
+	seedMaxAge = 5 * 24 * time.Hour
 )
 
 // Table is the 'node table', a Kademlia-like index of neighbor nodes. The table keeps
@@ -77,7 +79,7 @@ type Table struct {
 	mutex sync.Mutex // protects buckets, bucket content, nursery, rand
 	// 根据距离放置的节点
 	buckets [nBuckets]*bucket // index of known nodes by distance
-	// 启动的时候自带的节点
+	// 启动的时候自带的节点,当所有桶内都没有节点而且数据库内也没有节点时使用
 	nursery []*node     // bootstrap nodes
 	rand    *mrand.Rand // source of randomness, periodically reseeded
 	// 用来限制具有共同前缀的ip个数不能过多
@@ -95,6 +97,7 @@ type Table struct {
 	// 用来标记所有操作都已经关闭
 	closed chan struct{}
 
+	// 一旦有节点加入到桶中就调用这个回调函数
 	nodeAddedHook func(*node) // for testing
 }
 
@@ -115,13 +118,15 @@ type transport interface {
 // bucket中保存距离都在一个范围内的节点,entries是当前在线节点,replacements是替补节点
 type bucket struct {
 	// 当前在线的所有节点,按照上次联系的时间进行排序
-	entries      []*node // live entries, sorted by time of last contact
+	entries []*node // live entries, sorted by time of last contact
 	// entries中断连后用来替补的节点
 	replacements []*node // recently seen nodes to be used if revalidation fails
 	// 每个桶内也对一个子网的ip个数有限制
 	ips netutil.DistinctNetSet
 }
 
+// 创建一个节点表对象，并进行初始化操作
+// 初始化随机数种子、从节点数据库加载至多30个节点
 func newTable(t transport, db *enode.DB, bootnodes []*enode.Node, log log.Logger) (*Table, error) {
 	tab := &Table{
 		net:        t,
@@ -171,6 +176,7 @@ func (tab *Table) seedRand() {
 // ReadRandomNodes fills the given slice with random nodes from the table. The results
 // are guaranteed to be unique for a single invocation, no node will appear twice.
 // 选取随机的节点到buf中,选取的个数是buf的长度
+// 返回填充的节点个数
 func (tab *Table) ReadRandomNodes(buf []*enode.Node) (n int) {
 	if !tab.isInitDone() {
 		return 0
@@ -178,6 +184,7 @@ func (tab *Table) ReadRandomNodes(buf []*enode.Node) (n int) {
 	tab.mutex.Lock()
 	defer tab.mutex.Unlock()
 
+	// 获取表内的所有节点
 	var nodes []*enode.Node
 	for _, b := range &tab.buckets {
 		for _, n := range b.entries {
@@ -185,10 +192,12 @@ func (tab *Table) ReadRandomNodes(buf []*enode.Node) (n int) {
 		}
 	}
 	// Shuffle.
+	// 然后将所有节点的列表重新乱序排一下
 	for i := 0; i < len(nodes); i++ {
 		j := tab.rand.Intn(len(nodes))
 		nodes[i], nodes[j] = nodes[j], nodes[i]
 	}
+	// 返回乱序后的前n个节点
 	return copy(buf, nodes)
 }
 
@@ -360,6 +369,7 @@ func (tab *Table) loadSeedNodes() {
 	seeds = append(seeds, tab.nursery...)
 	for i := range seeds {
 		seed := seeds[i]
+		// 如果不打印这条日志，使用Lazy能避免计算这个age
 		age := log.Lazy{Fn: func() interface{} { return time.Since(tab.db.LastPongReceived(seed.ID(), seed.IP())) }}
 		tab.log.Trace("Found seed node in database", "id", seed.ID(), "addr", seed.addr(), "age", age)
 		tab.addSeenNode(seed)
@@ -525,6 +535,7 @@ func (tab *Table) bucketLen(id enode.ID) int {
 // bucket returns the bucket for the given node ID hash.
 // 根据节点id获取所在的桶
 func (tab *Table) bucket(id enode.ID) *bucket {
+	// 计算两个节点间的距离
 	d := enode.LogDist(tab.self().ID(), id)
 	return tab.bucketAtDistance(d)
 }

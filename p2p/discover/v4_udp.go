@@ -49,18 +49,19 @@ var (
 
 const (
 	// 发送一个请求后,等待超时的时间是500毫秒
-	respTimeout    = 500 * time.Millisecond
+	respTimeout = 500 * time.Millisecond
 	// 发送的数据包的超时时间都是现在的时间加上20秒
-	expiration     = 20 * time.Second
+	expiration = 20 * time.Second
 	// 超过24小时没有沟通就发送ping
 	bondExpiration = 24 * time.Hour
 
-	maxFindnodeFailures = 5                // nodes exceeding this limit are dropped
+	maxFindnodeFailures = 5 // nodes exceeding this limit are dropped
 	// 超时错误次数达到32次就进行ntp更新时间
-	ntpFailureThreshold = 32               // Continuous timeouts after which to check NTP
-	ntpWarningCooldown  = 10 * time.Minute // Minimum amount of time to pass before repeating NTP warning
+	ntpFailureThreshold = 32 // Continuous timeouts after which to check NTP
+	// ntp更新的时间间隔最少是10分钟,避免频繁尝试更新
+	ntpWarningCooldown = 10 * time.Minute // Minimum amount of time to pass before repeating NTP warning
 	// 时间误差最多十秒
-	driftThreshold      = 10 * time.Second // Allowed clock drift before warning user
+	driftThreshold = 10 * time.Second // Allowed clock drift before warning user
 
 	// Discovery packets are defined to be no larger than 1280 bytes.
 	// Packets larger than this size will be cut at the end and treated
@@ -79,7 +80,7 @@ type UDPv4 struct {
 	tab         *Table
 	closeOnce   sync.Once
 	// 用来等待loop和readLoop函数执行完成
-	wg          sync.WaitGroup
+	wg sync.WaitGroup
 
 	addReplyMatcher chan *replyMatcher
 	gotreply        chan reply
@@ -96,13 +97,18 @@ type UDPv4 struct {
 // Our implementation handles this by storing a callback function for
 // each pending reply. Incoming packets from a node are dispatched
 // to all callback functions for that node.
+// 保存本地正在的等待的Pong、Findnode、ENRRequest包相关信息
 type replyMatcher struct {
 	// these fields must match in the reply.
-	from  enode.ID
-	ip    net.IP
+	// 等待的包的发送者的ID
+	from enode.ID
+	// 等待的包的发送者的IP
+	ip net.IP
+	// 正在等待的包的类型
 	ptype byte
 
 	// time when the request must complete
+	// 等待的包的超时时间
 	deadline time.Time
 
 	// callback is called when a matching reply arrives. If it returns matched == true, the
@@ -113,6 +119,8 @@ type replyMatcher struct {
 
 	// errc receives nil when the callback indicates completion or an
 	// error if no further reply is received within the timeout.
+	// 会话结束后此管道将接收到一个错误信息数据,没有错误也会接收到一个nil
+	// 所以监听此管道将一直阻塞到会话结束,同时获得错误信息
 	errc chan error
 
 	// reply contains the most recent reply. This field is safe for reading after errc has
@@ -120,6 +128,10 @@ type replyMatcher struct {
 	reply v4wire.Packet
 }
 
+// 返回包匹配到会话后调用的回调函数,返回值包括数据包是否匹配、当前会话是否完成
+// Ping: 需要Pong包保存了Ping的哈希才算匹配
+// Findnode: 一定匹配;需要接收到Neighbors返回了16个节点信息才结束会话
+// ENRRequest: 需要ENRResponse保存了ENRRequest的哈希才算匹配
 type replyMatchFunc func(v4wire.Packet) (matched bool, requestDone bool)
 
 // reply is a reply packet from a certain node.
@@ -227,6 +239,7 @@ func (t *UDPv4) Ping(n *enode.Node) error {
 // ping sends a ping message to the given node and waits for a reply.
 func (t *UDPv4) ping(n *enode.Node) (seq uint64, err error) {
 	rm := t.sendPing(n.ID(), &net.UDPAddr{IP: n.IP(), Port: n.UDP()}, nil)
+	// 等待会话结束
 	if err = <-rm.errc; err == nil {
 		seq = rm.reply.(*v4wire.Pong).ENRSeq
 	}
@@ -248,7 +261,7 @@ func (t *UDPv4) sendPing(toid enode.ID, toaddr *net.UDPAddr, callback func()) *r
 	}
 	// Add a matcher for the reply to the pending reply queue. Pongs are matched if they
 	// reference the ping we're about to send.
-	// 构造replyMatcher对象,接收到对应的pong包调用callback
+	// 启动Ping包的会话过程,注册Ping包的回调函数
 	rm := t.pending(toid, toaddr.IP, v4wire.PongPacket, func(p v4wire.Packet) (matched bool, requestDone bool) {
 		// 校验pong是否与ping对应
 		matched = bytes.Equal(p.(*v4wire.Pong).ReplyTok, hash)
@@ -331,6 +344,8 @@ func (t *UDPv4) findnode(toid enode.ID, toaddr *net.UDPAddr, target v4wire.Pubke
 	// active until enough nodes have been received.
 	nodes := make([]*node, 0, bucketSize)
 	nreceived := 0
+	// 启动Findnode的会话,并注册回调函数
+	// 此回调函数可能调用多次,因为返回的节点可能分成多次发送,一直返回了16个节点才结束
 	rm := t.pending(toid, toaddr.IP, v4wire.NeighborsPacket, func(r v4wire.Packet) (matched bool, requestDone bool) {
 		reply := r.(*v4wire.Neighbors)
 		for _, rn := range reply.Nodes {
@@ -345,6 +360,7 @@ func (t *UDPv4) findnode(toid enode.ID, toaddr *net.UDPAddr, target v4wire.Pubke
 		// 接收到的数量达到16才代表完全结束
 		return true, nreceived >= bucketSize
 	})
+	// 发送实际的Findnode包
 	t.send(toaddr, toid, &v4wire.Findnode{
 		Target:     target,
 		Expiration: uint64(time.Now().Add(expiration).Unix()),
@@ -354,6 +370,7 @@ func (t *UDPv4) findnode(toid enode.ID, toaddr *net.UDPAddr, target v4wire.Pubke
 	// active until the remote node sends enough nodes. If the remote end doesn't have
 	// enough nodes the reply matcher will time out waiting for the second reply, but
 	// there's no need for an error in that case.
+	// 等待会话结束,也就是接收到了完整的16个节点
 	err := <-rm.errc
 	if err == errTimeout && rm.reply != nil {
 		err = nil
@@ -420,6 +437,7 @@ func (t *UDPv4) RequestENR(n *enode.Node) (*enode.Node, error) {
 
 // pending adds a reply matcher to the pending reply queue.
 // see the documentation of type replyMatcher for a detailed explanation.
+// 发送Ping、Findnode、ENRRequest数据包后调用此方法,等待他们的返回数据包
 // 构造replyMatcher对象发送到addReplyMatcher管道中等待loop中处理
 // callback在接收到返回消息后调用
 func (t *UDPv4) pending(id enode.ID, ip net.IP, ptype byte, callback replyMatchFunc) *replyMatcher {
@@ -436,9 +454,8 @@ func (t *UDPv4) pending(id enode.ID, ip net.IP, ptype byte, callback replyMatchF
 
 // handleReply dispatches a reply packet, invoking reply matchers. It returns
 // whether any matcher considered the packet acceptable.
-// handleReply会在verifyPong,verifyNeighbors,verifyENRRequest中调用
-// 也就是本地请求后收到返回结果时调用
-// 构造relpy对象发送到getreply管道中,等待loop中处理
+// 本地接收到Pong、Neighbors、ENRResponse这种返回包时调用
+// 用于构造relpy对象发送到getreply管道中,等待loop中处理
 func (t *UDPv4) handleReply(from enode.ID, fromIP net.IP, req v4wire.Packet) bool {
 	matched := make(chan bool, 1)
 	select {
@@ -457,12 +474,15 @@ func (t *UDPv4) loop() {
 	defer t.wg.Done()
 
 	var (
-		plist        = list.New()
-		timeout      = time.NewTimer(0)
+		plist = list.New()
+		// 下一个等待返回的数据包的超时时间
+		timeout = time.NewTimer(0)
 		// 保存timeout触发的时候对应的replyMatcher对象
-		nextTimeout  *replyMatcher // head of plist when timeout was last reset
-		contTimeouts = 0           // number of continuous timeouts to do NTP checks
-		ntpWarnTime  = time.Unix(0, 0)
+		nextTimeout *replyMatcher // head of plist when timeout was last reset
+		// 统计超时错误发生的次数,连续发生32次执行ntp更新时间
+		contTimeouts = 0 // number of continuous timeouts to do NTP checks
+		// 记录上次进行ntp更新的时间,用于控制执行ntp最多10分钟一次
+		ntpWarnTime = time.Unix(0, 0)
 	)
 	<-timeout.C // ignore first timeout
 	defer timeout.Stop()
@@ -502,17 +522,18 @@ func (t *UDPv4) loop() {
 			}
 			return
 
-		// 接收到replyMatcher对象,设置超时时间是现在加上respTimeout,并加入到链表
+		// 向超时链表尾部添加一个新的等待包,超时时间设置为500毫秒后
 		case p := <-t.addReplyMatcher:
 			p.deadline = time.Now().Add(respTimeout)
 			plist.PushBack(p)
 
-		// 接收到了返回的数据包
+		// 接收到了返回包
 		case r := <-t.gotreply:
 			var matched bool // whether any replyMatcher considered the reply acceptable.
-			// 遍历链表中所有元素,查询于reply对象匹配的replyMatcher对象
+			// 遍历链表中所有元素,找到匹配的会话
 			for el := plist.Front(); el != nil; el = el.Next() {
 				p := el.Value.(*replyMatcher)
+				// 找到对应的会话
 				if p.from == r.from && p.ptype == r.data.Kind() && p.ip.Equal(r.ip) {
 					ok, requestDone := p.callback(r.data)
 					matched = matched || ok
@@ -544,7 +565,7 @@ func (t *UDPv4) loop() {
 				}
 			}
 			// If we've accumulated too many timeouts, do an NTP time sync check
-			// 更新时间
+			// 超时错误超过32次,通过ntp更新时间
 			if contTimeouts > ntpFailureThreshold {
 				if time.Since(ntpWarnTime) >= ntpWarningCooldown {
 					ntpWarnTime = time.Now()
@@ -571,6 +592,7 @@ func (t *UDPv4) send(toaddr *net.UDPAddr, toid enode.ID, req v4wire.Packet) ([]b
 // toid和what用来打印Trace等级的日志
 func (t *UDPv4) write(toaddr *net.UDPAddr, toid enode.ID, what string, packet []byte) error {
 	// 向远程节点发送udp数据包
+	fmt.Println(t.conn)
 	_, err := t.conn.WriteToUDP(packet, toaddr)
 	t.log.Trace(">> "+what, "id", toid, "addr", toaddr, "err", err)
 	return err
@@ -589,12 +611,13 @@ func (t *UDPv4) readLoop(unhandled chan<- ReadPacket) {
 	for {
 		// 接收网络中的数据
 		nbytes, from, err := t.conn.ReadFromUDP(buf)
+		// 读取数据后首先进行错误处理,忽略临时错误,发生其他错误结束监听
 		// 临时错误打印错误信息,继续监听
 		if netutil.IsTemporaryError(err) {
 			// Ignore temporary read errors.
 			t.log.Debug("Temporary UDP read error", "err", err)
 			continue
-		// 其他的错误直接返回函数,结束监听
+			// 其他的错误直接返回函数,结束监听
 		} else if err != nil {
 			// Shut down the loop for permament errors.
 			if err != io.EOF {
@@ -615,6 +638,7 @@ func (t *UDPv4) readLoop(unhandled chan<- ReadPacket) {
 // 接收到的数据都传入handlePacket来处理
 // 将buf中的数据解码为v4wire.Packet,封装为packetHandlerV4对象后调用对应的preverify和handle函数
 func (t *UDPv4) handlePacket(from *net.UDPAddr, buf []byte) error {
+	// 解码接收到的字节流为数据包对象
 	rawpacket, fromKey, hash, err := v4wire.Decode(buf)
 	if err != nil {
 		t.log.Debug("Bad discv4 packet", "addr", from, "err", err)
@@ -712,9 +736,11 @@ func (t *UDPv4) wrapPacket(p v4wire.Packet) *packetHandlerV4 {
 }
 
 // packetHandlerV4 wraps a packet with handler functions.
+// 接收到的v4wire.Packet类型将会转化成packetHandlerV4类型
 type packetHandlerV4 struct {
 	v4wire.Packet
 	// senderKey只用于ping包
+	// 因为收到ping包后有可能需要对方的公钥来创建enode.Node对象,用于添加到节点表中
 	senderKey *ecdsa.PublicKey // used for ping
 
 	// preverify checks whether the packet is valid and should be handled at all.
@@ -742,10 +768,14 @@ func (t *UDPv4) verifyPing(h *packetHandlerV4, from *net.UDPAddr, fromID enode.I
 	return nil
 }
 
+// 本地收到Ping包后的处理函数
+// 1. 向对方发送Pong包
+// 2. 判断上次接收到对方Ping包的时间,超时的话向对方发送Ping包
 func (t *UDPv4) handlePing(h *packetHandlerV4, from *net.UDPAddr, fromID enode.ID, mac []byte) {
 	req := h.Packet.(*v4wire.Ping)
 
 	// Reply.
+	// 向对方返回Pong包
 	t.send(from, fromID, &v4wire.Pong{
 		To:         v4wire.NewEndpoint(from, req.From.TCP),
 		ReplyTok:   mac,

@@ -47,15 +47,16 @@ type Config struct {
 
 	// These settings are optional:
 	// 可选字段
-	NetRestrict  *netutil.Netlist   // list of allowed IP networks
-	Bootnodes    []*enode.Node      // list of bootstrap nodes
-	Unhandled    chan<- ReadPacket  // unhandled packets are sent on this channel
+	NetRestrict *netutil.Netlist // list of allowed IP networks
+	Bootnodes   []*enode.Node    // list of bootstrap nodes
+	// 可选字段,所有没被处理的数据包发送到这里
+	Unhandled chan<- ReadPacket // unhandled packets are sent on this channel
 	// 默认是log.Root()
-	Log          log.Logger         // if set, log messages go here
+	Log log.Logger // if set, log messages go here
 	// 默认是当前所有节点标识方案
 	ValidSchemes enr.IdentityScheme // allowed identity schemes
 	// 默认使用系统时钟
-	Clock        mclock.Clock
+	Clock mclock.Clock
 }
 
 // 如果Log,ValidSchemes以及Clock没有设置,为Config对象设置默认值
@@ -84,6 +85,7 @@ func ListenUDP(c UDPConn, ln *enode.LocalNode, cfg Config) (*UDPv4, error) {
 
 // ReadPacket is a packet that couldn't be handled. Those packets are sent to the unhandled
 // channel if configured.
+// 用于表示不能被处理的数据包,他们被发送到unhandled管道
 type ReadPacket struct {
 	Data []byte
 	Addr *net.UDPAddr
