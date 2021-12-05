@@ -149,12 +149,10 @@ type Sync struct {
 	codeReqs map[common.Hash]*request // Pending requests pertaining to a code hash
 	queue    *prque.Prque             // Priority queue with the pending requests
 	fetches  map[int]int              // Number of active fetches per trie node depth
-	bloom    *SyncBloom               // Bloom filter for fast state existence checks
 }
 
 // NewSync creates a new trie data download scheduler.
-// 创建一个用来同步以root为根的梅克尔树的Sync对象
-func NewSync(root common.Hash, database ethdb.KeyValueReader, callback LeafCallback, bloom *SyncBloom) *Sync {
+func NewSync(root common.Hash, database ethdb.KeyValueReader, callback LeafCallback) *Sync {
 	ts := &Sync{
 		database: database,
 		membatch: newSyncMemBatch(),
@@ -162,7 +160,6 @@ func NewSync(root common.Hash, database ethdb.KeyValueReader, callback LeafCallb
 		codeReqs: make(map[common.Hash]*request),
 		queue:    prque.New(nil),
 		fetches:  make(map[int]int),
-		bloom:    bloom,
 	}
 	// 构造根节点的request对象
 	ts.AddSubTrie(root, nil, common.Hash{}, callback)
@@ -179,19 +176,11 @@ func (s *Sync) AddSubTrie(root common.Hash, path []byte, parent common.Hash, cal
 	if s.membatch.hasNode(root) {
 		return
 	}
-	// 布隆过滤器告诉包括了这个节点,我们还需要从数据库中查询确保真实存在
-	if s.bloom == nil || s.bloom.Contains(root[:]) {
-		// Bloom filter says this might be a duplicate, double check.
-		// If database says yes, then at least the trie node is present
-		// and we hold the assumption that it's NOT legacy contract code.
-		blob := rawdb.ReadTrieNode(s.database, root)
-		// 数据库中查询到了结果,直接返回
-		if len(blob) > 0 {
-			return
-		}
-		// False positive, bump fault meter
-		// 数据库中不存在,假阳性
-		bloomFaultMeter.Mark(1)
+	// If database says this is a duplicate, then at least the trie node is
+	// present, and we hold the assumption that it's NOT legacy contract code.
+	blob := rawdb.ReadTrieNode(s.database, root)
+	if len(blob) > 0 {
+		return
 	}
 	// Assemble the new sub-trie sync request
 	// 执行到这里root不存在于数据库中,需要新建一个子树
@@ -226,18 +215,13 @@ func (s *Sync) AddCodeEntry(hash common.Hash, path []byte, parent common.Hash) {
 	if s.membatch.hasCode(hash) {
 		return
 	}
-	if s.bloom == nil || s.bloom.Contains(hash[:]) {
-		// Bloom filter says this might be a duplicate, double check.
-		// If database says yes, the blob is present for sure.
-		// Note we only check the existence with new code scheme, fast
-		// sync is expected to run with a fresh new node. Even there
-		// exists the code with legacy format, fetch and store with
-		// new scheme anyway.
-		if blob := rawdb.ReadCodeWithPrefix(s.database, hash); len(blob) > 0 {
-			return
-		}
-		// False positive, bump fault meter
-		bloomFaultMeter.Mark(1)
+	// If database says duplicate, the blob is present for sure.
+	// Note we only check the existence with new code scheme, fast
+	// sync is expected to run with a fresh new node. Even there
+	// exists the code with legacy format, fetch and store with
+	// new scheme anyway.
+	if blob := rawdb.ReadCodeWithPrefix(s.database, hash); len(blob) > 0 {
+		return
 	}
 	// Assemble the new sub-trie sync request
 	req := &request{
@@ -359,15 +343,9 @@ func (s *Sync) Commit(dbw ethdb.Batch) error {
 	// 将membatch中的nodes和codes都写入到给定的dbw数据库中
 	for key, value := range s.membatch.nodes {
 		rawdb.WriteTrieNode(dbw, key, value)
-		if s.bloom != nil {
-			s.bloom.Add(key[:])
-		}
 	}
 	for key, value := range s.membatch.codes {
 		rawdb.WriteCode(dbw, key, value)
-		if s.bloom != nil {
-			s.bloom.Add(key[:])
-		}
 	}
 	// Drop the membatch data and return
 	// 之前的已经写入完了,重置一个新的membatch
@@ -477,15 +455,10 @@ func (s *Sync) children(req *request, object node) ([]*request, error) {
 			if s.membatch.hasNode(hash) {
 				continue
 			}
-			if s.bloom == nil || s.bloom.Contains(node) {
-				// Bloom filter says this might be a duplicate, double check.
-				// If database says yes, then at least the trie node is present
-				// and we hold the assumption that it's NOT legacy contract code.
-				if blob := rawdb.ReadTrieNode(s.database, hash); len(blob) > 0 {
-					continue
-				}
-				// False positive, bump fault meter
-				bloomFaultMeter.Mark(1)
+			// If database says duplicate, then at least the trie node is present
+			// and we hold the assumption that it's NOT legacy contract code.
+			if blob := rawdb.ReadTrieNode(s.database, hash); len(blob) > 0 {
+				continue
 			}
 			// Locally unknown node, schedule for retrieval
 			requests = append(requests, &request{

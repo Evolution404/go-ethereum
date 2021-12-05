@@ -164,13 +164,13 @@ func handleGetNodeData66(backend Backend, msg Decoder, peer *Peer) error {
 	if err := msg.Decode(&query); err != nil {
 		return fmt.Errorf("%w: message %v: %v", errDecode, msg, err)
 	}
-	response := ServiceGetNodeDataQuery(backend.Chain(), backend.StateBloom(), query.GetNodeDataPacket)
+	response := ServiceGetNodeDataQuery(backend.Chain(), query.GetNodeDataPacket)
 	return peer.ReplyNodeData(query.RequestId, response)
 }
 
 // ServiceGetNodeDataQuery assembles the response to a node data query. It is
 // exposed to allow external packages to test protocol behavior.
-func ServiceGetNodeDataQuery(chain *core.BlockChain, bloom *trie.SyncBloom, query GetNodeDataPacket) [][]byte {
+func ServiceGetNodeDataQuery(chain *core.BlockChain, query GetNodeDataPacket) [][]byte {
 	// Gather state data until the fetch or network limits is reached
 	var (
 		bytes int
@@ -182,10 +182,6 @@ func ServiceGetNodeDataQuery(chain *core.BlockChain, bloom *trie.SyncBloom, quer
 			break
 		}
 		// Retrieve the requested state entry
-		if bloom != nil && !bloom.Contains(hash[:]) {
-			// Only lookup the trie node if there's chance that we actually have it
-			continue
-		}
 		entry, err := chain.TrieNode(hash)
 		if len(entry) == 0 || err != nil {
 			// Read the contract code with prefix only to save unnecessary lookups.
@@ -286,11 +282,18 @@ func handleBlockHeaders66(backend Backend, msg Decoder, peer *Peer) error {
 	if err := msg.Decode(res); err != nil {
 		return fmt.Errorf("%w: message %v: %v", errDecode, msg, err)
 	}
+	metadata := func() interface{} {
+		hashes := make([]common.Hash, len(res.BlockHeadersPacket))
+		for i, header := range res.BlockHeadersPacket {
+			hashes[i] = header.Hash()
+		}
+		return hashes
+	}
 	return peer.dispatchResponse(&Response{
 		id:   res.RequestId,
 		code: BlockHeadersMsg,
 		Res:  &res.BlockHeadersPacket,
-	})
+	}, metadata)
 }
 
 func handleBlockBodies66(backend Backend, msg Decoder, peer *Peer) error {
@@ -299,11 +302,23 @@ func handleBlockBodies66(backend Backend, msg Decoder, peer *Peer) error {
 	if err := msg.Decode(res); err != nil {
 		return fmt.Errorf("%w: message %v: %v", errDecode, msg, err)
 	}
+	metadata := func() interface{} {
+		var (
+			txsHashes   = make([]common.Hash, len(res.BlockBodiesPacket))
+			uncleHashes = make([]common.Hash, len(res.BlockBodiesPacket))
+		)
+		hasher := trie.NewStackTrie(nil)
+		for i, body := range res.BlockBodiesPacket {
+			txsHashes[i] = types.DeriveSha(types.Transactions(body.Transactions), hasher)
+			uncleHashes[i] = types.CalcUncleHash(body.Uncles)
+		}
+		return [][]common.Hash{txsHashes, uncleHashes}
+	}
 	return peer.dispatchResponse(&Response{
 		id:   res.RequestId,
 		code: BlockBodiesMsg,
 		Res:  &res.BlockBodiesPacket,
-	})
+	}, metadata)
 }
 
 func handleNodeData66(backend Backend, msg Decoder, peer *Peer) error {
@@ -316,7 +331,7 @@ func handleNodeData66(backend Backend, msg Decoder, peer *Peer) error {
 		id:   res.RequestId,
 		code: NodeDataMsg,
 		Res:  &res.NodeDataPacket,
-	})
+	}, nil) // No post-processing, we're not using this packet anymore
 }
 
 func handleReceipts66(backend Backend, msg Decoder, peer *Peer) error {
@@ -325,11 +340,19 @@ func handleReceipts66(backend Backend, msg Decoder, peer *Peer) error {
 	if err := msg.Decode(res); err != nil {
 		return fmt.Errorf("%w: message %v: %v", errDecode, msg, err)
 	}
+	metadata := func() interface{} {
+		hasher := trie.NewStackTrie(nil)
+		hashes := make([]common.Hash, len(res.ReceiptsPacket))
+		for i, receipt := range res.ReceiptsPacket {
+			hashes[i] = types.DeriveSha(types.Receipts(receipt), hasher)
+		}
+		return hashes
+	}
 	return peer.dispatchResponse(&Response{
 		id:   res.RequestId,
 		code: ReceiptsMsg,
 		Res:  &res.ReceiptsPacket,
-	})
+	}, metadata)
 }
 
 func handleNewPooledTransactionHashes(backend Backend, msg Decoder, peer *Peer) error {
