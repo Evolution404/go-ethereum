@@ -36,7 +36,7 @@ const (
 	// 至少有十个节点认为本地ip是某个值才会预测出来这个值
 	iptrackMinStatements = 10
 	// statement保存的时间
-	iptrackWindow        = 5 * time.Minute
+	iptrackWindow = 5 * time.Minute
 	// contact保存的时间
 	iptrackContactWindow = 10 * time.Minute
 
@@ -61,9 +61,9 @@ type LocalNode struct {
 
 	// everything below is protected by a lock
 	// 以下的字段都被锁保护
-	mu        sync.RWMutex
-	seq       uint64
-	update    time.Time // timestamp when the record was last updated
+	mu     sync.RWMutex
+	seq    uint64
+	update time.Time // timestamp when the record was last updated
 	// ENRKey->Entry对象的映射
 	entries   map[string]enr.Entry
 	endpoint4 lnEndpoint
@@ -255,7 +255,7 @@ func (ln *LocalNode) UDPEndpointStatement(fromaddr, endpoint *net.UDPAddr) {
 
 // UDPContact should be called whenever the local node has announced itself to another node
 // via UDP. It feeds the local endpoint predictor.
-// 一旦本地向其他节点通知连接,就调用AddContact往IPTracker里面添加
+// 一旦本地向其他节点发送Ping包,就调用AddContact往IPTracker里面添加
 func (ln *LocalNode) UDPContact(toaddr *net.UDPAddr) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()

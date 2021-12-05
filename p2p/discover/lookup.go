@@ -26,19 +26,23 @@ import (
 // lookup performs a network search for nodes close to the given target. It approaches the
 // target by querying nodes that are closer to it on each iteration. The given target does
 // not need to be an actual node identifier.
+// 输入节点表、目标公钥、网络查询方法
+// 内部封装节点搜索算法,通过run方法启动节点搜索过程
+// 返回距离目标最近的16个节点
 type lookup struct {
-	tab         *Table
-	queryfunc   func(*node) ([]*node, error)
+	tab       *Table
+	queryfunc func(*node) ([]*node, error)
 	// 发送查询到的结果
-	replyCh     chan []*node
-	cancelCh    <-chan struct{}
+	replyCh  chan []*node
+	cancelCh <-chan struct{}
 	// asked标记一个节点是否被查询过
 	// seen用来判断一个节点是否已经保存在result中
 	asked, seen map[enode.ID]bool
+	// 保存查询结果
 	result      nodesByDistance
 	replyBuffer []*node
 	// 记录当前正在查询的进程数,还没有进行过查询用-1标记
-	queries     int
+	queries int
 }
 
 type queryFunc func(*node) ([]*node, error)
@@ -53,7 +57,7 @@ func newLookup(ctx context.Context, tab *Table, target enode.ID, q queryFunc) *l
 		replyCh:   make(chan []*node, alpha),
 		cancelCh:  ctx.Done(),
 		// 初始一次查询都没进行过标记为-1
-		queries:   -1,
+		queries: -1,
 	}
 	// Don't query further if we hit ourself.
 	// Unlikely to happen often in practice.
@@ -75,15 +79,19 @@ func (it *lookup) run() []*enode.Node {
 // 向节点发送请求,查询到结果该函数执行结束
 // 查询的结果保存在it.replyBuffer中
 func (it *lookup) advance() bool {
+	// 向外部发送查询
+	//   有可能查询结果都是见过的节点,所以需要for循环不断查询
+	//   有可能没有可以查询的节点了,所以for循环结束
 	for it.startQueries() {
 		select {
-		// 接收到了查询的结果
+		// 接收到了查询的结果,返回了多个节点信息
 		case nodes := <-it.replyCh:
 			it.replyBuffer = it.replyBuffer[:0]
-			// 将新查找到的节点都保存到result中
+			// 遍历查询结果,过滤掉空节点和之前见过的节点
 			for _, n := range nodes {
 				if n != nil && !it.seen[n.ID()] {
 					it.seen[n.ID()] = true
+					// 保存查询到的节点到结果集中
 					it.result.push(n, bucketSize)
 					it.replyBuffer = append(it.replyBuffer, n)
 				}
@@ -111,7 +119,7 @@ func (it *lookup) shutdown() {
 	it.replyBuffer = nil
 }
 
-// 向最近的几个节点发送查询请求
+// 向最近的几个节点发送查询请求,返回是否有正在进行的查询
 func (it *lookup) startQueries() bool {
 	if it.queryfunc == nil {
 		return false
@@ -147,6 +155,7 @@ func (it *lookup) startQueries() bool {
 		}
 	}
 	// The lookup ends when no more nodes can be asked.
+	// 返回当前是否有正在进行的查询
 	return it.queries > 0
 }
 
@@ -186,7 +195,7 @@ func (it *lookup) query(n *node, reply chan<- []*node) {
 			it.tab.delete(n)
 		}
 		it.tab.log.Trace("FINDNODE failed", "id", n.ID(), "failcount", fails, "dropped", dropped, "err", err)
-	// 这次成功查询了,数据库里记录的错误次数归零
+		// 这次成功查询了,数据库里记录的错误次数归零
 	} else if fails > 0 {
 		// Reset failure counter because it counts _consecutive_ failures.
 		it.tab.db.UpdateFindFails(n.ID(), n.IP(), 0)
@@ -205,7 +214,7 @@ func (it *lookup) query(n *node, reply chan<- []*node) {
 // lookupIterator performs lookup operations and iterates over all seen nodes.
 // When a lookup finishes, a new one is created through nextLookup.
 type lookupIterator struct {
-	buffer     []*node
+	buffer []*node
 	// 当一个lookup对象耗尽了,用于创建新的lookup对象
 	nextLookup lookupFunc
 	ctx        context.Context

@@ -42,7 +42,8 @@ import (
 )
 
 const (
-	alpha           = 3  // Kademlia concurrency factor
+	alpha = 3 // Kademlia concurrency factor
+	// 一个桶内保存的节点个数
 	bucketSize      = 16 // Kademlia bucket size
 	maxReplacements = 10 // Size of per-bucket replacement list
 
@@ -80,8 +81,9 @@ type Table struct {
 	// 根据距离放置的节点
 	buckets [nBuckets]*bucket // index of known nodes by distance
 	// 启动的时候自带的节点,当所有桶内都没有节点而且数据库内也没有节点时使用
-	nursery []*node     // bootstrap nodes
-	rand    *mrand.Rand // source of randomness, periodically reseeded
+	nursery []*node // bootstrap nodes
+	// 随机数生成器,定期更新随机数生成器,保证表的一些随机操作的安全性
+	rand *mrand.Rand // source of randomness, periodically reseeded
 	// 用来限制具有共同前缀的ip个数不能过多
 	ips netutil.DistinctNetSet
 
@@ -217,7 +219,7 @@ func (tab *Table) getNode(id enode.ID) *enode.Node {
 }
 
 // close terminates the network listener and flushes the node database.
-// 关闭网络监听,刷新所有数据到节点数据库
+// 关闭网络监听,保存所有数据到节点数据库
 func (tab *Table) close() {
 	// 首先关闭closeReq管道
 	//   触发loop函数执行操作,loop中执行操作完成后会关闭closed管道
@@ -229,8 +231,8 @@ func (tab *Table) close() {
 // setFallbackNodes sets the initial points of contact. These nodes
 // are used to connect to the network if the table is empty and there
 // are no known nodes in the database.
-// 设置初始时的节点
-// 保存到Table.nursery中
+// 设置初始查询节点,当节点表为空且节点数据库为空的时候将查询初始节点
+// 初始节点被保存到Table.nursery中
 func (tab *Table) setFallbackNodes(nodes []*enode.Node) error {
 	for _, n := range nodes {
 		// 输入的节点中有任何一个出现问题都直接返回错误
@@ -244,9 +246,9 @@ func (tab *Table) setFallbackNodes(nodes []*enode.Node) error {
 }
 
 // isInitDone returns whether the table's initial seeding procedure has completed.
-// 判断第一次调用doRefresh是否完成,完成后返回true,否则返回false
-// 判断方法是使用initDone管道:被关闭返回true,否则返回false
+// 判断第一次刷新操作是否已经完成
 func (tab *Table) isInitDone() bool {
+	// 如果initDone管道被关闭说明第一次刷新操作完成
 	select {
 	case <-tab.initDone:
 		return true
@@ -255,16 +257,16 @@ func (tab *Table) isInitDone() bool {
 	}
 }
 
-// refresh就是向refreshReq管道发送一个done管道
-// 将done管道返回,refresh完成后会关闭done管道
-// 外部监听done可以知道refresh完成
+// 通过此方法主动触发表的刷新操作,返回done管道用于等待刷新完成
 func (tab *Table) refresh() <-chan struct{} {
 	done := make(chan struct{})
 	select {
+	// 向refreshReq管道发送一个done管道,通知loop方法进行刷新操作
 	case tab.refreshReq <- done:
 	case <-tab.closeReq:
 		close(done)
 	}
+	// done管道将在刷新过程完成后被关闭,所以外部监听此管道等待刷新完成
 	return done
 }
 
@@ -276,35 +278,43 @@ func (tab *Table) refresh() <-chan struct{} {
 func (tab *Table) loop() {
 
 	var (
-		revalidate     = time.NewTimer(tab.nextRevalidateTime())
-		refresh        = time.NewTicker(refreshInterval)
-		copyNodes      = time.NewTicker(copyNodesInterval)
-		refreshDone    = make(chan struct{})           // where doRefresh reports completion
-		revalidateDone chan struct{}                   // where doRevalidate reports completion
-		waiting        = []chan struct{}{tab.initDone} // holds waiting callers while doRefresh runs
+		revalidate = time.NewTimer(tab.nextRevalidateTime())
+		refresh    = time.NewTicker(refreshInterval)
+		copyNodes  = time.NewTicker(copyNodesInterval)
+		// 没有进行刷新操作时为nil;正在进行刷新不为nil,刷新结束接收到通知
+		refreshDone    = make(chan struct{}) // where doRefresh reports completion
+		revalidateDone chan struct{}         // where doRevalidate reports completion
+		// 正在刷新过程中发送的刷新请求都保存到这里
+		waiting = []chan struct{}{tab.initDone} // holds waiting callers while doRefresh runs
 	)
 	defer refresh.Stop()
 	defer revalidate.Stop()
 	defer copyNodes.Stop()
 
 	// Start initial refresh.
+	// 启动第一次刷新过程
 	go tab.doRefresh(refreshDone)
 
 loop:
 	for {
 		select {
+		// 刷新有两种触发方式：定时触发、手动触发以下两个分支监听这两种情况
 		case <-refresh.C:
 			tab.seedRand()
+			// 没有正在进行刷新,才会调用刷新方法
 			if refreshDone == nil {
 				refreshDone = make(chan struct{})
 				go tab.doRefresh(refreshDone)
 			}
 		case req := <-tab.refreshReq:
+			// 保存刷新请求,加入到等待列表中
 			waiting = append(waiting, req)
+			// 没有正在进行刷新,才会调用刷新方法
 			if refreshDone == nil {
 				refreshDone = make(chan struct{})
 				go tab.doRefresh(refreshDone)
 			}
+		// 刷新完成,通知所有刷新请求已经完成了刷新
 		case <-refreshDone:
 			for _, ch := range waiting {
 				close(ch)
@@ -365,8 +375,10 @@ func (tab *Table) doRefresh(done chan struct{}) {
 
 // 从数据库中加载随机的总计最多30个节点保存到各个桶内
 func (tab *Table) loadSeedNodes() {
+	// 从节点数据库中随机查询几个节点
 	seeds := wrapNodes(tab.db.QuerySeeds(seedCount, seedMaxAge))
 	seeds = append(seeds, tab.nursery...)
+	// 将这些节点添加到节点表中
 	for i := range seeds {
 		seed := seeds[i]
 		// 如果不打印这条日志，使用Lazy能避免计算这个age
@@ -384,7 +396,7 @@ func (tab *Table) loadSeedNodes() {
 func (tab *Table) doRevalidate(done chan<- struct{}) {
 	defer func() { done <- struct{}{} }()
 
-	// 找到要检测的桶
+	// 随机选取一个桶的末尾节点,并得到桶的序号
 	last, bi := tab.nodeToRevalidate()
 	if last == nil {
 		// No non-empty bucket found.
@@ -392,9 +404,11 @@ func (tab *Table) doRevalidate(done chan<- struct{}) {
 	}
 
 	// Ping the selected node and wait for a pong.
+	// 本地主动Ping一下随机节点
 	remoteSeq, err := tab.net.ping(unwrapNode(last))
 
 	// Also fetch record if the node replied and returned a higher sequence number.
+	// 远程节点的记录序号大于本地的记录,查询远程节点的最新记录
 	if last.Seq() < remoteSeq {
 		n, err := tab.net.RequestENR(unwrapNode(last))
 		if err != nil {
@@ -407,8 +421,9 @@ func (tab *Table) doRevalidate(done chan<- struct{}) {
 
 	tab.mutex.Lock()
 	defer tab.mutex.Unlock()
+	// 找到随机节点所在的桶
 	b := tab.buckets[bi]
-	// 这里err为nil说明刚才的ping对方返回了,把他移动到首位
+	// 如果刚才Ping通了远程节点,把它放到桶的首位
 	if err == nil {
 		// The node responded, move it to the front.
 		// 存活检测记录加一
@@ -420,10 +435,11 @@ func (tab *Table) doRevalidate(done chan<- struct{}) {
 	}
 	// No reply received, pick a replacement or delete the node if there aren't
 	// any replacements.
-	// 执行到这里说明刚才ping不通
-	// 如果replacements中有节点就进行替换,否则就直接删除
+	// 执行到这里说明刚才Ping不通
+	// Ping不通的节点使用一个随机替补节点替换
 	if r := tab.replace(b, last); r != nil {
 		tab.log.Debug("Replaced dead node", "b", bi, "id", last.ID(), "ip", last.IP(), "checks", last.livenessChecks, "r", r.ID(), "rip", r.IP())
+		// 桶里面没有替补节点,直接删除
 	} else {
 		tab.log.Debug("Removed dead node", "b", bi, "id", last.ID(), "ip", last.IP(), "checks", last.livenessChecks)
 	}
@@ -557,7 +573,7 @@ func (tab *Table) bucketAtDistance(d int) *bucket {
 // The caller must not hold tab.mutex.
 // 向表中添加一个新发现的节点
 // 已经存在于桶内的节点不进行操作
-// 如果桶还没满直接加入桶中,桶已经满了就加入到replacements中
+// 如果桶还没满直接加入桶中,桶已经满了就加入到替补节点中
 // 也能用于将replacements中的节点移动到桶内
 func (tab *Table) addSeenNode(n *node) {
 	if n.ID() == tab.self().ID() {
@@ -568,23 +584,26 @@ func (tab *Table) addSeenNode(n *node) {
 	defer tab.mutex.Unlock()
 	// 计算所在的桶
 	b := tab.bucket(n.ID())
-	// 已经存在直接返回
+	// 已经保存在桶中了直接返回
 	if contains(b.entries, n.ID()) {
 		// Already in bucket, don't add.
 		return
 	}
-	// 判断当前桶是否已经满了
+	// 如果桶已经满了添加的替补节点中
 	if len(b.entries) >= bucketSize {
 		// Bucket full, maybe add as replacement.
 		tab.addReplacement(b, n)
 		return
 	}
+	// 现在尝试将节点添加到表中
+
+	// 首先判断是否满足IP限制
 	if !tab.addIP(b, n.IP()) {
 		// Can't add: IP limit reached.
 		return
 	}
 	// Add to end of bucket:
-	// 将新节点加入到b.entries中,并从replacements中删除
+	// 满足ip限制的节点加入到桶的末尾,并从替补节点中删除
 	b.entries = append(b.entries, n)
 	b.replacements = deleteNode(b.replacements, n)
 	// 记录添加节点的时间
@@ -616,10 +635,12 @@ func (tab *Table) addVerifiedNode(n *node) {
 	tab.mutex.Lock()
 	defer tab.mutex.Unlock()
 	b := tab.bucket(n.ID())
+	// 新添加的节点可能已经在桶中,尝试直接移动到首位
 	if tab.bumpInBucket(b, n) {
 		// Already in bucket, moved to front.
 		return
 	}
+	// 桶已经满了添加到替补节点
 	if len(b.entries) >= bucketSize {
 		// Bucket full, maybe add as replacement.
 		tab.addReplacement(b, n)
@@ -681,7 +702,7 @@ func (tab *Table) removeIP(b *bucket, ip net.IP) {
 	b.ips.Remove(ip)
 }
 
-// 向指定桶的replacements中加入一个节点
+// 将节点插入到某个桶的替补节点的首位
 func (tab *Table) addReplacement(b *bucket, n *node) {
 	for _, e := range b.replacements {
 		if e.ID() == n.ID() {
@@ -703,7 +724,8 @@ func (tab *Table) addReplacement(b *bucket, n *node) {
 // replace removes n from the replacement list and replaces 'last' with it if it is the
 // last entry in the bucket. If 'last' isn't the last entry, it has either been replaced
 // with someone else or became active.
-// 将指定桶内的最后一个节点从表中移除,如果replacements里面有节点的话就随机选取一个替换
+// 将桶内的最后一个节点删除,并将一个随机替补节点加入到桶的最后
+// 返回桶内新增的替补节点,如果没有替补节点返回nil
 func (tab *Table) replace(b *bucket, last *node) *node {
 	// last必须是entries中的最后一个
 	if len(b.entries) == 0 || b.entries[len(b.entries)-1].ID() != last.ID() {
@@ -720,7 +742,7 @@ func (tab *Table) replace(b *bucket, last *node) *node {
 	r := b.replacements[tab.rand.Intn(len(b.replacements))]
 	// 将r从replacements中删除
 	b.replacements = deleteNode(b.replacements, r)
-	// 将r添加到桶内
+	// 将r添加到桶的末尾
 	b.entries[len(b.entries)-1] = r
 	tab.removeIP(b, last.IP())
 	return r

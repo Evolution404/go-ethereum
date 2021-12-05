@@ -171,7 +171,9 @@ func ListenV4(c UDPConn, ln *enode.LocalNode, cfg Config) (*UDPv4, error) {
 	go tab.loop()
 
 	t.wg.Add(2)
+	// 启动会话处理循环
 	go t.loop()
+	// 启动网络监听循环,不断从网络连接中读取数据
 	go t.readLoop(cfg.Unhandled)
 	return t, nil
 }
@@ -324,7 +326,7 @@ func (t *UDPv4) newRandomLookup(ctx context.Context) *lookup {
 	return t.newLookup(ctx, target)
 }
 
-// 新建lookup对象
+// 指定要查询的目标节点的公钥,新建lookup对象
 func (t *UDPv4) newLookup(ctx context.Context, targetKey encPubkey) *lookup {
 	target := enode.ID(crypto.Keccak256Hash(targetKey[:]))
 	ekey := v4wire.Pubkey(targetKey)
@@ -470,14 +472,15 @@ func (t *UDPv4) handleReply(from enode.ID, fromIP net.IP, req v4wire.Packet) boo
 
 // loop runs in its own goroutine. it keeps track of
 // the refresh timer and the pending reply queue.
+// 会话处理循环,内部监听会话的启动(发送请求包)和结束(收到返回包)
 func (t *UDPv4) loop() {
 	defer t.wg.Done()
 
 	var (
 		plist = list.New()
-		// 下一个等待返回的数据包的超时时间
+		// 即将超时的会话的到期时间
 		timeout = time.NewTimer(0)
-		// 保存timeout触发的时候对应的replyMatcher对象
+		// 保存即将超时的会话,还未超时但最早超时的会话
 		nextTimeout *replyMatcher // head of plist when timeout was last reset
 		// 统计超时错误发生的次数,连续发生32次执行ntp更新时间
 		contTimeouts = 0 // number of continuous timeouts to do NTP checks
@@ -487,7 +490,7 @@ func (t *UDPv4) loop() {
 	<-timeout.C // ignore first timeout
 	defer timeout.Stop()
 
-	// 调用resetTimeout这个函数后会更新nextTimeout变量以及重置timeout的计时器
+	// 找到即将超时的会话和它的到期时间
 	resetTimeout := func() {
 		if plist.Front() == nil || nextTimeout == plist.Front().Value {
 			return
@@ -522,12 +525,13 @@ func (t *UDPv4) loop() {
 			}
 			return
 
-		// 向超时链表尾部添加一个新的等待包,超时时间设置为500毫秒后
+		// 监听会话启动
+		// 向超时链表尾部添加一个新的请求包会话,超时时间设置为500毫秒后
 		case p := <-t.addReplyMatcher:
 			p.deadline = time.Now().Add(respTimeout)
 			plist.PushBack(p)
 
-		// 接收到了返回包
+		// 监听会话结束,也就是接收到了返回包
 		case r := <-t.gotreply:
 			var matched bool // whether any replyMatcher considered the reply acceptable.
 			// 遍历链表中所有元素,找到匹配的会话
