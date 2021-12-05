@@ -271,16 +271,19 @@ func (tab *Table) refresh() <-chan struct{} {
 }
 
 // loop schedules runs of doRefresh, doRevalidate and copyLiveNodes.
-// loop中总共有三种操作refresh,revalidate以及copyNodes
-//   refresh每次经过refreshInterval(30分钟)自动触发一次,还有从tab.refreshReq管道中手动触发
-//   revalidate每次经过tab.nextRevalidateTime()自动触发,触发间隔会变化
-//   copyNodes经过copyNodesInterval(30秒)自动触发
+// loop在单独一个协程中启动,用于执行节点表的三种定时操作
+// 1. 每30分钟一次的刷新操作
+// 2. 每10秒内随机时间触发一次的节点重生效操作
+// 3. 每30秒一次的节点保存操作
 func (tab *Table) loop() {
 
 	var (
+		// 重生效10秒内的随机时间触发一次,所以没使用Ticker
 		revalidate = time.NewTimer(tab.nextRevalidateTime())
-		refresh    = time.NewTicker(refreshInterval)
-		copyNodes  = time.NewTicker(copyNodesInterval)
+		// 刷新30分钟触发一次
+		refresh = time.NewTicker(refreshInterval)
+		// 保存节点30秒触发一次
+		copyNodes = time.NewTicker(copyNodesInterval)
 		// 没有进行刷新操作时为nil;正在进行刷新不为nil,刷新结束接收到通知
 		refreshDone    = make(chan struct{}) // where doRefresh reports completion
 		revalidateDone chan struct{}         // where doRevalidate reports completion
@@ -320,6 +323,7 @@ loop:
 				close(ch)
 			}
 			waiting, refreshDone = nil, nil
+		// 执行重生效操作
 		case <-revalidate.C:
 			revalidateDone = make(chan struct{})
 			go tab.doRevalidate(revalidateDone)
@@ -327,6 +331,7 @@ loop:
 			// 每次revalidate的间隔时间不同,需要重新设置revalidate的定时器
 			revalidate.Reset(tab.nextRevalidateTime())
 			revalidateDone = nil
+		// 执行节点保存操作
 		case <-copyNodes.C:
 			go tab.copyLiveNodes()
 		// 外部关闭了closeReq管道,循环结束处理剩余的内容直到关闭closed管道,代表Table完全关闭
