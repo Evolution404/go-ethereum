@@ -36,7 +36,7 @@ import (
 type node struct {
 	enode.Node
 	addedAt time.Time // time when the node was added to the table
-	// ping通 过多少次
+	// 此节点重生效过程中Ping成功过多少次
 	livenessChecks uint // how often liveness was checked
 }
 

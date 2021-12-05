@@ -36,9 +36,11 @@ type lookup struct {
 	replyCh  chan []*node
 	cancelCh <-chan struct{}
 	// asked标记一个节点是否被查询过
-	// seen用来判断一个节点是否已经保存在result中
+	// seen用来判断一个节点是否曾经添加到result中过
 	asked, seen map[enode.ID]bool
-	// 保存查询结果
+	// 结果集：一个长度为16的列表，始终按照距离保存最近的16个节点
+	// 初始状态从节点表中查询16个距离目标最近的节点
+	// 每次收到查询结果都会更新此列表，当列表中所有节点都被查询过后搜索过程结束
 	result      nodesByDistance
 	replyBuffer []*node
 	// 记录当前正在查询的进程数,还没有进行过查询用-1标记
@@ -57,6 +59,7 @@ func newLookup(ctx context.Context, tab *Table, target enode.ID, q queryFunc) *l
 		replyCh:   make(chan []*node, alpha),
 		cancelCh:  ctx.Done(),
 		// 初始一次查询都没进行过标记为-1
+		// 这时候需要从节点表中加载初始的结果集
 		queries: -1,
 	}
 	// Don't query further if we hit ourself.
@@ -188,6 +191,7 @@ func (it *lookup) query(n *node, reply chan<- []*node) {
 		it.tab.db.UpdateFindFails(n.ID(), n.IP(), fails)
 		// Remove the node from the local table if it fails to return anything useful too
 		// many times, but only if there are enough other nodes in the bucket.
+		// 用于日志中打印查询失败后是否删除了失败的节点
 		dropped := false
 		// 失败次数过多而且桶内剩余的节点还挺多,就把这个节点从桶里面删除
 		if fails >= maxFindnodeFailures && it.tab.bucketLen(n.ID()) >= bucketSize/2 {

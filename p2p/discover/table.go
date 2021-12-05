@@ -469,7 +469,8 @@ func (tab *Table) nodeToRevalidate() (n *node, bi int) {
 	return nil, 0
 }
 
-// 计算下一次调用doRevalidate的时间间隔
+// 计算下一次执行重生效过程的时间间隔
+// 取10秒内的一个随机时间
 func (tab *Table) nextRevalidateTime() time.Duration {
 	tab.mutex.Lock()
 	defer tab.mutex.Unlock()
@@ -479,8 +480,7 @@ func (tab *Table) nextRevalidateTime() time.Duration {
 
 // copyLiveNodes adds nodes from the table to the database if they have been in the table
 // longer than seedMinTableTime.
-// 用于将表中的节点保存到数据库中
-// loop函数中会每30秒调用一次这个函数
+// 每30秒检查一次已经添加到节点表中超过5分钟的节点,将这些节点保存到节点数据库中
 func (tab *Table) copyLiveNodes() {
 	tab.mutex.Lock()
 	defer tab.mutex.Unlock()
@@ -656,7 +656,7 @@ func (tab *Table) addVerifiedNode(n *node) {
 		return
 	}
 	// Add to front of bucket.
-	// 将节点n插入到桶内,并且从replacements中删除
+	// 将节点添加到桶的首位,并从替补节点中删除
 	b.entries, _ = pushNode(b.entries, n, bucketSize)
 	b.replacements = deleteNode(b.replacements, n)
 	n.addedAt = time.Now()

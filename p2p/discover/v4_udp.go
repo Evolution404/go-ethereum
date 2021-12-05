@@ -832,6 +832,8 @@ func (t *UDPv4) verifyFindnode(h *packetHandlerV4, from *net.UDPAddr, fromID eno
 	if v4wire.Expired(req.Expiration) {
 		return errExpired
 	}
+	// 检查上一次接收到对方的Pong是否超过了24小时
+	// 超过24小时的节点不给返回结果
 	if !t.checkBond(fromID, from.IP) {
 		// No endpoint proof pong exists, we don't process the packet. This prevents an
 		// attack vector where the discovery protocol could be used to amplify traffic in a
