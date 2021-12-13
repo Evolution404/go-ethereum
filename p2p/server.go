@@ -191,12 +191,12 @@ type Server struct {
 	// newTransport正常情况就是newRLPX
 	newTransport func(net.Conn, *ecdsa.PublicKey) transport
 	// 正常情况是nil,测试时候可以指定函数在启动Peer前调用
-	newPeerHook  func(*Peer)
+	newPeerHook func(*Peer)
 	// listenFunc正常情况就是net.Listen
-	listenFunc   func(network, addr string) (net.Listener, error)
+	listenFunc func(network, addr string) (net.Listener, error)
 
 	// 保护运行状态时的一些数据
-	lock    sync.Mutex // protects running
+	lock sync.Mutex // protects running
 	// 用来代表该对象是否是运行状态
 	// Start方法中修改为true, Stop方法中修改为false
 	running bool
@@ -215,25 +215,25 @@ type Server struct {
 	// 聚合所有的节点来源,用来迭代节点
 	// 比如各个子协议中自己定义的Protocol.DialCandidates
 	// 以及本地执行节点发现获得的节点
-	discmix   *enode.FairMix
+	discmix *enode.FairMix
 	// 用来执行addStatic,removeStatic,peerAdded,peerRemoved
 	dialsched *dialScheduler
 
 	// Channels into the run loop.
 	// 在run函数中需要使用的管道
-	quit                    chan struct{}
-	addtrusted              chan *enode.Node
-	removetrusted           chan *enode.Node
+	quit          chan struct{}
+	addtrusted    chan *enode.Node
+	removetrusted chan *enode.Node
 	// 这个管道用来发送对本地连接的其他节点操作的函数
 	// Peers,PeerCount以及RemovePeer三个函数使用了这个管道
-	peerOp                  chan peerOpFunc
+	peerOp chan peerOpFunc
 	// peerOp执行完了,通过这个管道通知
-	peerOpDone              chan struct{}
-	delpeer                 chan peerDrop
+	peerOpDone chan struct{}
+	delpeer    chan peerDrop
 	// 执行完成加密握手后的连接被发送到这个管道
 	checkpointPostHandshake chan *conn
 	// 执行完成加密握手和协议握手的连接被发送到这个管道
-	checkpointAddPeer       chan *conn
+	checkpointAddPeer chan *conn
 
 	// State of run loop and listenLoop.
 	// 所有接收到的连接的对端ip都会保存在这里30秒
@@ -270,21 +270,21 @@ const (
 
 // conn wraps a network connection with information gathered
 // during the two handshakes.
-// 对net.Conn对象的封装,增加了在握手过程中收集的信息
+// 完成了加密握手和协议握手后的连接对象,增加了在握手过程中收集的信息
 // conn对象在SetupConn函数中创建
 type conn struct {
 	fd net.Conn
 	transport
 	// 保存这个连接的远程节点
-	node  *enode.Node
+	node *enode.Node
 	// int32的末尾四位作为标记位,用来标记是否设置了指定的flag
 	flags connFlag
 	// 在run函数中会将错误发送到这里,用于通知SetupConn函数
-	cont  chan error // The run loop uses cont to signal errors to SetupConn.
+	cont chan error // The run loop uses cont to signal errors to SetupConn.
 	// 保存了对方节点所支持的协议名称和版本
 	// 由协议握手过程中对方发送的protoHandshake包中得知
-	caps  []Cap      // valid after the protocol handshake
-	name  string     // valid after the protocol handshake
+	caps []Cap  // valid after the protocol handshake
+	name string // valid after the protocol handshake
 }
 
 // 实际使用中只有一个transport那就是rlpxTransport
@@ -830,11 +830,11 @@ func (srv *Server) run() {
 
 	var (
 		// 用来保存所有的节点
-		peers        = make(map[enode.ID]*Peer)
+		peers = make(map[enode.ID]*Peer)
 		// 统计本地接收的来自远程节点的连接个数
 		inboundCount = 0
 		// 记录所有信任的节点
-		trusted      = make(map[enode.ID]bool, len(srv.TrustedNodes))
+		trusted = make(map[enode.ID]bool, len(srv.TrustedNodes))
 	)
 	// Put trusted nodes into a map to speed up checks.
 	// Trusted peers are loaded on startup or added via AddTrustedPeer RPC.
@@ -843,14 +843,14 @@ func (srv *Server) run() {
 		trusted[n.ID()] = true
 	}
 
-// 以下的管道主要分为如下几个部分:
-// 1. 退出 经典必备
-// 2. 添加删除trustedConn
-// 3. peerOp 执行一些需要获知所有正在连接节点信息的函数
-//      因为peers变量在run函数内部,外部通过管道回调函数方式的拿到
-// 4. 接收完成加密握手后的conn对象
-// 5. 接收完成协议握手后的conn对象
-// 6. 删除Peer
+	// 以下的管道主要分为如下几个部分:
+	// 1. 退出 经典必备
+	// 2. 添加删除trustedConn
+	// 3. peerOp 执行一些需要获知所有正在连接节点信息的函数
+	//      因为peers变量在run函数内部,外部通过管道回调函数方式的拿到
+	// 4. 接收完成加密握手后的conn对象
+	// 5. 接收完成协议握手后的conn对象
+	// 6. 删除Peer
 running:
 	for {
 		select {
@@ -1168,7 +1168,7 @@ func (srv *Server) setupConn(c *conn, flags connFlag, dialDest *enode.Node) erro
 	// 拨号方直接保存
 	if dialDest != nil {
 		c.node = dialDest
-	// 接收方根据远程节点的公钥生成enode.Node对象
+		// 接收方根据远程节点的公钥生成enode.Node对象
 	} else {
 		c.node = nodeFromConn(remotePubkey, c.fd)
 	}
@@ -1294,7 +1294,7 @@ type NodeInfo struct {
 		// UDP用于节点发现的端口
 		Discovery int `json:"discovery"` // UDP listening port for discovery protocol
 		// TCP运行RLPx协议进行数据传输的端口
-		Listener  int `json:"listener"`  // TCP listening port for RLPx
+		Listener int `json:"listener"` // TCP listening port for RLPx
 	} `json:"ports"`
 	ListenAddr string                 `json:"listenAddr"`
 	Protocols  map[string]interface{} `json:"protocols"`

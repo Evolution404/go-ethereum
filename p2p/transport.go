@@ -47,7 +47,7 @@ const (
 // rlpxTransport is the transport used by actual (non-test) connections.
 // It wraps an RLPx connection with locks and read/write deadlines.
 // 实现了transport接口
-// transport接口包括了MsgReadWriter接口
+// 需要实现消息读写器的两个方法，以及加密握手和协议握手
 type rlpxTransport struct {
 	rmu, wmu sync.Mutex
 	// 用于缓存即将发送的消息
@@ -57,6 +57,7 @@ type rlpxTransport struct {
 }
 
 // 创建一个rlpxTransport对象,并返回transport接口
+// 将输入的底层网络连接(net.Conn)封装为rlpx.Conn对象
 // 需要提供与远程节点建立的连接以及对方节点的公钥,公钥可以是nil
 func newRLPX(conn net.Conn, dialDest *ecdsa.PublicKey) transport {
 	return &rlpxTransport{conn: rlpx.NewConn(conn, dialDest)}
@@ -70,11 +71,13 @@ func (t *rlpxTransport) ReadMsg() (Msg, error) {
 
 	var msg Msg
 	t.conn.SetReadDeadline(time.Now().Add(frameReadTimeout))
+	// 接收rlpx加密链路上的一条消息
 	code, data, wireSize, err := t.conn.Read()
 	if err == nil {
 		// Protocol messages are dispatched to subprotocol handlers asynchronously,
 		// but package rlpx may reuse the returned 'data' buffer on the next call
 		// to Read. Copy the message data to avoid this being an issue.
+		// 将读取到的字节内容封装成Msg对象
 		data = common.CopyBytes(data)
 		msg = Msg{
 			ReceivedAt: time.Now(),
@@ -143,7 +146,7 @@ func (t *rlpxTransport) close(err error) {
 	t.conn.Close()
 }
 
-// 执行加密握手
+// 进行rlpx协议的握手过程，直接调用rlpx.Conn.Handshake即可
 func (t *rlpxTransport) doEncHandshake(prv *ecdsa.PrivateKey) (*ecdsa.PublicKey, error) {
 	t.conn.SetDeadline(time.Now().Add(handshakeTimeout))
 	return t.conn.Handshake(prv)
@@ -178,9 +181,11 @@ func readProtocolHandshake(rw MsgReader) (*protoHandshake, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 协议握手的数据包不能太大
 	if msg.Size > baseProtocolMaxMsgSize {
 		return nil, fmt.Errorf("message too big")
 	}
+	// 如果接收到了断开连接的通知包，解析出来断开原因并返回
 	if msg.Code == discMsg {
 		// Disconnect before protocol handshake is valid according to the
 		// spec and we send it ourself if the post-handshake checks fail.
