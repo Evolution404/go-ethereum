@@ -40,10 +40,10 @@ import (
 // p2p网络中传递的消息对象
 // 每个Msg对象只能发送一次,因为发送一次中后内部的Payload是io.Reader类型已经被读取完了
 type Msg struct {
-	Code       uint64
+	Code uint64
 	// 代表Payload中rlp编码的总长度
-	Size       uint32 // Size of the raw payload
-	Payload    io.Reader
+	Size    uint32 // Size of the raw payload
+	Payload io.Reader
 	// 消息接收到的时间
 	// 在Peer.readLoop函数中设置
 	ReceivedAt time.Time
@@ -149,8 +149,8 @@ func SendItems(w MsgWriter, msgcode uint64, elems ...interface{}) error {
 type eofSignal struct {
 	wrapped io.Reader
 	// 初始化的时候指定io.Reader内还有多少字节
-	count   uint32 // number of bytes left
-	eof     chan<- struct{}
+	count uint32 // number of bytes left
+	eof   chan<- struct{}
 }
 
 // note: when using eofSignal to detect whether a message payload
@@ -186,12 +186,13 @@ func (r *eofSignal) Read(buf []byte) (int, error) {
 // 创建一对MsgPipeRW对象,他们实现了MsgReadWriter接口
 func MsgPipe() (*MsgPipeRW, *MsgPipeRW) {
 	var (
-		c1, c2  = make(chan Msg), make(chan Msg)
+		c1, c2 = make(chan Msg), make(chan Msg)
+		// 共用同一个closing管道，一旦关闭两个对象监听的closing管道都会关闭
 		closing = make(chan struct{})
-		// 共用同一个closed,一旦关闭两个对象同时关闭
-		closed  = new(int32)
-		rw1     = &MsgPipeRW{c1, c2, closing, closed}
-		rw2     = &MsgPipeRW{c2, c1, closing, closed}
+		// 共用同一个closed，一旦关闭两个对象同时关闭
+		closed = new(int32)
+		rw1    = &MsgPipeRW{c1, c2, closing, closed}
+		rw2    = &MsgPipeRW{c2, c1, closing, closed}
 	)
 	return rw1, rw2
 }
@@ -205,11 +206,13 @@ var ErrPipeClosed = errors.New("p2p: read or write on closed message pipe")
 // 内部保存了两个管道分别用来发送和接收数据
 type MsgPipeRW struct {
 	// 发送数据的管道
-	w       chan<- Msg
+	w chan<- Msg
 	// 接收数据的管道
 	r       <-chan Msg
 	closing chan struct{}
-	closed  *int32
+	// 记录当前是否已经关闭了管道，使用指针是为了实现关闭通信的一端，另一端也会关闭
+	// 初始0代表未关闭，设置为1代表关闭
+	closed *int32
 }
 
 // WriteMsg sends a message on the pipe.
@@ -219,6 +222,7 @@ func (p *MsgPipeRW) WriteMsg(msg Msg) error {
 	if atomic.LoadInt32(p.closed) == 0 {
 		// consumed管道在msg.Payload被接收方读取完成后会接收到通知
 		consumed := make(chan struct{}, 1)
+		// 封装成eofSignal，实现读取完成关闭consumed管道来通知WriteMsg方法，对方已经读取完成
 		msg.Payload = &eofSignal{msg.Payload, msg.Size, consumed}
 		select {
 		// w管道发送消息
@@ -226,6 +230,7 @@ func (p *MsgPipeRW) WriteMsg(msg Msg) error {
 			// 如果消息的长度大于零,等待对方读取全部的数据
 			if msg.Size > 0 {
 				// wait for payload read or discard
+				// 在此处等待另一方完全读取消息内容，或者通信管道被关闭
 				select {
 				case <-consumed:
 				case <-p.closing:

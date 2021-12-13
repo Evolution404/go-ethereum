@@ -51,9 +51,9 @@ const (
 type rlpxTransport struct {
 	rmu, wmu sync.Mutex
 	// 用于缓存即将发送的消息
-	wbuf     bytes.Buffer
+	wbuf bytes.Buffer
 	// 代表与远程节点建立的加密连接
-	conn     *rlpx.Conn
+	conn *rlpx.Conn
 }
 
 // 创建一个rlpxTransport对象,并返回transport接口
