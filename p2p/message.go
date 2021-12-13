@@ -322,6 +322,10 @@ type msgEventer struct {
 
 // newMsgEventer returns a msgEventer which sends message events to the given
 // feed
+// 额外封装消息读写器，每次接收和发送消息都会触发事件
+// rw是被封装的读写器
+// feed用于外部注册和接收消息事件
+// peerID,proto,remote,local为事件内的一些信息
 func newMsgEventer(rw MsgReadWriter, feed *event.Feed, peerID enode.ID, proto, remote, local string) *msgEventer {
 	return &msgEventer{
 		MsgReadWriter: rw,
@@ -342,6 +346,7 @@ func (ev *msgEventer) ReadMsg() (Msg, error) {
 		return msg, err
 	}
 	ev.feed.Send(&PeerEvent{
+		// 触发消息发送事件
 		Type:          PeerEventTypeMsgRecv,
 		Peer:          ev.peerID,
 		Protocol:      ev.Protocol,
@@ -362,6 +367,7 @@ func (ev *msgEventer) WriteMsg(msg Msg) error {
 		return err
 	}
 	ev.feed.Send(&PeerEvent{
+		// 触发消息发送事件
 		Type:          PeerEventTypeMsgSend,
 		Peer:          ev.peerID,
 		Protocol:      ev.Protocol,

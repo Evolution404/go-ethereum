@@ -48,7 +48,7 @@ var (
 )
 
 const (
-	baseProtocolVersion    = 5
+	baseProtocolVersion = 5
 	// 在真实传输过程中,16之前的消息码被预先分配给预定义的类型
 	// 例如handshakeMsg,discMsg,pingMsg,pongMsg
 	baseProtocolLength     = uint64(16)
@@ -65,23 +65,23 @@ const (
 	// 执行协议握手的时候发送的消息
 	handshakeMsg = 0x00
 	// 这个消息代表断开连接
-	discMsg      = 0x01
-	pingMsg      = 0x02
-	pongMsg      = 0x03
+	discMsg = 0x01
+	pingMsg = 0x02
+	pongMsg = 0x03
 )
 
 // protoHandshake is the RLP structure of the protocol handshake.
 // 在协议握手过程中双方交换的数据包,描述了节点支持的协议
 type protoHandshake struct {
 	// 协议握手这个协议自身的版本,定义在baseProtocolVersion,就是5
-	Version    uint64
+	Version uint64
 	// 节点的名称
-	Name       string
+	Name string
 	// 保存本地或者远程节点支持的所有协议的名称和版本
 	Caps       []Cap
 	ListenPort uint64
 	// 保存了64字节的公钥,去掉了公钥开头的第一个固定字节04
-	ID         []byte // secp256k1 public key
+	ID []byte // secp256k1 public key
 
 	// Ignore additional fields (for forward compatibility).
 	Rest []rlp.RawValue `rlp:"tail"`
@@ -113,27 +113,28 @@ const (
 // PeerEvent总共有四种,分别是增加或者移除节点,以及接收或发送消息
 // PeerEventTypeAdd,PeerEventTypeDrop,PeerEventTypeMsgSend,PeerEventTypeMsgRecv
 type PeerEvent struct {
-	Type          PeerEventType `json:"type"`
-	Peer          enode.ID      `json:"peer"`
-	Error         string        `json:"error,omitempty"`
-	Protocol      string        `json:"protocol,omitempty"`
-	MsgCode       *uint64       `json:"msg_code,omitempty"`
-	MsgSize       *uint32       `json:"msg_size,omitempty"`
-	LocalAddress  string        `json:"local,omitempty"`
-	RemoteAddress string        `json:"remote,omitempty"`
+	Type PeerEventType `json:"type"`
+	// 事件发生的节点，也就是接收到或发送消息的本地节点的id
+	Peer          enode.ID `json:"peer"`
+	Error         string   `json:"error,omitempty"`
+	Protocol      string   `json:"protocol,omitempty"`
+	MsgCode       *uint64  `json:"msg_code,omitempty"`
+	MsgSize       *uint32  `json:"msg_size,omitempty"`
+	LocalAddress  string   `json:"local,omitempty"`
+	RemoteAddress string   `json:"remote,omitempty"`
 }
 
 // Peer represents a connected remote node.
 // Peer代表一个本地已经连接的远程节点
 type Peer struct {
-	rw      *conn
+	rw *conn
 	// 协议名称->protoRW对象的映射
 	// 保存了本地与这个Peer之间同时支持的子协议
 	running map[string]*protoRW
 	log     log.Logger
 	created mclock.AbsTime
 
-	wg       sync.WaitGroup
+	wg sync.WaitGroup
 	// 接收用户自定义的Run函数返回的错误,还有发送Ping包遇到错误
 	protoErr chan error
 	closed   chan struct{}
@@ -264,10 +265,10 @@ func newPeer(log log.Logger, conn *conn, protocols []Protocol) *Peer {
 	// 对比本地和远程节点支持的协议名称和版本,得到两者共同支持的协议对象
 	protomap := matchProtocols(protocols, conn.caps, conn)
 	p := &Peer{
-		rw:       conn,
-		running:  protomap,
-		created:  mclock.Now(),
-		disc:     make(chan DiscReason),
+		rw:      conn,
+		running: protomap,
+		created: mclock.Now(),
+		disc:    make(chan DiscReason),
 		// 所有正在运行的子协议还有pingLoop会向这个管道输入错误
 		protoErr: make(chan error, len(protomap)+1), // protocols + pingLoop
 		closed:   make(chan struct{}),
@@ -291,8 +292,8 @@ func (p *Peer) run() (remoteRequested bool, err error) {
 		writeStart = make(chan struct{}, 1)
 		writeErr   = make(chan error, 1)
 		// readLoop中发生的错误发送到这里
-		readErr    = make(chan error, 1)
-		reason     DiscReason // sent to the peer
+		readErr = make(chan error, 1)
+		reason  DiscReason // sent to the peer
 	)
 	// run中执行了readLoop和pingLoop两个循环
 	p.wg.Add(2)
