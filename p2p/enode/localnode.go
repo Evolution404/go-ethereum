@@ -265,7 +265,7 @@ func (ln *LocalNode) UDPContact(toaddr *net.UDPAddr) {
 }
 
 // updateEndpoints updates the record with predicted endpoints.
-// 更新ln.entries里面保存的ip,ip6,udp,udp6字段为预测的结果
+// 更新ln.entries里面保存的ip,ip6,udp,udp6字段计算的结果，计算规则见下方get函数
 func (ln *LocalNode) updateEndpoints() {
 	ip4, udp4 := ln.endpoint4.get()
 	ip6, udp6 := ln.endpoint6.get()
@@ -293,6 +293,15 @@ func (ln *LocalNode) updateEndpoints() {
 }
 
 // get returns the endpoint with highest precedence.
+// 获取本地节点的ip和端口
+// ip计算规则
+//   如果设置了staticIP，本地的ip就以静态ip为准
+//   如果没设置静态ip
+//     如果可以预测出来ip，以预测结果为准
+//     如果不能预测ip，使用fallbackIP
+// udp端口计算规则
+//   没设置静态ip且有预测结果，以预测结果为准
+//   设置了静态ip或者没有预测结果，以fallbackUDP为准
 func (e *lnEndpoint) get() (newIP net.IP, newPort uint16) {
 	newPort = e.fallbackUDP
 	if e.fallbackIP != nil {

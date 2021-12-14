@@ -100,6 +100,9 @@ type Config struct {
 	// DialRatio controls the ratio of inbound to dialed connections.
 	// Example: a DialRatio of 2 allows 1/2 of connections to be dialed.
 	// Setting DialRatio to zero defaults it to 3.
+	// 可选值，默认值3
+	// 代表本地主动拨号的节点上限个数所占MaxPeers的比例
+	// 默认是最多1/3的节点由本地主动拨号，剩下2/3由远程节点连接本地
 	DialRatio int `toml:",omitempty"`
 
 	// NoDiscovery can be used to disable the peer discovery mechanism.
@@ -180,6 +183,7 @@ type Config struct {
 	// If Dialer is set to a non-nil value, the given Dialer
 	// is used to dial outbound peer connections.
 	// 创建Server的时候可以指定自定义的拨号器
+	// 可选值，默认值nil，代表建立实际的tcp连接来拨号
 	// 如果是nil,将使用net.Dialer.DialContext进行拨号,也就是自定义的tcpDialer对象
 	Dialer NodeDialer `toml:"-"`
 
@@ -639,6 +643,7 @@ func (srv *Server) setupLocalNode() error {
 	srv.nodedb = db
 	// 然后利用节点数据库和本地私钥创建enode.LocalNode对象
 	srv.localnode = enode.NewLocalNode(db, srv.PrivateKey)
+	// 设置备用ip为127.0.0.1
 	srv.localnode.SetFallbackIP(net.IP{127, 0, 0, 1})
 	// TODO: check conflicts
 	// 向LocalNode对象中协议子协议定义的额外字段
@@ -715,6 +720,7 @@ func (srv *Server) setupDiscovery() error {
 			}()
 		}
 	}
+	// 设置备用udp端口为监听的端口
 	srv.localnode.SetFallbackUDP(realaddr.Port)
 
 	// Discovery V4
@@ -788,11 +794,15 @@ func (srv *Server) setupDialScheduler() {
 	}
 }
 
+// 计算外部发起的连接上限
 func (srv *Server) maxInboundConns() int {
 	return srv.MaxPeers - srv.maxDialedConns()
 }
 
+// 计算本地拨号的节点个数上限
+// 通过MaxPeers / DialRatio
 func (srv *Server) maxDialedConns() (limit int) {
+	// 禁用拨号或者MaxPeers为0，返回0
 	if srv.NoDial || srv.MaxPeers == 0 {
 		return 0
 	}

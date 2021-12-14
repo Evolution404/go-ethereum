@@ -44,13 +44,13 @@ const (
 	// 打印拨号日志最快的频率是10秒一次
 	dialStatsLogInterval = 10 * time.Second // printed at most this often
 	// 有大于等于三个节点连接成功,就不再打印拨号日志
-	dialStatsPeerLimit   = 3                // but not if more than this many dialed peers
+	dialStatsPeerLimit = 3 // but not if more than this many dialed peers
 
 	// Endpoint resolution is throttled with bounded backoff.
 	// 第一次解析和第二次解析的时间间隔初始为10s
 	initialResolveDelay = 60 * time.Second
 	// 针对一个节点两次调用Resolve之间的时间间隔最大是一小时
-	maxResolveDelay     = time.Hour
+	maxResolveDelay = time.Hour
 )
 
 // NodeDialer is used to connect to nodes in the network, typically by using
@@ -64,6 +64,7 @@ type NodeDialer interface {
 	Dial(context.Context, *enode.Node) (net.Conn, error)
 }
 
+// 输入一个节点旧记录获取最新记录
 type nodeResolver interface {
 	Resolve(*enode.Node) *enode.Node
 }
@@ -109,53 +110,53 @@ var (
 type dialScheduler struct {
 	dialConfig
 	// 在dial函数结束位置调用,生成的连接对象需要经过setupFunc处理
-	setupFunc   dialSetupFunc
+	setupFunc dialSetupFunc
 	// stop函数中用来等待readNodes和loop函数结束
-	wg          sync.WaitGroup
-	cancel      context.CancelFunc
-	ctx         context.Context
+	wg     sync.WaitGroup
+	cancel context.CancelFunc
+	ctx    context.Context
 	// 协程readNodes中将会把节点发送到这里
-	nodesIn     chan *enode.Node
+	nodesIn chan *enode.Node
 	// dialTask运行完run函数后就发送到doneCh中
-	doneCh      chan *dialTask
+	doneCh chan *dialTask
 	// 添加一个静态节点 addStatic中使用
 	addStaticCh chan *enode.Node
 	// 删除一个静态节点 removeStatic中使用
 	remStaticCh chan *enode.Node
 	// 添加一个节点 peerAdded中使用
-	addPeerCh   chan *conn
+	addPeerCh chan *conn
 	// 删除一个节点 peerRemoved中使用
-	remPeerCh   chan *conn
+	remPeerCh chan *conn
 
 	// Everything below here belongs to loop and
 	// should only be accessed by code on the loop goroutine.
-	dialing   map[enode.ID]*dialTask // active tasks
+	dialing map[enode.ID]*dialTask // active tasks
 	// 记录当前所有连接成功的节点
-	peers     map[enode.ID]struct{}  // all connected peers
-	// 记录本地主动向外拨号且成功连接的节点个数
-	dialPeers int                    // current number of dialed peers
+	peers map[enode.ID]struct{} // all connected peers
+	// 当前本地主动连接且在线的节点个数
+	dialPeers int // current number of dialed peers
 
 	// The static map tracks all static dial tasks. The subset of usable static dial tasks
 	// (i.e. those passing checkDial) is kept in staticPool. The scheduler prefers
 	// launching random static tasks from the pool over launching dynamic dials from the
 	// iterator.
 	// 保存了所有的静态节点,静态节点通过Server.AddPeer添加
-	static     map[enode.ID]*dialTask
+	static map[enode.ID]*dialTask
 	// 保存了所有没有被连接的静态节点
 	// 通过AddPeer添加的节点默认加入到staticPool中,如果该节点成功升级为Peer或者调用了RemovePeer就从staticPool中移除
 	staticPool []*dialTask
 
 	// The dial history keeps recently dialed nodes. Members of history are not dialed.
 	// 在startDial中往history新增记录
-	history          expHeap
+	history expHeap
 	// 下一个过期元素的计时器,下一个元素过期的时间触发
-	historyTimer     mclock.Timer
+	historyTimer mclock.Timer
 	// 记录historyTimer的触发时间,也就是下一个元素的过期时间
 	historyTimerTime mclock.AbsTime
 
 	// for logStats
 	// 记录上次在logStats函数中打印了日志的时间
-	lastStatsLog     mclock.AbsTime
+	lastStatsLog mclock.AbsTime
 	// 记录上次打印之后doneCh中接受了多少次结果
 	doneSinceLastLog int
 }
@@ -163,16 +164,18 @@ type dialScheduler struct {
 type dialSetupFunc func(net.Conn, connFlag, *enode.Node) error
 
 type dialConfig struct {
-	self           enode.ID         // our own ID
-	maxDialPeers   int              // maximum number of dialed peers
+	self enode.ID // our own ID
+	// 最多主动连接且在线的节点个数
+	maxDialPeers int // maximum number of dialed peers
 	// 同时拨号的节点最大个数,默认50个
 	maxActiveDials int              // maximum number of active dials
 	netRestrict    *netutil.Netlist // IP netrestrict list, disabled if nil
-	resolver       nodeResolver
-	dialer         NodeDialer
-	log            log.Logger
-	clock          mclock.Clock
-	rand           *mrand.Rand
+	// 包含Resolve方法，用来查询一个节点记录的最新内容
+	resolver nodeResolver
+	dialer   NodeDialer
+	log      log.Logger
+	clock    mclock.Clock
+	rand     *mrand.Rand
 }
 
 // 为输入的配置增加默认选项
@@ -265,7 +268,7 @@ func (d *dialScheduler) peerRemoved(c *conn) {
 // loop is the main loop of the dialer.
 func (d *dialScheduler) loop(it enode.Iterator) {
 	var (
-		nodesCh    chan *enode.Node
+		nodesCh chan *enode.Node
 		// 当history中任意一个节点到期了,这里会收到通知
 		historyExp = make(chan struct{}, 1)
 	)
@@ -566,7 +569,7 @@ type dialTask struct {
 	flags           connFlag
 	// These fields are private to the task and should not be
 	// accessed by dialScheduler while the task is running.
-	dest         *enode.Node
+	dest *enode.Node
 	// 记录上次解析这个节点的时间
 	lastResolved mclock.AbsTime
 	// 两次解析之间的最小间隔
