@@ -51,7 +51,8 @@ const (
 	baseProtocolVersion = 5
 	// 在真实传输过程中,16之前的消息码被预先分配给预定义的类型
 	// 例如handshakeMsg,discMsg,pingMsg,pongMsg
-	baseProtocolLength     = uint64(16)
+	baseProtocolLength = uint64(16)
+	// 协议握手过程中发送的数据包大小上限
 	baseProtocolMaxMsgSize = 2 * 1024
 
 	snappyProtocolVersion = 5
@@ -461,13 +462,17 @@ outer:
 				// If an old protocol version matched, revert it
 				// 这个协议双方都支持某些旧版本,更新使用最新版本
 				if old := result[cap.Name]; old != nil {
+					// 去掉老版本的偏移量
 					offset -= old.Length
 				}
 				// Assign the new match
 				// 保存共同支持的协议
 				result[cap.Name] = &protoRW{Protocol: proto, offset: offset, in: make(chan Msg), w: rw}
+				// 加上新版本的偏移量
 				offset += proto.Length
 
+				// 本地已经匹配到远程节点的某个协议的某个版本了
+				// 不再继续查询本地支持的其他协议，继续匹配远程节点的下一个协议
 				continue outer
 			}
 		}
@@ -481,7 +486,9 @@ func (p *Peer) startProtocols(writeStart <-chan struct{}, writeErr chan<- error)
 	p.wg.Add(len(p.running))
 	for _, proto := range p.running {
 		proto := proto
+		// 所有子协议共用一个关闭通知管道
 		proto.closed = p.closed
+		// 所有子协议共用一个消息可以写入的通知管道
 		proto.wstart = writeStart
 		proto.werr = writeErr
 		var rw MsgReadWriter = proto
@@ -527,8 +534,11 @@ func (p *Peer) getProto(code uint64) (*protoRW, error) {
 type protoRW struct {
 	Protocol
 	// handle函数中根据消息码识别应该将消息分配给哪个协议,分配过程就是发送到in管道中
-	in     chan Msg        // receives read messages
+	in chan Msg // receives read messages
+	// 当节点关闭的时候此管道关闭，通知所有子协议关闭
 	closed <-chan struct{} // receives when peer is shutting down
+	// 所有子协议共用一个wstart，每完成一个消息发送会向此管道发送一个数据
+	// 保证所有子协议同时只能有一个在发送消息
 	wstart <-chan struct{} // receives when write may start
 	werr   chan<- error    // for write results
 	// 由于Protocol对象的消息码都是从0开始,为了避免在发送消息时重复
@@ -542,16 +552,18 @@ type protoRW struct {
 // 这里输入的消息码是用户定义的从0开始
 // 内部转换成实际在链路上发送消息码
 func (rw *protoRW) WriteMsg(msg Msg) (err error) {
+	// 接收到消息的消息码必须在[0,Length)范围内
 	if msg.Code >= rw.Length {
 		return newPeerError(errInvalidMsgCode, "not handled")
 	}
 	msg.meterCap = rw.cap()
 	msg.meterCode = msg.Code
 
-	// 转换成实际传输的消息码
+	// 加上偏移量，转换成实际传输的消息码
 	msg.Code += rw.offset
 
 	select {
+	// 只有从wstart中读取到数据后，当前子协议才允许发送数据
 	case <-rw.wstart:
 		err = rw.w.WriteMsg(msg)
 		// Report write status back to Peer.run. It will initiate
