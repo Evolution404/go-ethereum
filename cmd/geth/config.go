@@ -119,6 +119,7 @@ func defaultNodeConfig() node.Config {
 // makeConfigNode loads geth configuration and creates a blank node instance.
 func makeConfigNode(ctx *cli.Context) (*node.Node, gethConfig) {
 	// Load defaults.
+	// 先生成默认配置信息
 	cfg := gethConfig{
 		Eth:     ethconfig.Defaults,
 		Node:    defaultNodeConfig(),
@@ -126,6 +127,7 @@ func makeConfigNode(ctx *cli.Context) (*node.Node, gethConfig) {
 	}
 
 	// Load config file.
+	// 根据配置文件更改配置信息
 	if file := ctx.GlobalString(configFileFlag.Name); file != "" {
 		if err := loadConfig(file, &cfg); err != nil {
 			utils.Fatalf("%v", err)
@@ -133,7 +135,9 @@ func makeConfigNode(ctx *cli.Context) (*node.Node, gethConfig) {
 	}
 
 	// Apply flags.
+	// 根据命令行参数修改配置信息
 	utils.SetNodeConfig(ctx, &cfg.Node)
+	// 创建节点对象
 	stack, err := node.New(&cfg.Node)
 	if err != nil {
 		utils.Fatalf("Failed to create the protocol stack: %v", err)
