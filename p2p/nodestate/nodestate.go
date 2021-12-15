@@ -63,32 +63,32 @@ type (
 	// function description, along with whether it should run inside an operation callback.
 	NodeStateMachine struct {
 		// started用来标记Start函数是否调用过
-		started, closed     bool
-		lock                sync.Mutex
-		clock               mclock.Clock
-		db                  ethdb.KeyValueStore
+		started, closed bool
+		lock            sync.Mutex
+		clock           mclock.Clock
+		db              ethdb.KeyValueStore
 		// 在数据库中存储的数据使用的前缀,在NewNodeStateMachine函数中指定
-		dbNodeKey           []byte
+		dbNodeKey []byte
 		// 记录了所有的节点,根据节点id区分
 		// SetField,SetState会增加nodes中的项
 		// 以及Start函数也会从数据库中恢复nodes
-		nodes               map[enode.ID]*nodeInfo
+		nodes map[enode.ID]*nodeInfo
 		// Start前:记录了从offlineState转移到的状态
 		// 调用Start后,在Stop前:记录了从什么状态转移到offlineState
 		offlineCallbackList []offlineCallback
 		// opFlag为true代表当前正在有操作进行
 		// 也就是说当前有协程正在运行在opStart和opFinish之间
 		// 此时再调用opStart将会阻塞
-		opFlag              bool       // an operation has started
-		opWait              *sync.Cond // signaled when the operation ends
+		opFlag bool       // an operation has started
+		opWait *sync.Cond // signaled when the operation ends
 		// 当前操作的一系列回调函数,回调函数在opFinish中调用
-		opPending           []func()   // pending callback list of the current operation
+		opPending []func() // pending callback list of the current operation
 
 		// Registered state flags or fields. Modifications are allowed
 		// only when the node state machine has not been started.
-		setup     *Setup
+		setup *Setup
 		// 与setup.fields中的元素一一对应
-		fields    []*fieldInfo
+		fields []*fieldInfo
 		// 记录setup.flags中的哪些persistent设为true
 		saveFlags bitMask
 
@@ -168,7 +168,7 @@ type (
 		fieldCount int
 		// db为true代表这个nodeInfo对象保存在数据库中
 		// dirty代表当前nodeInfo是否发生了变动,导致与数据库中不一致
-		db, dirty  bool
+		db, dirty bool
 	}
 
 	// 编码到数据库中的节点记录格式
@@ -391,7 +391,7 @@ func NewNodeStateMachine(db ethdb.KeyValueStore, dbKey []byte, clock mclock.Cloc
 		setup:     setup,
 		nodes:     make(map[enode.ID]*nodeInfo),
 		// 初始化为setup.fields的长度,下面的循环中与setup.fields中的每一项一一对应
-		fields:    make([]*fieldInfo, len(setup.fields)),
+		fields: make([]*fieldInfo, len(setup.fields)),
 	}
 	// 使用NodeStateMachine中自动初始化的锁来生成sync.Cond对象
 	ns.opWait = sync.NewCond(&ns.lock)
@@ -627,7 +627,7 @@ func (ns *NodeStateMachine) saveNode(id enode.ID, node *nodeInfo) error {
 		State:   storedState,
 		// 只有那些需要持久化的字段会保存到这里
 		// 不需要保存的字段在这个数组中也会占一个空位置
-		Fields:  make([][]byte, len(ns.fields)),
+		Fields: make([][]byte, len(ns.fields)),
 	}
 	log.Debug("Saved node state", "id", id, "state", Flags{mask: enc.State, setup: ns.setup})
 	lastIndex := -1
@@ -948,8 +948,14 @@ func (ns *NodeStateMachine) addTimeout(n *enode.Node, mask bitMask, timeout time
 	ns.removeTimeouts(node, mask)
 	t := &nodeStateTimeout{mask: mask}
 	t.timer = ns.clock.AfterFunc(timeout, func() {
-		// ns.SetState传入了resetFlags,意味着一段时间后将t.mask中的这些位设置为0
-		ns.SetState(n, Flags{}, Flags{mask: t.mask, setup: ns.setup}, 0)
+		ns.lock.Lock()
+		defer ns.lock.Unlock()
+
+		if !ns.opStart() {
+			return
+		}
+		ns.setState(n, Flags{}, Flags{mask: t.mask, setup: ns.setup}, 0)
+		ns.opFinish()
 	})
 	node.timeouts = append(node.timeouts, t)
 	// 节点的持久化状态有的被修改了,将会与数据库不一致
@@ -1158,7 +1164,7 @@ func (ns *NodeStateMachine) AddLogMetrics(requireFlags, disableFlags Flags, name
 			if inMeter != nil {
 				inMeter.Mark(1)
 			}
-		// 原来匹配,现在不匹配 说明该节点退出
+			// 原来匹配,现在不匹配 说明该节点退出
 		} else {
 			count--
 			if name != "" {
