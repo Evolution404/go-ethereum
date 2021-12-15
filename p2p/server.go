@@ -125,7 +125,7 @@ type Config struct {
 
 	// BootstrapNodes are used to establish connectivity
 	// with the rest of the network.
-	// 可选值，代表启动时的节点
+	// 可选值，代表节点发现过程的初始节点
 	BootstrapNodes []*enode.Node
 
 	// BootstrapNodesV5 are used to establish connectivity
@@ -135,7 +135,7 @@ type Config struct {
 
 	// Static nodes are used as pre-configured connections which are always
 	// maintained and re-connected on disconnects.
-	// 静态节点断开后在合适的时间会重新连接
+	// 本地会始终尝试与静态节点建立连接，除非达到连接上限
 	StaticNodes []*enode.Node
 
 	// Trusted nodes are used as pre-configured connections which are always
@@ -146,7 +146,7 @@ type Config struct {
 	// Connectivity can be restricted to certain IP networks.
 	// If this option is set to a non-nil value, only hosts which match one of the
 	// IP networks contained in the list are considered.
-	// 如果此字段不为nil，则本地只接收来自这些指定的网段的ip的连接
+	// 如果此字段不为nil，则本地指定的网段的ip的建立连接
 	NetRestrict *netutil.Netlist `toml:",omitempty"`
 
 	// NodeDatabase is the path to the database containing the previously seen
@@ -1223,7 +1223,7 @@ func (srv *Server) setupConn(c *conn, flags connFlag, dialDest *enode.Node) erro
 		c.node = nodeFromConn(remotePubkey, c.fd)
 	}
 	clog := srv.log.New("id", c.node.ID(), "addr", c.fd.RemoteAddr(), "conn", c.flags)
-	// 完成加密握手过程,
+	// 加密握手过程完成，检查对等节点的个数是否超过限制
 	err = srv.checkpoint(c, srv.checkpointPostHandshake)
 	if err != nil {
 		clog.Trace("Rejected peer", "err", err)
