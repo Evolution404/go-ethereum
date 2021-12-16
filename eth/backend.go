@@ -144,12 +144,13 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	}
 	merger := consensus.NewMerger(chainDb)
 	eth := &Ethereum{
-		config:            config,
-		merger:            merger,
-		chainDb:           chainDb,
-		eventMux:          stack.EventMux(),
-		accountManager:    stack.AccountManager(),
-		engine:            ethconfig.CreateConsensusEngine(stack, chainConfig, &ethashConfig, config.Miner.Notify, config.Miner.Noverify, chainDb),
+		config:         config,
+		merger:         merger,
+		chainDb:        chainDb,
+		eventMux:       stack.EventMux(),
+		accountManager: stack.AccountManager(),
+		engine:         ethconfig.CreateConsensusEngine(stack, chainConfig, &ethashConfig, config.Miner.Notify, config.Miner.Noverify, chainDb),
+		// engine:            ethash.NewFakeDelayer(time.Second * 3),
 		closeBloomHandler: make(chan struct{}),
 		networkID:         config.NetworkId,
 		gasPrice:          config.Miner.GasPrice,
@@ -490,7 +491,7 @@ func (s *Ethereum) StartMining(threads int) error {
 		// If mining is started, we can disable the transaction rejection mechanism
 		// introduced to speed sync times.
 		atomic.StoreUint32(&s.handler.acceptTxs, 1)
-
+		// s.miner.DisablePreseal()
 		go s.miner.Start(eb)
 	}
 	return nil
