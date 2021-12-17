@@ -157,10 +157,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	}
 
 	if fakeEthashConfig.Hashrate > 0 {
-		fmt.Println("ttttttttttttttttttttttttttttttttt")
 		eth.engine = fakeethash.New(fakeEthashConfig)
 	} else {
-		fmt.Println("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 		eth.engine = ethconfig.CreateConsensusEngine(stack, chainConfig, &ethashConfig, config.Miner.Notify, config.Miner.Noverify, chainDb)
 	}
 
@@ -296,6 +294,13 @@ func makeExtraData(extra []byte) []byte {
 		extra = nil
 	}
 	return extra
+}
+
+func (s *Ethereum) SetFakeHashrate(hashrate float64) error {
+	if fake, ok := s.engine.(*fakeethash.FakeEthash); ok {
+		fake.SetHashrate(hashrate)
+	}
+	return errors.New("current engine is not fake ethash")
 }
 
 // APIs return the collection of RPC services the ethereum package offers.

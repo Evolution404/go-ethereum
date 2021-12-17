@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/pkg/reexec"
+	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -363,6 +364,8 @@ func (n *ExecNode) Snapshots() (map[string][]byte, error) {
 	var snapshots map[string][]byte
 	return snapshots, n.client.Call(&snapshots, "simulation_snapshot")
 }
+
+func (n *ExecNode) GetEthereumService() *eth.Ethereum { return nil }
 
 // execNodeConfig is used to serialize the node configuration so it can be
 // passed to the child process as a JSON encoded environment variable

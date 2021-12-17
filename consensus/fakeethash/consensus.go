@@ -132,6 +132,10 @@ func (fe *FakeEthash) Hashrate() float64 {
 	return fe.config.Hashrate
 }
 
+func (fe *FakeEthash) SetHashrate(hashrate float64) {
+	fe.config.Hashrate = hashrate
+}
+
 var (
 	big8  = big.NewInt(8)
 	big32 = big.NewInt(32)

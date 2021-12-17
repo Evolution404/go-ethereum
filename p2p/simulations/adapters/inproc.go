@@ -24,6 +24,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
@@ -352,4 +353,11 @@ func (sn *SimNode) NodeInfo() *p2p.NodeInfo {
 		}
 	}
 	return server.NodeInfo()
+}
+
+func (sn *SimNode) GetEthereumService() *eth.Ethereum {
+	if rs, ok := sn.running["ethereum"]; ok {
+		return rs.(*eth.Ethereum)
+	}
+	return nil
 }

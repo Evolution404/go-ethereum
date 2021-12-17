@@ -27,6 +27,7 @@ import (
 
 	"github.com/docker/docker/pkg/reexec"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -65,6 +66,8 @@ type Node interface {
 
 	// Snapshots creates snapshots of the running services
 	Snapshots() (map[string][]byte, error)
+
+	GetEthereumService() *eth.Ethereum
 }
 
 // NodeAdapter is used to create Nodes in a simulation network
