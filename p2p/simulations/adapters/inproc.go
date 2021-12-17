@@ -92,6 +92,8 @@ func (s *SimAdapter) NewNode(config *NodeConfig) (Node, error) {
 	}
 
 	n, err := node.New(&node.Config{
+		Name:    config.Name,
+		DataDir: config.DataDir,
 		P2P: p2p.Config{
 			PrivateKey:      config.PrivateKey,
 			MaxPeers:        math.MaxInt32,
