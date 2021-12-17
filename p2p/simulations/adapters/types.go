@@ -84,7 +84,7 @@ type NodeAdapter interface {
 
 // NodeConfig is the configuration used to start a node in a simulation
 // network
-// 仿真网络中节点的配置选项,在NodeAdapter.NewNode函数中需要传入NodeConfig对象
+// 使用适配器创建节点的配置,在NodeAdapter.NewNode函数中需要传入NodeConfig对象
 type NodeConfig struct {
 	// ID is the node's ID which is used to identify the node in the
 	// simulation network
@@ -248,7 +248,7 @@ func RandomNodeConfig() *NodeConfig {
 		Port:            port,
 		EnableMsgEvents: true,
 		// 默认日志等级是INFO
-		LogVerbosity:    log.LvlInfo,
+		LogVerbosity: log.LvlInfo,
 	}
 }
 

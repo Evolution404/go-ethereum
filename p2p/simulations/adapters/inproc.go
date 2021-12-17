@@ -66,19 +66,21 @@ func (s *SimAdapter) Name() string {
 }
 
 // NewNode returns a new SimNode using the given config
-// SimAdapter对象使用给定的节点配置创建一个内存型节点
-// 输入的NodeConfig中必须要有PrivateKey和至少一个Lifecycles
+// 输入内存节点的配置用来创建内存型节点
+// 配置必须包含私钥和节点运行的服务，配置可以由RandomNodeConfig方法生成
 func (s *SimAdapter) NewNode(config *NodeConfig) (Node, error) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
 	id := config.ID
 	// verify that the node has a private key in the config
+	// 保证配置中私钥存在
 	if config.PrivateKey == nil {
 		return nil, fmt.Errorf("node is missing private key: %s", id)
 	}
 
 	// check a node with the ID doesn't already exist
+	// 保证节点ID在网络中没有重复
 	if _, exists := s.nodes[id]; exists {
 		return nil, fmt.Errorf("node already exists: %s", id)
 	}
