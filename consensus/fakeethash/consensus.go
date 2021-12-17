@@ -75,8 +75,9 @@ func (fe *FakeEthash) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 }
 
 func (fe *FakeEthash) Seal(chain consensus.ChainHeaderReader, block *types.Block, results chan<- *types.Block, stop <-chan struct{}) error {
-	timer := time.NewTimer(time.Second)
-	fmt.Println("wait a second")
+	milliseconds := block.Difficulty().Int64() * 1000 / int64(fe.Hashrate())
+	timer := time.NewTimer(time.Millisecond * time.Duration(milliseconds))
+	fmt.Printf("wait %d ms\n", milliseconds)
 	go func() {
 		select {
 		case <-stop:
