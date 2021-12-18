@@ -37,7 +37,7 @@ var DialBanTimeout = 200 * time.Millisecond
 
 // NetworkConfig defines configuration options for starting a Network
 type NetworkConfig struct {
-	ID             string `json:"id"`
+	ID             string `json:"name"`
 	DefaultService string `json:"default_service,omitempty"`
 }
 
