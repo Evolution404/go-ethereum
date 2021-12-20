@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p/discover/v4wire"
@@ -378,6 +379,23 @@ func (t *UDPv4) findnode(toid enode.ID, toaddr *net.UDPAddr, target v4wire.Pubke
 		err = nil
 	}
 	return nodes, err
+}
+
+func (t *UDPv4) FindNode(n *enode.Node, pub *ecdsa.PublicKey) ([]*node, error) {
+	toid := n.ID()
+	toaddr := &net.UDPAddr{IP: n.IP(), Port: n.UDP()}
+	var e v4wire.Pubkey
+	math.ReadBits(pub.X, e[:len(e)/2])
+	math.ReadBits(pub.Y, e[len(e)/2:])
+	return t.findnode(toid, toaddr, e)
+}
+
+func (t *UDPv4) FindRandomNode(n *enode.Node) ([]*node, error) {
+	toid := n.ID()
+	toaddr := &net.UDPAddr{IP: n.IP(), Port: n.UDP()}
+	var e v4wire.Pubkey
+	crand.Read(e[:])
+	return t.findnode(toid, toaddr, e)
 }
 
 // RequestENR sends enrRequest to the given node and waits for a response.
