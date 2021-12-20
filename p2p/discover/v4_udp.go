@@ -381,21 +381,29 @@ func (t *UDPv4) findnode(toid enode.ID, toaddr *net.UDPAddr, target v4wire.Pubke
 	return nodes, err
 }
 
-func (t *UDPv4) FindNode(n *enode.Node, pub *ecdsa.PublicKey) ([]*node, error) {
+func (t *UDPv4) FindNode(n *enode.Node, pub *ecdsa.PublicKey) ([]*enode.Node, error) {
 	toid := n.ID()
 	toaddr := &net.UDPAddr{IP: n.IP(), Port: n.UDP()}
 	var e v4wire.Pubkey
 	math.ReadBits(pub.X, e[:len(e)/2])
 	math.ReadBits(pub.Y, e[len(e)/2:])
-	return t.findnode(toid, toaddr, e)
+	rs, err := t.findnode(toid, toaddr, e)
+	if err != nil {
+		return nil, err
+	}
+	return unwrapNodes(rs), nil
 }
 
-func (t *UDPv4) FindRandomNode(n *enode.Node) ([]*node, error) {
+func (t *UDPv4) FindRandomNode(n *enode.Node) ([]*enode.Node, error) {
 	toid := n.ID()
 	toaddr := &net.UDPAddr{IP: n.IP(), Port: n.UDP()}
 	var e v4wire.Pubkey
 	crand.Read(e[:])
-	return t.findnode(toid, toaddr, e)
+	rs, err := t.findnode(toid, toaddr, e)
+	if err != nil {
+		return nil, err
+	}
+	return unwrapNodes(rs), nil
 }
 
 // RequestENR sends enrRequest to the given node and waits for a response.
