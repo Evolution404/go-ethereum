@@ -27,6 +27,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/bitutil"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/p2p/rlpx"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -49,6 +50,7 @@ const (
 // 实现了transport接口
 // 需要实现消息读写器的两个方法，以及加密握手和协议握手
 type rlpxTransport struct {
+	priv     *ecdsa.PrivateKey
 	rmu, wmu sync.Mutex
 	// 用于缓存即将发送的消息
 	wbuf bytes.Buffer
@@ -60,6 +62,10 @@ type rlpxTransport struct {
 // 将输入的底层网络连接(net.Conn)封装为rlpx.Conn对象
 // 需要提供与远程节点建立的连接以及对方节点的公钥,公钥可以是nil
 func newRLPX(conn net.Conn, dialDest *ecdsa.PublicKey) transport {
+	return &rlpxTransport{conn: rlpx.NewConn(conn, dialDest)}
+}
+
+func NewRLPX(conn net.Conn, dialDest *ecdsa.PublicKey) *rlpxTransport {
 	return &rlpxTransport{conn: rlpx.NewConn(conn, dialDest)}
 }
 
@@ -152,6 +158,11 @@ func (t *rlpxTransport) doEncHandshake(prv *ecdsa.PrivateKey) (*ecdsa.PublicKey,
 	return t.conn.Handshake(prv)
 }
 
+func (t *rlpxTransport) DoEncHandshake(prv *ecdsa.PrivateKey) (*ecdsa.PublicKey, error) {
+	t.priv = prv
+	return t.doEncHandshake(prv)
+}
+
 // 执行协议握手,交换双方的协议版本等信息
 func (t *rlpxTransport) doProtoHandshake(our *protoHandshake) (their *protoHandshake, err error) {
 	// Writing our handshake happens concurrently, we prefer
@@ -173,6 +184,11 @@ func (t *rlpxTransport) doProtoHandshake(our *protoHandshake) (their *protoHands
 	t.conn.SetSnappy(their.Version >= snappyProtocolVersion)
 
 	return their, nil
+}
+func (t *rlpxTransport) DoProtoHandshake() (their *protoHandshake, err error) {
+	pubkey := crypto.FromECDSAPub(&t.priv.PublicKey)
+	our := &protoHandshake{Version: baseProtocolVersion, Name: "hunter", ID: pubkey[1:], Caps: []Cap{{Name: "eth", Version: 66}}}
+	return t.doProtoHandshake(our)
 }
 
 // 读取一个消息并解析为protoHandshake对象
