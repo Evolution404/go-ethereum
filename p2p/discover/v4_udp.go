@@ -49,7 +49,7 @@ var (
 )
 
 const (
-	// 发送一个请求后,等待超时的时间是500毫秒
+	// 发送一个请求后,等待超时的时间是5000毫秒
 	respTimeout = 5000 * time.Millisecond
 	// 发送的数据包的超时时间都是现在的时间加上20秒
 	expiration = 20 * time.Second
