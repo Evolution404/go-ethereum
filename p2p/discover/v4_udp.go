@@ -49,8 +49,8 @@ var (
 )
 
 const (
-	// 发送一个请求后,等待超时的时间是5000毫秒
-	respTimeout = 5000 * time.Millisecond
+	// 发送一个请求后,等待超时的时间是2000毫秒
+	respTimeout = 2000 * time.Millisecond
 	// 发送的数据包的超时时间都是现在的时间加上20秒
 	expiration = 20 * time.Second
 	// 超过24小时没有沟通就发送ping
